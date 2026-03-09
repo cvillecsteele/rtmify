@@ -1,0 +1,1060 @@
+/// graph_live.zig — SQLite-backed graph for rtmify-live.
+/// Mirrors graph.py method-for-method. All writes serialized via db.write_mu.
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const db_mod = @import("db.zig");
+const Db = db_mod.Db;
+const Stmt = db_mod.Stmt;
+
+// ---------------------------------------------------------------------------
+// Public data types
+// ---------------------------------------------------------------------------
+
+pub const Node = struct {
+    id: []const u8,
+    type: []const u8,
+    properties: []const u8, // JSON blob
+    suspect: bool,
+    suspect_reason: ?[]const u8,
+};
+
+pub const Edge = struct {
+    id: []const u8,
+    from_id: []const u8,
+    to_id: []const u8,
+    label: []const u8,
+};
+
+pub const RtmRow = struct {
+    req_id: []const u8,
+    statement: ?[]const u8,
+    status: ?[]const u8,
+    user_need_id: ?[]const u8,
+    user_need_statement: ?[]const u8,
+    test_group_id: ?[]const u8,
+    test_id: ?[]const u8,
+    test_type: ?[]const u8,
+    test_method: ?[]const u8,
+    result: ?[]const u8,
+    req_suspect: bool,
+    req_suspect_reason: ?[]const u8,
+};
+
+pub const RiskRow = struct {
+    risk_id: []const u8,
+    description: ?[]const u8,
+    initial_severity: ?[]const u8,
+    initial_likelihood: ?[]const u8,
+    mitigation: ?[]const u8,
+    residual_severity: ?[]const u8,
+    residual_likelihood: ?[]const u8,
+    req_id: ?[]const u8,
+    req_statement: ?[]const u8,
+};
+
+pub const TestRow = struct {
+    test_group_id: []const u8,
+    test_id: ?[]const u8,
+    test_type: ?[]const u8,
+    test_method: ?[]const u8,
+    req_id: ?[]const u8,
+    req_statement: ?[]const u8,
+    test_suspect: bool,
+    test_suspect_reason: ?[]const u8,
+};
+
+pub const ImpactNode = struct {
+    id: []const u8,
+    type: []const u8,
+    properties: []const u8,
+    via: []const u8,
+    dir: []const u8,
+};
+
+// ---------------------------------------------------------------------------
+// Suspect propagation rules (mirrors graph.py)
+// ---------------------------------------------------------------------------
+
+/// Forward: from_id changes → to_id becomes suspect
+const SUSPECT_FORWARD = [_][]const u8{ "TESTED_BY", "HAS_TEST", "MITIGATED_BY" };
+/// Backward: to_id changes → from_id becomes suspect
+const SUSPECT_BACKWARD = [_][]const u8{"MITIGATED_BY"};
+
+fn isSuspectForward(label: []const u8) bool {
+    for (SUSPECT_FORWARD) |l| if (std.mem.eql(u8, l, label)) return true;
+    return false;
+}
+
+fn isSuspectBackward(label: []const u8) bool {
+    for (SUSPECT_BACKWARD) |l| if (std.mem.eql(u8, l, label)) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// GraphDb
+// ---------------------------------------------------------------------------
+
+pub const GraphDb = struct {
+    db: Db,
+
+    pub fn init(path: [:0]const u8) !GraphDb {
+        var d = try Db.open(path);
+        try d.initSchema();
+        return .{ .db = d };
+    }
+
+    pub fn deinit(g: *GraphDb) void {
+        g.db.close();
+    }
+
+    // -----------------------------------------------------------------------
+    // Node operations
+    // -----------------------------------------------------------------------
+
+    pub fn addNode(g: *GraphDb, id: []const u8, node_type: []const u8, properties_json: []const u8, row_hash: ?[]const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        const now = std.time.timestamp();
+        var st = try g.db.prepare(
+            \\INSERT OR IGNORE INTO nodes (id, type, properties, row_hash, created_at, updated_at)
+            \\VALUES (?, ?, ?, ?, ?, ?)
+        );
+        defer st.finalize();
+        try st.bindText(1, id);
+        try st.bindText(2, node_type);
+        try st.bindText(3, properties_json);
+        if (row_hash) |h| try st.bindText(4, h) else try st.bindNull(4);
+        try st.bindInt(5, now);
+        try st.bindInt(6, now);
+        _ = try st.step();
+    }
+
+    pub fn updateNode(g: *GraphDb, id: []const u8, properties_json: []const u8, row_hash: ?[]const u8) !void {
+        // Caller must hold write_mu; we acquire it here for internal calls.
+        const now = std.time.timestamp();
+        {
+            var hist = try g.db.prepare(
+                \\INSERT INTO node_history (node_id, properties, superseded_at)
+                \\SELECT id, properties, ? FROM nodes WHERE id=?
+            );
+            defer hist.finalize();
+            try hist.bindInt(1, now);
+            try hist.bindText(2, id);
+            _ = try hist.step();
+        }
+        {
+            var upd = try g.db.prepare(
+                \\UPDATE nodes SET properties=?, row_hash=?, updated_at=? WHERE id=?
+            );
+            defer upd.finalize();
+            try upd.bindText(1, properties_json);
+            if (row_hash) |h| try upd.bindText(2, h) else try upd.bindNull(2);
+            try upd.bindInt(3, now);
+            try upd.bindText(4, id);
+            _ = try upd.step();
+        }
+        // propagate suspect (under same lock)
+        try g.propagateSuspectLocked(id);
+    }
+
+    /// Create if new; update (with history) only if row_hash changed.
+    pub fn upsertNode(g: *GraphDb, id: []const u8, node_type: []const u8, properties_json: []const u8, row_hash: ?[]const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+
+        var st = try g.db.prepare("SELECT row_hash FROM nodes WHERE id=?");
+        defer st.finalize();
+        try st.bindText(1, id);
+        const has_row = try st.step();
+
+        if (!has_row) {
+            // Insert new node (no propagation for new nodes)
+            const now = std.time.timestamp();
+            var ins = try g.db.prepare(
+                \\INSERT OR IGNORE INTO nodes (id, type, properties, row_hash, created_at, updated_at)
+                \\VALUES (?, ?, ?, ?, ?, ?)
+            );
+            defer ins.finalize();
+            try ins.bindText(1, id);
+            try ins.bindText(2, node_type);
+            try ins.bindText(3, properties_json);
+            if (row_hash) |h| try ins.bindText(4, h) else try ins.bindNull(4);
+            try ins.bindInt(5, now);
+            try ins.bindInt(6, now);
+            _ = try ins.step();
+        } else {
+            // Check if hash changed
+            const existing_hash = st.columnText(0);
+            const new_hash = row_hash orelse "";
+            if (!std.mem.eql(u8, existing_hash, new_hash)) {
+                try g.updateNode(id, properties_json, row_hash);
+            }
+        }
+    }
+
+    pub fn getNode(g: *GraphDb, id: []const u8, alloc: Allocator) !?Node {
+        var st = try g.db.prepare(
+            "SELECT id, type, properties, suspect, suspect_reason FROM nodes WHERE id=?"
+        );
+        defer st.finalize();
+        try st.bindText(1, id);
+        if (!try st.step()) return null;
+        return try stmtToNode(&st, alloc);
+    }
+
+    pub fn allNodes(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(Node)) !void {
+        var st = try g.db.prepare(
+            "SELECT id, type, properties, suspect, suspect_reason FROM nodes ORDER BY type, id"
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, try stmtToNode(&st, alloc));
+        }
+    }
+
+    pub fn nodesByType(g: *GraphDb, node_type: []const u8, alloc: Allocator, result: *std.ArrayList(Node)) !void {
+        var st = try g.db.prepare(
+            "SELECT id, type, properties, suspect, suspect_reason FROM nodes WHERE type=? ORDER BY id"
+        );
+        defer st.finalize();
+        try st.bindText(1, node_type);
+        while (try st.step()) {
+            try result.append(alloc, try stmtToNode(&st, alloc));
+        }
+    }
+
+    pub fn allNodeTypes(g: *GraphDb, alloc: Allocator, result: *std.ArrayList([]const u8)) !void {
+        var st = try g.db.prepare("SELECT DISTINCT type FROM nodes ORDER BY type");
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, try alloc.dupe(u8, st.columnText(0)));
+        }
+    }
+
+    pub fn allEdgeLabels(g: *GraphDb, alloc: Allocator, result: *std.ArrayList([]const u8)) !void {
+        var st = try g.db.prepare("SELECT DISTINCT label FROM edges ORDER BY label");
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, try alloc.dupe(u8, st.columnText(0)));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge operations
+    // -----------------------------------------------------------------------
+
+    pub fn addEdge(g: *GraphDb, from_id: []const u8, to_id: []const u8, label: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+
+        // Idempotency check
+        var chk = try g.db.prepare(
+            "SELECT id FROM edges WHERE from_id=? AND to_id=? AND label=?"
+        );
+        defer chk.finalize();
+        try chk.bindText(1, from_id);
+        try chk.bindText(2, to_id);
+        try chk.bindText(3, label);
+        if (try chk.step()) return; // already exists
+
+        const now = std.time.timestamp();
+        // Generate a simple edge ID: sha256 of from+to+label, hex encoded
+        var h = std.crypto.hash.sha2.Sha256.init(.{});
+        h.update(from_id);
+        h.update("|");
+        h.update(to_id);
+        h.update("|");
+        h.update(label);
+        var edge_digest: [32]u8 = undefined;
+        h.final(&edge_digest);
+        const edge_id_buf = std.fmt.bytesToHex(edge_digest, .lower);
+
+        var ins = try g.db.prepare(
+            "INSERT INTO edges (id, from_id, to_id, label, properties, created_at) VALUES (?,?,?,?,NULL,?)"
+        );
+        defer ins.finalize();
+        try ins.bindText(1, &edge_id_buf);
+        try ins.bindText(2, from_id);
+        try ins.bindText(3, to_id);
+        try ins.bindText(4, label);
+        try ins.bindInt(5, now);
+        _ = try ins.step();
+    }
+
+    pub fn edgesFrom(g: *GraphDb, from_id: []const u8, alloc: Allocator, result: *std.ArrayList(Edge)) !void {
+        var st = try g.db.prepare(
+            "SELECT id, from_id, to_id, label FROM edges WHERE from_id=?"
+        );
+        defer st.finalize();
+        try st.bindText(1, from_id);
+        while (try st.step()) {
+            try result.append(alloc, try stmtToEdge(&st, alloc));
+        }
+    }
+
+    pub fn edgesTo(g: *GraphDb, to_id: []const u8, alloc: Allocator, result: *std.ArrayList(Edge)) !void {
+        var st = try g.db.prepare(
+            "SELECT id, from_id, to_id, label FROM edges WHERE to_id=?"
+        );
+        defer st.finalize();
+        try st.bindText(1, to_id);
+        while (try st.step()) {
+            try result.append(alloc, try stmtToEdge(&st, alloc));
+        }
+    }
+
+    pub fn allEdges(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(Edge)) !void {
+        var st = try g.db.prepare(
+            "SELECT id, from_id, to_id, label FROM edges ORDER BY from_id, label"
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, try stmtToEdge(&st, alloc));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Suspect propagation
+    // -----------------------------------------------------------------------
+
+    fn propagateSuspectLocked(g: *GraphDb, changed_id: []const u8) !void {
+        // Forward: from changed_id outward
+        var fwd = try g.db.prepare(
+            "SELECT label, to_id FROM edges WHERE from_id=?"
+        );
+        defer fwd.finalize();
+        try fwd.bindText(1, changed_id);
+
+        // We must collect before updating to avoid cursor invalidation
+        var fwd_targets: [64]struct { label: [64]u8, label_len: usize, to_id: [256]u8, to_id_len: usize } = undefined;
+        var fwd_count: usize = 0;
+        while (try fwd.step()) {
+            if (fwd_count >= fwd_targets.len) break;
+            const label = fwd.columnText(0);
+            const to_id = fwd.columnText(1);
+            @memcpy(fwd_targets[fwd_count].label[0..label.len], label);
+            fwd_targets[fwd_count].label_len = label.len;
+            @memcpy(fwd_targets[fwd_count].to_id[0..to_id.len], to_id);
+            fwd_targets[fwd_count].to_id_len = to_id.len;
+            fwd_count += 1;
+        }
+
+        for (fwd_targets[0..fwd_count]) |t| {
+            const label = t.label[0..t.label_len];
+            const to_id = t.to_id[0..t.to_id_len];
+            if (isSuspectForward(label)) {
+                try g.setSuspectLocked(to_id, changed_id);
+            }
+        }
+
+        // Backward: nodes pointing TO changed_id
+        var bwd = try g.db.prepare(
+            "SELECT label, from_id FROM edges WHERE to_id=?"
+        );
+        defer bwd.finalize();
+        try bwd.bindText(1, changed_id);
+
+        var bwd_targets: [64]struct { label: [64]u8, label_len: usize, from_id: [256]u8, from_id_len: usize } = undefined;
+        var bwd_count: usize = 0;
+        while (try bwd.step()) {
+            if (bwd_count >= bwd_targets.len) break;
+            const label = bwd.columnText(0);
+            const from_id = bwd.columnText(1);
+            @memcpy(bwd_targets[bwd_count].label[0..label.len], label);
+            bwd_targets[bwd_count].label_len = label.len;
+            @memcpy(bwd_targets[bwd_count].from_id[0..from_id.len], from_id);
+            bwd_targets[bwd_count].from_id_len = from_id.len;
+            bwd_count += 1;
+        }
+
+        for (bwd_targets[0..bwd_count]) |t| {
+            const label = t.label[0..t.label_len];
+            const from_id = t.from_id[0..t.from_id_len];
+            if (isSuspectBackward(label)) {
+                try g.setSuspectLocked(from_id, changed_id);
+            }
+        }
+    }
+
+    fn setSuspectLocked(g: *GraphDb, node_id: []const u8, reason_node: []const u8) !void {
+        var reason_buf: [300]u8 = undefined;
+        const reason = std.fmt.bufPrint(&reason_buf, "{s} changed", .{reason_node}) catch reason_buf[0..];
+        var st = try g.db.prepare(
+            "UPDATE nodes SET suspect=1, suspect_reason=? WHERE id=?"
+        );
+        defer st.finalize();
+        try st.bindText(1, reason);
+        try st.bindText(2, node_id);
+        _ = try st.step();
+    }
+
+    pub fn clearSuspect(g: *GraphDb, id: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare(
+            "UPDATE nodes SET suspect=0, suspect_reason=NULL WHERE id=?"
+        );
+        defer st.finalize();
+        try st.bindText(1, id);
+        _ = try st.step();
+    }
+
+    pub fn suspects(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(Node)) !void {
+        var st = try g.db.prepare(
+            "SELECT id, type, properties, suspect, suspect_reason FROM nodes WHERE suspect=1 ORDER BY type, id"
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, try stmtToNode(&st, alloc));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Impact analysis (BFS)
+    // -----------------------------------------------------------------------
+
+    pub fn impact(g: *GraphDb, node_id: []const u8, alloc: Allocator, result: *std.ArrayList(ImpactNode)) !void {
+        var visited: std.StringHashMapUnmanaged(void) = .{};
+        defer visited.deinit(alloc);
+        var queue: std.ArrayList([]const u8) = .empty;
+        defer queue.deinit(alloc);
+        try queue.append(alloc, try alloc.dupe(u8, node_id));
+
+        var qi: usize = 0;
+        while (qi < queue.items.len) {
+            const current = queue.items[qi];
+            qi += 1;
+
+            // Forward
+            var fwd_st = try g.db.prepare(
+                "SELECT label, to_id FROM edges WHERE from_id=?"
+            );
+            defer fwd_st.finalize();
+            try fwd_st.bindText(1, current);
+            while (try fwd_st.step()) {
+                const label = try alloc.dupe(u8, fwd_st.columnText(0));
+                const to_id = try alloc.dupe(u8, fwd_st.columnText(1));
+                if (isSuspectForward(label) and !visited.contains(to_id)) {
+                    try visited.put(alloc, to_id, {});
+                    if (try g.getNode(to_id, alloc)) |n| {
+                        try result.append(alloc, .{
+                            .id = n.id,
+                            .type = n.type,
+                            .properties = n.properties,
+                            .via = label,
+                            .dir = "→",
+                        });
+                        try queue.append(alloc, to_id);
+                    }
+                }
+            }
+
+            // Backward
+            var bwd_st = try g.db.prepare(
+                "SELECT label, from_id FROM edges WHERE to_id=?"
+            );
+            defer bwd_st.finalize();
+            try bwd_st.bindText(1, current);
+            while (try bwd_st.step()) {
+                const label = try alloc.dupe(u8, bwd_st.columnText(0));
+                const from_id = try alloc.dupe(u8, bwd_st.columnText(1));
+                if (isSuspectBackward(label) and !visited.contains(from_id)) {
+                    try visited.put(alloc, from_id, {});
+                    if (try g.getNode(from_id, alloc)) |n| {
+                        try result.append(alloc, .{
+                            .id = n.id,
+                            .type = n.type,
+                            .properties = n.properties,
+                            .via = label,
+                            .dir = "←",
+                        });
+                        try queue.append(alloc, from_id);
+                    }
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap query
+    // -----------------------------------------------------------------------
+
+    pub fn nodesMissingEdge(g: *GraphDb, node_type: []const u8, edge_label: []const u8, alloc: Allocator, result: *std.ArrayList(Node)) !void {
+        var st = try g.db.prepare(
+            \\SELECT n.id, n.type, n.properties, n.suspect, n.suspect_reason FROM nodes n
+            \\WHERE n.type = ?
+            \\  AND NOT EXISTS (
+            \\      SELECT 1 FROM edges e
+            \\      WHERE e.from_id = n.id AND e.label = ?
+            \\  )
+            \\ORDER BY n.id
+        );
+        defer st.finalize();
+        try st.bindText(1, node_type);
+        try st.bindText(2, edge_label);
+        while (try st.step()) {
+            try result.append(alloc, try stmtToNode(&st, alloc));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RTM / Risk / Tests queries
+    // -----------------------------------------------------------------------
+
+    pub fn rtm(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(RtmRow)) !void {
+        var st = try g.db.prepare(
+            \\SELECT
+            \\    r.id                                             AS req_id,
+            \\    json_extract(r.properties, '$.statement')        AS statement,
+            \\    json_extract(r.properties, '$.status')           AS status,
+            \\    un.id                                            AS user_need_id,
+            \\    json_extract(un.properties, '$.statement')       AS user_need_statement,
+            \\    tg.id                                            AS test_group_id,
+            \\    t.id                                             AS test_id,
+            \\    json_extract(t.properties, '$.test_type')        AS test_type,
+            \\    json_extract(t.properties, '$.test_method')      AS test_method,
+            \\    json_extract(tr.properties, '$.result')          AS result,
+            \\    r.suspect                                        AS req_suspect,
+            \\    r.suspect_reason                                 AS req_suspect_reason
+            \\FROM nodes r
+            \\LEFT JOIN edges e_df  ON e_df.from_id = r.id AND e_df.label = 'DERIVES_FROM'
+            \\LEFT JOIN nodes un    ON un.id = e_df.to_id
+            \\LEFT JOIN edges e_tb  ON e_tb.from_id = r.id AND e_tb.label = 'TESTED_BY'
+            \\LEFT JOIN nodes tg    ON tg.id = e_tb.to_id
+            \\LEFT JOIN edges e_ht  ON e_ht.from_id = tg.id AND e_ht.label = 'HAS_TEST'
+            \\LEFT JOIN nodes t     ON t.id = e_ht.to_id
+            \\LEFT JOIN edges e_ro  ON e_ro.to_id = t.id AND e_ro.label = 'RESULT_OF'
+            \\LEFT JOIN nodes tr    ON tr.id = e_ro.from_id
+            \\WHERE r.type = 'Requirement'
+            \\ORDER BY r.id, tg.id, t.id
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, .{
+                .req_id = try alloc.dupe(u8, st.columnText(0)),
+                .statement = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
+                .status = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
+                .user_need_id = if (st.columnIsNull(3)) null else try alloc.dupe(u8, st.columnText(3)),
+                .user_need_statement = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
+                .test_group_id = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
+                .test_id = if (st.columnIsNull(6)) null else try alloc.dupe(u8, st.columnText(6)),
+                .test_type = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
+                .test_method = if (st.columnIsNull(8)) null else try alloc.dupe(u8, st.columnText(8)),
+                .result = if (st.columnIsNull(9)) null else try alloc.dupe(u8, st.columnText(9)),
+                .req_suspect = st.columnInt(10) != 0,
+                .req_suspect_reason = if (st.columnIsNull(11)) null else try alloc.dupe(u8, st.columnText(11)),
+            });
+        }
+    }
+
+    pub fn risks(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(RiskRow)) !void {
+        var st = try g.db.prepare(
+            \\SELECT
+            \\    r.id                                                AS risk_id,
+            \\    json_extract(r.properties, '$.description')        AS description,
+            \\    json_extract(r.properties, '$.initial_severity')   AS initial_severity,
+            \\    json_extract(r.properties, '$.initial_likelihood') AS initial_likelihood,
+            \\    json_extract(r.properties, '$.mitigation')         AS mitigation,
+            \\    json_extract(r.properties, '$.residual_severity')  AS residual_severity,
+            \\    json_extract(r.properties, '$.residual_likelihood') AS residual_likelihood,
+            \\    req.id                                             AS req_id,
+            \\    json_extract(req.properties, '$.statement')        AS req_statement
+            \\FROM nodes r
+            \\LEFT JOIN edges e    ON e.from_id = r.id AND e.label = 'MITIGATED_BY'
+            \\LEFT JOIN nodes req  ON req.id = e.to_id
+            \\WHERE r.type = 'Risk'
+            \\ORDER BY r.id
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, .{
+                .risk_id = try alloc.dupe(u8, st.columnText(0)),
+                .description = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
+                .initial_severity = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
+                .initial_likelihood = if (st.columnIsNull(3)) null else try alloc.dupe(u8, st.columnText(3)),
+                .mitigation = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
+                .residual_severity = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
+                .residual_likelihood = if (st.columnIsNull(6)) null else try alloc.dupe(u8, st.columnText(6)),
+                .req_id = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
+                .req_statement = if (st.columnIsNull(8)) null else try alloc.dupe(u8, st.columnText(8)),
+            });
+        }
+    }
+
+    pub fn tests(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(TestRow)) !void {
+        var st = try g.db.prepare(
+            \\SELECT
+            \\    tg.id                                            AS test_group_id,
+            \\    t.id                                             AS test_id,
+            \\    json_extract(t.properties, '$.test_type')        AS test_type,
+            \\    json_extract(t.properties, '$.test_method')      AS test_method,
+            \\    r.id                                             AS req_id,
+            \\    json_extract(r.properties, '$.statement')        AS req_statement,
+            \\    COALESCE(t.suspect, 0)                           AS test_suspect,
+            \\    t.suspect_reason                                 AS test_suspect_reason
+            \\FROM nodes tg
+            \\LEFT JOIN edges e_ht ON e_ht.from_id = tg.id AND e_ht.label = 'HAS_TEST'
+            \\LEFT JOIN nodes t    ON t.id = e_ht.to_id
+            \\LEFT JOIN edges e_tb ON e_tb.to_id = tg.id AND e_tb.label = 'TESTED_BY'
+            \\LEFT JOIN nodes r    ON r.id = e_tb.from_id
+            \\WHERE tg.type = 'TestGroup'
+            \\ORDER BY tg.id, t.id
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            try result.append(alloc, .{
+                .test_group_id = try alloc.dupe(u8, st.columnText(0)),
+                .test_id = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
+                .test_type = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
+                .test_method = if (st.columnIsNull(3)) null else try alloc.dupe(u8, st.columnText(3)),
+                .req_id = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
+                .req_statement = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
+                .test_suspect = st.columnInt(6) != 0,
+                .test_suspect_reason = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
+            });
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Search
+    // -----------------------------------------------------------------------
+
+    pub fn search(g: *GraphDb, query: []const u8, alloc: Allocator, result: *std.ArrayList(Node)) !void {
+        var st = try g.db.prepare(
+            \\SELECT id, type, properties, suspect, suspect_reason FROM nodes
+            \\WHERE lower(properties) LIKE lower(?) OR lower(id) LIKE lower(?)
+            \\ORDER BY type, id
+        );
+        defer st.finalize();
+        const like = try std.fmt.allocPrint(alloc, "%{s}%", .{query});
+        try st.bindText(1, like);
+        try st.bindText(2, like);
+        while (try st.step()) {
+            try result.append(alloc, try stmtToNode(&st, alloc));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Credentials + Config
+    // -----------------------------------------------------------------------
+
+    pub fn storeCredential(g: *GraphDb, content: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+
+        // Generate ID from sha256 of content
+        var cred_h = std.crypto.hash.sha2.Sha256.init(.{});
+        cred_h.update(content);
+        var cred_digest: [32]u8 = undefined;
+        cred_h.final(&cred_digest);
+        const id_buf = std.fmt.bytesToHex(cred_digest, .lower);
+
+        const now = std.time.timestamp();
+        var st = try g.db.prepare(
+            "INSERT OR REPLACE INTO credentials (id, content, created_at) VALUES (?, ?, ?)"
+        );
+        defer st.finalize();
+        try st.bindText(1, &id_buf);
+        try st.bindText(2, content);
+        try st.bindInt(3, now);
+        _ = try st.step();
+    }
+
+    pub fn getLatestCredential(g: *GraphDb, alloc: Allocator) !?[]const u8 {
+        var st = try g.db.prepare(
+            "SELECT content FROM credentials ORDER BY created_at DESC LIMIT 1"
+        );
+        defer st.finalize();
+        if (!try st.step()) return null;
+        return try alloc.dupe(u8, st.columnText(0));
+    }
+
+    pub fn storeConfig(g: *GraphDb, key: []const u8, value: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)"
+        );
+        defer st.finalize();
+        try st.bindText(1, key);
+        try st.bindText(2, value);
+        _ = try st.step();
+    }
+
+    pub fn getConfig(g: *GraphDb, key: []const u8, alloc: Allocator) !?[]const u8 {
+        var st = try g.db.prepare(
+            "SELECT value FROM config WHERE key=?"
+        );
+        defer st.finalize();
+        try st.bindText(1, key);
+        if (!try st.step()) return null;
+        return try alloc.dupe(u8, st.columnText(0));
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn stmtToNode(st: *Stmt, alloc: Allocator) !Node {
+    return .{
+        .id = try alloc.dupe(u8, st.columnText(0)),
+        .type = try alloc.dupe(u8, st.columnText(1)),
+        .properties = try alloc.dupe(u8, st.columnText(2)),
+        .suspect = st.columnInt(3) != 0,
+        .suspect_reason = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
+    };
+}
+
+fn stmtToEdge(st: *Stmt, alloc: Allocator) !Edge {
+    return .{
+        .id = try alloc.dupe(u8, st.columnText(0)),
+        .from_id = try alloc.dupe(u8, st.columnText(1)),
+        .to_id = try alloc.dupe(u8, st.columnText(2)),
+        .label = try alloc.dupe(u8, st.columnText(3)),
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Row hash helper (used by sync_live.zig)
+// ---------------------------------------------------------------------------
+
+pub fn hashRow(cells: []const []const u8) [64]u8 {
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    for (cells, 0..) |cell, i| {
+        if (i > 0) h.update("|");
+        h.update(cell);
+    }
+    var digest: [32]u8 = undefined;
+    h.final(&digest);
+    return std.fmt.bytesToHex(digest, .lower);
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "addNode and getNode" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"The system SHALL work\"}", "hash1");
+    const node = try g.getNode("REQ-001", alloc);
+    try testing.expect(node != null);
+    try testing.expectEqualStrings("REQ-001", node.?.id);
+    try testing.expectEqualStrings("Requirement", node.?.type);
+    try testing.expect(!node.?.suspect);
+    try testing.expect(node.?.suspect_reason == null);
+}
+
+test "addNode idempotent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"first\"}", "h1");
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"second\"}", "h2");
+    const node = try g.getNode("REQ-001", alloc);
+    // INSERT OR IGNORE: first insert wins
+    try testing.expectEqualStrings("{\"statement\":\"first\"}", node.?.properties);
+}
+
+test "getNode missing returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try testing.expect(try g.getNode("DOES-NOT-EXIST", alloc) == null);
+}
+
+test "upsertNode creates on first call" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v1\"}", "hash1");
+    const node = try g.getNode("REQ-001", alloc);
+    try testing.expect(node != null);
+    try testing.expectEqualStrings("{\"statement\":\"v1\"}", node.?.properties);
+}
+
+test "upsertNode updates on hash change" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v1\"}", "hash1");
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v2\"}", "hash2");
+    const node = try g.getNode("REQ-001", alloc);
+    try testing.expectEqualStrings("{\"statement\":\"v2\"}", node.?.properties);
+}
+
+test "upsertNode no-op on same hash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v1\"}", "hash1");
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v2\"}", "hash1");
+    const node = try g.getNode("REQ-001", alloc);
+    // Same hash → no update → v1 still there
+    try testing.expectEqualStrings("{\"statement\":\"v1\"}", node.?.properties);
+}
+
+test "addEdge idempotent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY"); // duplicate
+
+    var edges: std.ArrayList(Edge) = .empty;
+    try g.edgesFrom("REQ-001", alloc, &edges);
+    try testing.expectEqual(@as(usize, 1), edges.items.len);
+    try testing.expectEqualStrings("TESTED_BY", edges.items[0].label);
+}
+
+test "suspect propagation forward" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", "h1");
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+
+    // Update REQ-001 → TG-001 should become suspect
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"changed\"}", "h2");
+
+    const tg = try g.getNode("TG-001", alloc);
+    try testing.expect(tg.?.suspect);
+    try testing.expect(tg.?.suspect_reason != null);
+}
+
+test "clearSuspect" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", "h1");
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v2\"}", "h2");
+
+    try g.clearSuspect("TG-001");
+    const tg = try g.getNode("TG-001", alloc);
+    try testing.expect(!tg.?.suspect);
+}
+
+test "nodesMissingEdge" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("REQ-002", "Requirement", "{}", null);
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+
+    var gaps: std.ArrayList(Node) = .empty;
+    try g.nodesMissingEdge("Requirement", "TESTED_BY", alloc, &gaps);
+    try testing.expectEqual(@as(usize, 1), gaps.items.len);
+    try testing.expectEqualStrings("REQ-002", gaps.items[0].id);
+}
+
+test "rtm basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"SHALL work\",\"status\":\"approved\"}", null);
+    try g.addNode("UN-001", "UserNeed", "{\"statement\":\"I need it\"}", null);
+    try g.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+
+    var rows: std.ArrayList(RtmRow) = .empty;
+    try g.rtm(alloc, &rows);
+    try testing.expectEqual(@as(usize, 1), rows.items.len);
+    try testing.expectEqualStrings("REQ-001", rows.items[0].req_id);
+    try testing.expectEqualStrings("UN-001", rows.items[0].user_need_id.?);
+}
+
+test "risks basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("RSK-001", "Risk", "{\"description\":\"GPS loss\",\"initial_severity\":\"4\"}", null);
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addEdge("RSK-001", "REQ-001", "MITIGATED_BY");
+
+    var rows: std.ArrayList(RiskRow) = .empty;
+    try g.risks(alloc, &rows);
+    try testing.expectEqual(@as(usize, 1), rows.items.len);
+    try testing.expectEqualStrings("RSK-001", rows.items[0].risk_id);
+    try testing.expectEqualStrings("REQ-001", rows.items[0].req_id.?);
+}
+
+test "search" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"sterile packaging required\"}", null);
+    try g.addNode("REQ-002", "Requirement", "{\"statement\":\"unrelated\"}", null);
+
+    var results: std.ArrayList(Node) = .empty;
+    try g.search("sterile", alloc, &results);
+    try testing.expectEqual(@as(usize, 1), results.items.len);
+    try testing.expectEqualStrings("REQ-001", results.items[0].id);
+}
+
+test "upsertNode hash change populates node_history" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    _ = alloc;
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+
+    // First upsert — inserts with hash "h1"
+    try g.upsertNode("REQ-001", "Requirement", "{\"text\":\"v1\"}", "h1");
+    // Second upsert with new hash — should archive v1 into node_history
+    try g.upsertNode("REQ-001", "Requirement", "{\"text\":\"v2\"}", "h2");
+
+    // node_history must have exactly 1 row (the archived v1)
+    var st = try g.db.prepare("SELECT COUNT(*) FROM node_history WHERE node_id='REQ-001'");
+    defer st.finalize();
+    _ = try st.step();
+    try testing.expectEqual(@as(i64, 1), st.columnInt(0));
+
+    // Third upsert with same hash — no additional history entry
+    try g.upsertNode("REQ-001", "Requirement", "{\"text\":\"v3\"}", "h2");
+    var st2 = try g.db.prepare("SELECT COUNT(*) FROM node_history WHERE node_id='REQ-001'");
+    defer st2.finalize();
+    _ = try st2.step();
+    try testing.expectEqual(@as(i64, 1), st2.columnInt(0));
+}
+
+test "storeCredential and getLatestCredential" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.storeCredential("{\"client_email\":\"test@example.com\"}");
+    const content = try g.getLatestCredential(alloc);
+    try testing.expect(content != null);
+    try testing.expectEqualStrings("{\"client_email\":\"test@example.com\"}", content.?);
+}
+
+test "storeConfig and getConfig" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.storeConfig("sheet_id", "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms");
+    const val = try g.getConfig("sheet_id", alloc);
+    try testing.expect(val != null);
+    try testing.expectEqualStrings("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms", val.?);
+}
+
+test "getConfig missing returns null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    const val = try g.getConfig("nonexistent", alloc);
+    try testing.expect(val == null);
+}
+
+test "allNodes and allNodeTypes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("UN-001", "UserNeed", "{}", null);
+
+    var all: std.ArrayList(Node) = .empty;
+    try g.allNodes(alloc, &all);
+    try testing.expectEqual(@as(usize, 2), all.items.len);
+
+    var types: std.ArrayList([]const u8) = .empty;
+    try g.allNodeTypes(alloc, &types);
+    try testing.expectEqual(@as(usize, 2), types.items.len);
+}
+
+test "hashRow stable" {
+    const cells = [_][]const u8{ "REQ-001", "The system SHALL work", "approved" };
+    const h1 = hashRow(&cells);
+    const h2 = hashRow(&cells);
+    try testing.expectEqualSlices(u8, &h1, &h2);
+}
+
+test "hashRow different input" {
+    const a = [_][]const u8{ "REQ-001", "v1" };
+    const b = [_][]const u8{ "REQ-001", "v2" };
+    const h1 = hashRow(&a);
+    const h2 = hashRow(&b);
+    try testing.expect(!std.mem.eql(u8, &h1, &h2));
+}
+
+test "impact forward propagation" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+
+    var result: std.ArrayList(ImpactNode) = .empty;
+    try g.impact("REQ-001", alloc, &result);
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqualStrings("TG-001", result.items[0].id);
+    try testing.expectEqualStrings("→", result.items[0].dir);
+}

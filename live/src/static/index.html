@@ -1,0 +1,1378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CALM</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      color: #1a1a1a;
+      background: #f5f5f5;
+    }
+
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 14px 24px;
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+    }
+    header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
+    header span { font-size: 12px; color: #aaa; }
+
+    nav {
+      background: #fff;
+      border-bottom: 1px solid #ddd;
+      padding: 0 24px;
+      display: flex;
+      gap: 0;
+    }
+    nav button {
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      padding: 12px 18px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #555;
+      font-weight: 500;
+    }
+    nav button.active {
+      color: #1a1a2e;
+      border-bottom-color: #1a1a2e;
+    }
+    nav button:hover:not(.active) { color: #333; }
+
+    main { padding: 24px; }
+
+    section { display: none; }
+    section.active { display: block; }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .toolbar h2 { font-size: 16px; font-weight: 600; }
+    .badge {
+      display: inline-block;
+      background: #f0ad4e;
+      color: #fff;
+      border-radius: 10px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+    .badge.zero { background: #5cb85c; }
+
+    button.btn {
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      display: inline-block;
+    }
+    button.btn:hover { background: #2a2a4e; }
+    a.btn {
+      background: #1a1a2e;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      display: inline-block;
+    }
+    a.btn:hover { background: #2a2a4e; }
+
+    .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      background: #f2f2f2;
+      text-align: left;
+      padding: 10px 12px;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #555;
+      border-bottom: 1px solid #ddd;
+    }
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr.warning { background: #fff7ed; }
+    tr.warning td:first-child { border-left: 3px solid #f97316; }
+    tr.error { background: #fef2f2; }
+    tr.error td:first-child { border-left: 3px solid #ef4444; }
+
+    .req-id { font-family: monospace; font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .test-id { font-family: monospace; font-size: 13px; white-space: nowrap; }
+    .result-pass { color: #2d7a2d; font-weight: 600; }
+    .result-fail { color: #c0392b; font-weight: 600; }
+    .result-pending { color: #888; font-style: italic; }
+    .result-missing {
+      color: #885500;
+      font-style: italic;
+    }
+
+    .empty-state {
+      padding: 48px;
+      text-align: center;
+      color: #999;
+    }
+
+    .error-banner {
+      background: #fde8e8;
+      border: 1px solid #f5c6c6;
+      border-radius: 4px;
+      padding: 12px 16px;
+      color: #c0392b;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+
+    /* Lobby */
+    #lobby {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #f5f5f5;
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+    #lobby.visible { display: flex; }
+    .lobby-card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 36px 40px;
+      width: 480px;
+      max-width: 95vw;
+    }
+    .lobby-card h2 { font-size: 18px; font-weight: 600; margin-bottom: 24px; color: #1a1a2e; }
+    .lobby-label { font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
+    .lobby-email {
+      font-family: monospace;
+      font-size: 13px;
+      background: #f2f2f2;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin-bottom: 20px;
+      cursor: pointer;
+      word-break: break-all;
+      min-height: 36px;
+    }
+    .lobby-email:hover { background: #e8e8e8; }
+    .lobby-input {
+      width: 100%;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 8px 12px;
+      margin-bottom: 20px;
+      outline: none;
+    }
+    .lobby-input:focus { border-color: #1a1a2e; }
+    .lobby-input:disabled { background: #f2f2f2; color: #999; }
+    .lobby-actions { display: flex; justify-content: flex-end; }
+    .lobby-error {
+      background: #fde8e8;
+      border: 1px solid #f5c6c6;
+      border-radius: 4px;
+      padding: 10px 14px;
+      color: #c0392b;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+    .copied-hint { font-size: 11px; color: #2d7a2d; margin-left: 8px; }
+    .drop-hint {
+      font-size: 12px;
+      color: #aaa;
+      text-align: center;
+      margin-top: -12px;
+      margin-bottom: 20px;
+    }
+    .lobby-card { transition: border-color 0.15s, background 0.15s; }
+    .lobby-card.drag-over {
+      border-color: #1a1a2e;
+      background: #f0f0f8;
+      outline: 2px dashed #1a1a2e;
+      outline-offset: -4px;
+    }
+
+    /* Node drawer */
+    .drawer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.15);
+      z-index: 49;
+    }
+    .drawer-overlay.visible { display: block; }
+    .node-drawer {
+      position: fixed;
+      top: 0; right: -460px;
+      width: 460px;
+      height: 100vh;
+      background: #fff;
+      border-left: 1px solid #ddd;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.08);
+      transition: right 0.2s ease;
+      z-index: 50;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .node-drawer.open { right: 0; }
+    .drawer-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid #eee;
+      background: #fafafa;
+      flex-shrink: 0;
+    }
+    .drawer-back {
+      background: none; border: none; cursor: pointer;
+      font-size: 13px; color: #555; padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .drawer-back:hover { background: #eee; }
+    .drawer-back:disabled { color: #ccc; cursor: default; }
+    .drawer-close {
+      background: none; border: none; cursor: pointer;
+      font-size: 16px; color: #888; padding: 4px 8px;
+      border-radius: 4px; line-height: 1;
+    }
+    .drawer-close:hover { background: #eee; color: #333; }
+    #drawer-content { overflow-y: auto; flex: 1; padding: 20px; }
+    .drawer-node-header {
+      display: flex; align-items: baseline; gap: 10px;
+      margin-bottom: 18px;
+    }
+    .drawer-node-id { font-family: monospace; font-size: 16px; font-weight: 600; }
+    .node-type-badge {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.04em; color: #555; background: #eee;
+      border-radius: 3px; padding: 2px 6px;
+    }
+    .prop-section { margin-bottom: 20px; }
+    .prop-row {
+      display: flex; gap: 12px; padding: 5px 0;
+      border-bottom: 1px solid #f0f0f0; font-size: 13px;
+    }
+    .prop-key { color: #888; min-width: 120px; flex-shrink: 0; }
+    .prop-val { color: #1a1a1a; word-break: break-word; }
+    .edge-section { margin-bottom: 18px; }
+    .edge-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #888; margin-bottom: 8px;
+    }
+    .edge-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; border-radius: 5px; cursor: pointer;
+      border: 1px solid #eee; margin-bottom: 6px;
+      transition: background 0.1s;
+    }
+    .edge-row:hover { background: #f5f5f5; border-color: #ddd; }
+    .edge-label {
+      font-size: 11px; color: #888; font-family: monospace;
+      white-space: nowrap;
+    }
+    .node-id-link {
+      font-family: monospace; font-size: 13px; font-weight: 600;
+      color: #1a1a2e; flex: 1;
+    }
+    .edge-empty { font-size: 13px; color: #aaa; padding: 4px 0; }
+
+    /* Inline row expansion */
+    .expand-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 10px; color: #bbb; padding: 1px 5px 1px 0;
+      vertical-align: middle; transition: color 0.1s;
+    }
+    .expand-btn:hover { color: #1a1a2e; }
+    .expand-btn.open { color: #1a1a2e; }
+    tr.detail-row > td { padding: 0; border-bottom: 1px solid #e0e0f0; }
+    .detail-inner {
+      padding: 16px 24px 18px 32px;
+      display: flex; flex-direction: column; gap: 16px;
+      background: #f8f8ff; border-top: 1px solid #e0e0f0;
+    }
+    .detail-props { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: flex-start; }
+    .dp-row { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
+    .dp-key { color: #999; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+    .dp-val { color: #1a1a1a; word-break: break-word; max-width: 260px; }
+    .de-none { font-size: 12px; color: #ccc; }
+    .di-suspect {
+      background: #fff8e1; border: 1px solid #f9a825; border-radius: 4px;
+      padding: 6px 10px; margin-bottom: 10px; font-size: 12px; color: #7a5c00;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .di-suspect button {
+      background: #f9a825; color: #fff; border: none; border-radius: 3px;
+      padding: 3px 8px; font-size: 11px; cursor: pointer;
+    }
+
+    /* Edge tree */
+    .tree-sections { display: flex; flex-direction: column; gap: 6px; }
+    .tree-section { min-width: 160px; }
+    .tree-section-header {
+      display: flex; align-items: center; gap: 6px;
+      cursor: pointer; user-select: none; padding: 2px 0;
+    }
+    .tree-section-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #888;
+    }
+    .tree-count { font-size: 11px; color: #bbb; }
+    .tree-section-body { padding-left: 14px; margin-top: 4px; }
+    .tree-node { margin: 3px 0; }
+    .tree-node-header {
+      display: flex; align-items: center; gap: 6px; padding: 2px 0;
+    }
+    .tree-edge-label { font-size: 10px; color: #bbb; font-family: monospace; white-space: nowrap; }
+    .tree-node-id { font-family: monospace; font-size: 13px; font-weight: 600; color: #1a1a2e; }
+    .tree-node-body { padding-left: 18px; margin-top: 4px; }
+    .tree-node-props { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 6px; }
+    .suspect-banner {
+      background: #fff8e1;
+      border: 1px solid #f9a825;
+      border-radius: 5px;
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .suspect-banner .suspect-text { font-size: 13px; color: #7a5c00; }
+    .suspect-banner .suspect-label { font-weight: 700; margin-right: 6px; }
+    .suspect-clear {
+      background: #f9a825; color: #fff; border: none;
+      border-radius: 4px; padding: 5px 12px; font-size: 12px;
+      font-weight: 600; cursor: pointer; white-space: nowrap;
+    }
+    .suspect-clear:hover { background: #f57f17; }
+    tr.suspect td:first-child { border-left: 3px solid #f9a825; }
+    tr.suspect { background: #fffde7; }
+
+    /* Reports tab */
+    .report-card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 24px;
+      max-width: 480px;
+    }
+    .report-card h3 { font-size: 15px; margin-bottom: 8px; }
+    .report-card p { color: #555; margin-bottom: 16px; font-size: 13px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="node-drawer" id="node-drawer">
+  <div class="drawer-toolbar">
+    <button class="drawer-back" id="drawer-back" onclick="drawerBack()">← Back</button>
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div id="drawer-content"></div>
+</div>
+
+<div id="lobby">
+  <div class="lobby-card" id="lobby-card"
+      ondragover="onSaDragOver(event)"
+      ondragleave="onSaDragLeave(event)"
+      ondrop="onSaDrop(event)">
+    <h2>CALM — Connect your Google Sheet</h2>
+    <div id="lobby-error" class="lobby-error" style="display:none"></div>
+    <input type="file" id="sa-file-input" accept=".json,application/json" style="display:none">
+    <div id="lobby-sa-section">
+      <p class="lobby-label">Share your sheet with:</p>
+      <div class="lobby-email" id="lobby-email" onclick="copyEmail()" title="Click to copy"></div>
+      <span class="copied-hint" id="copy-hint" style="display:none">Copied!</span>
+    </div>
+    <p class="drop-hint">Drop service-account.json anywhere in this panel to update credentials</p>
+    <p class="lobby-label" style="margin-top:16px">Then paste the sheet link here:</p>
+    <input id="lobby-url" class="lobby-input" type="text"
+      placeholder="https://docs.google.com/spreadsheets/d/…" />
+    <div class="lobby-actions">
+      <button id="lobby-btn" class="btn" onclick="connectSheet()">Connect</button>
+    </div>
+  </div>
+</div>
+
+<header onclick="showLobby()" style="cursor:pointer" title="Back to setup">
+  <h1>CALM</h1>
+  <span>Requirements Traceability</span>
+  <span id="suspect-header-badge" style="display:none; margin-left:auto; font-size:12px; background:#f9a825; color:#fff; border-radius:10px; padding:3px 12px; cursor:pointer;"
+    onclick="event.stopPropagation(); showTab('review')"></span>
+</header>
+
+<nav>
+  <button class="active" onclick="showTab('requirements')">Requirements</button>
+  <button onclick="showTab('user-needs')">User Needs</button>
+  <button onclick="showTab('tests')">Tests</button>
+  <button onclick="showTab('rtm')">RTM</button>
+  <button onclick="showTab('risks')">Risks</button>
+  <button onclick="showTab('impact')">Impact</button>
+  <button id="nav-review" onclick="showTab('review')">Review <span id="suspect-nav-badge" class="badge" style="display:none"></span></button>
+  <button onclick="showTab('reports')">Reports</button>
+</nav>
+
+<main>
+
+  <!-- Requirements tab -->
+  <section id="tab-requirements" class="active">
+    <div class="toolbar">
+      <h2>Requirements <span id="gap-badge" class="badge" style="display:none"></span></h2>
+      <button class="btn" onclick="loadData()">Refresh</button>
+    </div>
+    <div id="req-error" class="error-banner" style="display:none"></div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Statement</th>
+            <th>Status</th>
+            <th>Test Group</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="req-body">
+          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- User Needs tab -->
+  <section id="tab-user-needs">
+    <div class="toolbar"><h2>User Needs</h2></div>
+    <div id="un-error" class="error-banner" style="display:none"></div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Statement</th>
+            <th>Source</th>
+            <th>Priority</th>
+          </tr>
+        </thead>
+        <tbody id="un-body">
+          <tr><td colspan="4" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Tests tab -->
+  <section id="tab-tests">
+    <div class="toolbar"><h2>Tests</h2></div>
+    <div id="tests-error" class="error-banner" style="display:none"></div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Test Group</th>
+            <th>Test ID</th>
+            <th>Type</th>
+            <th>Method</th>
+            <th>Linked Requirement</th>
+          </tr>
+        </thead>
+        <tbody id="tests-body">
+          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- RTM tab -->
+  <section id="tab-rtm">
+    <div class="toolbar">
+      <h2>Requirements Traceability Matrix</h2>
+    </div>
+    <div id="rtm-error" class="error-banner" style="display:none"></div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Req ID</th>
+            <th>Parent Need</th>
+            <th>Requirement Statement</th>
+            <th>Test Group</th>
+            <th>Test ID</th>
+            <th>Type</th>
+            <th>Method</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody id="rtm-body">
+          <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Risks tab -->
+  <section id="tab-risks">
+    <div class="toolbar"><h2>Risk Register</h2></div>
+    <div id="risks-error" class="error-banner" style="display:none"></div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Risk ID</th>
+            <th>Description</th>
+            <th>Init Sev</th>
+            <th>Init Lik</th>
+            <th>Score</th>
+            <th>Mitigation</th>
+            <th>Mitigated By</th>
+            <th>Res Sev</th>
+            <th>Res Lik</th>
+            <th>Res Score</th>
+          </tr>
+        </thead>
+        <tbody id="risks-body">
+          <tr><td colspan="10" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Impact tab -->
+  <section id="tab-impact">
+    <div class="toolbar"><h2>Impact Analysis</h2></div>
+    <div style="display:flex; gap:12px; align-items:center; margin-bottom:20px;">
+      <input id="impact-input" class="lobby-input" style="max-width:280px; margin:0;"
+        type="text" placeholder="Node ID (e.g. REQ-002)"
+        onkeydown="if(event.key==='Enter') runImpact()">
+      <button class="btn" onclick="runImpact()">Analyze</button>
+    </div>
+    <div id="impact-error" class="error-banner" style="display:none"></div>
+    <div id="impact-result"></div>
+  </section>
+
+  <!-- Review tab -->
+  <section id="tab-review">
+    <div class="toolbar">
+      <h2>Review Required</h2>
+      <button class="btn" onclick="loadSuspects()">Refresh</button>
+    </div>
+    <div id="review-error" class="error-banner" style="display:none"></div>
+    <div id="review-result"></div>
+  </section>
+
+  <!-- Reports tab -->
+  <section id="tab-reports">
+    <div class="toolbar"><h2>Reports</h2></div>
+    <div class="report-card">
+      <h3>Requirements Traceability Matrix</h3>
+      <p>
+        Full RTM with requirement statements, verification tests, and result
+        status. Includes User Needs, Tests, and Risk Register.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <a class="btn" href="/report/rtm" target="_blank">PDF</a>
+        <a class="btn" href="/report/rtm.md" download="rtm.md">Markdown</a>
+        <a class="btn" href="/report/rtm.docx" download="rtm.docx">Word (.docx)</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // --- Tab switching ---
+
+  function showTab(name) {
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    if (event && event.currentTarget) event.currentTarget.classList.add('active');
+    else document.getElementById('nav-review').classList.add('active');
+    if (name === 'review') loadSuspects();
+  }
+
+  // --- Data loading ---
+
+  async function loadData() {
+    _closeAllExpanded();
+    await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
+  }
+
+  async function renderRequirements() {
+    const errEl = document.getElementById('req-error');
+    const tbody = document.getElementById('req-body');
+    errEl.style.display = 'none';
+
+    let rows;
+    try {
+      const res = await fetch('/query/rtm');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load requirements: ' + e.message;
+      errEl.style.display = 'block';
+      tbody.innerHTML = '';
+      return;
+    }
+
+    // One row per requirement — use the first occurrence (first test row)
+    const seen = new Map();
+    for (const r of rows) {
+      if (!seen.has(r.req_id)) seen.set(r.req_id, r);
+    }
+    const reqs = [...seen.values()].sort((a, b) => a.req_id.localeCompare(b.req_id));
+
+    const issueCount = reqs.filter(r => rowSeverity(r) !== '').length;
+    const badge = document.getElementById('gap-badge');
+    badge.textContent = issueCount === 0 ? 'OK' : issueCount + ' issue' + (issueCount > 1 ? 's' : '');
+    badge.className = 'badge' + (issueCount === 0 ? ' zero' : '');
+    badge.style.display = 'inline-block';
+
+    if (reqs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No requirements found.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = reqs.map(r => {
+      const severity = rowSeverity(r);
+      const rowClass = severity ? ` class="${severity}"` : '';
+      const status = r.status || '—';
+      const tgCell = r.test_group_id
+        ? `<span class="test-id">${esc(r.test_group_id)}</span>`
+        : '<span class="result-missing">No test linked</span>';
+      const resultCell = resultBadge(r.result, !!r.test_group_id);
+      return `<tr${rowClass}>
+        <td><button class="expand-btn" onclick="toggleRow('${esc(r.req_id)}',this,5)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td>${esc(r.statement || '—')}</td>
+        <td>${esc(status)}</td>
+        <td>${tgCell}</td>
+        <td>${resultCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function renderUserNeeds() {
+    const errEl = document.getElementById('un-error');
+    const tbody = document.getElementById('un-body');
+    errEl.style.display = 'none';
+    let rows;
+    try {
+      const res = await fetch('/query/user-needs');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load user needs: ' + e.message;
+      errEl.style.display = 'block';
+      tbody.innerHTML = '';
+      return;
+    }
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No user needs found.</td></tr>';
+      return;
+    }
+    rows.sort((a, b) => a.id.localeCompare(b.id));
+    tbody.innerHTML = rows.map(r => {
+      const rowClass = r.suspect ? ' class="suspect"' : '';
+      return `<tr${rowClass}>
+        <td><button class="expand-btn" onclick="toggleRow('${esc(r.id)}',this,4)">▶</button><span class="req-id">${esc(r.id)}</span></td>
+        <td>${esc(r.properties.statement || '—')}</td>
+        <td>${esc(r.properties.source || '—')}</td>
+        <td>${esc(r.properties.priority || '—')}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function renderTests() {
+    const errEl = document.getElementById('tests-error');
+    const tbody = document.getElementById('tests-body');
+    errEl.style.display = 'none';
+    let rows;
+    try {
+      const res = await fetch('/query/tests');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load tests: ' + e.message;
+      errEl.style.display = 'block';
+      tbody.innerHTML = '';
+      return;
+    }
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No tests found.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const rowClass = r.test_suspect ? ' class="suspect"' : '';
+      const reqCell = r.req_id
+        ? `<span class="req-id">${esc(r.req_id)}</span>`
+        : '<span style="color:#aaa">—</span>';
+      return `<tr${rowClass}>
+        <td><button class="expand-btn" onclick="toggleRow('${esc(r.test_id || r.test_group_id)}',this,5)">▶</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
+        <td><span class="test-id">${esc(r.test_id || '—')}</span></td>
+        <td>${esc(r.test_type || '—')}</td>
+        <td>${esc(r.test_method || '—')}</td>
+        <td>${reqCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function renderRTM() {
+    const errEl = document.getElementById('rtm-error');
+    const tbody = document.getElementById('rtm-body');
+    errEl.style.display = 'none';
+
+    let rows;
+    try {
+      const res = await fetch('/query/rtm');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load RTM: ' + e.message;
+      errEl.style.display = 'block';
+      tbody.innerHTML = '';
+      return;
+    }
+
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No data.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r => {
+      const parentCell = r.user_need_id
+        ? `<span class="test-id">${esc(r.user_need_id)}</span>`
+        : '<span style="color:#aaa">—</span>';
+      const tgCell = r.test_group_id
+        ? `<span class="test-id">${esc(r.test_group_id)}</span>`
+        : '<span class="result-missing">UNTESTED</span>';
+      const testCell = r.test_id ? `<span class="test-id">${esc(r.test_id)}</span>` : '';
+      const resultCell = r.test_group_id ? resultBadge(r.result, true) : '';
+      const severity = rowSeverity(r);
+      const rowClass = r.req_suspect ? 'suspect' : (severity || '');
+      return `<tr${rowClass ? ` class="${rowClass}"` : ''}>
+        <td><button class="expand-btn" onclick="toggleRow('${esc(r.req_id)}',this,8)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td>${parentCell}</td>
+        <td>${esc(r.statement || '—')}</td>
+        <td>${tgCell}</td>
+        <td>${testCell}</td>
+        <td>${esc(r.test_type || '')}</td>
+        <td>${esc(r.test_method || '')}</td>
+        <td>${resultCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function renderRisks() {
+    const errEl = document.getElementById('risks-error');
+    const tbody = document.getElementById('risks-body');
+    errEl.style.display = 'none';
+
+    let rows;
+    try {
+      const res = await fetch('/query/risks');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      rows = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load risks: ' + e.message;
+      errEl.style.display = 'block';
+      tbody.innerHTML = '';
+      return;
+    }
+
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No risks recorded.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r => {
+      const initScore = (parseInt(r.initial_severity) || 0) * (parseInt(r.initial_likelihood) || 0);
+      const resScore  = (parseInt(r.residual_severity) || 0) * (parseInt(r.residual_likelihood) || 0);
+      const scoreClass = s => s >= 12 ? 'result-fail' : s >= 6 ? 'result-missing' : '';
+      const reqCell = r.req_id
+        ? `<span class="test-id">${esc(r.req_id)}</span>`
+        : '<span style="color:#aaa">—</span>';
+      const rowClass = !r.req_id ? ' class="warning"' : '';
+      return `<tr${rowClass}>
+        <td><button class="expand-btn" onclick="toggleRow('${esc(r.risk_id)}',this,10)">▶</button><span class="req-id">${esc(r.risk_id)}</span></td>
+        <td>${esc(r.description || '—')}</td>
+        <td style="text-align:center">${esc(r.initial_severity || '—')}</td>
+        <td style="text-align:center">${esc(r.initial_likelihood || '—')}</td>
+        <td style="text-align:center"><span class="${scoreClass(initScore)}">${initScore || '—'}</span></td>
+        <td>${esc(r.mitigation || '—')}</td>
+        <td>${reqCell}</td>
+        <td style="text-align:center">${esc(r.residual_severity || '—')}</td>
+        <td style="text-align:center">${esc(r.residual_likelihood || '—')}</td>
+        <td style="text-align:center"><span class="${scoreClass(resScore)}">${resScore || '—'}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // --- Helpers ---
+
+  // error   = test result is FAIL
+  // warning = gaps: no test linked or no parent user need
+  // ""      = fully linked and passing
+  function rowSeverity(r) {
+    if (r.result === 'FAIL') return 'error';
+    if (!r.test_group_id || !r.user_need_id) return 'warning';
+    return '';
+  }
+
+  function resultBadge(result, hasTest) {
+    if (!hasTest) return '';
+    if (!result) return '<span class="result-pending">PENDING</span>';
+    if (result === 'PASS') return '<span class="result-pass">PASS</span>';
+    if (result === 'FAIL') return '<span class="result-fail">FAIL</span>';
+    return `<span class="result-pending">${esc(result)}</span>`;
+  }
+
+  function esc(str) {
+    if (str == null) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  async function showLobby() {
+    document.getElementById('lobby').classList.add('visible');
+    try {
+      const res = await fetch('/api/status');
+      const status = await res.json();
+      applyStatus(status);
+    } catch (_) {}
+  }
+
+  function applyStatus(status) {
+    const emailEl = document.getElementById('lobby-email');
+    if (status.service_account_email) {
+      emailEl.textContent = status.service_account_email;
+      emailEl.style.color = '';
+      emailEl.style.cursor = 'pointer';
+      emailEl.onclick = copyEmail;
+      emailEl.title = 'Click to copy';
+      document.getElementById('lobby-url').disabled = false;
+      document.getElementById('lobby-btn').disabled = false;
+    } else {
+      emailEl.textContent = 'Drop or click to upload service-account.json';
+      emailEl.style.color = '#aaa';
+      emailEl.style.cursor = 'pointer';
+      emailEl.onclick = () => document.getElementById('sa-file-input').click();
+      emailEl.title = 'Click to browse for service-account.json';
+      document.getElementById('lobby-url').disabled = true;
+      document.getElementById('lobby-btn').disabled = true;
+    }
+  }
+
+  // --- Service-account drag and drop ---
+
+  function onSaDragOver(e) {
+    e.preventDefault();
+    document.getElementById('lobby-card').classList.add('drag-over');
+  }
+
+  function onSaDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      document.getElementById('lobby-card').classList.remove('drag-over');
+    }
+  }
+
+  async function onSaDrop(e) {
+    e.preventDefault();
+    document.getElementById('lobby-card').classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) await uploadSaFile(file);
+  }
+
+  async function uploadSaFile(file) {
+    const errEl = document.getElementById('lobby-error');
+    errEl.style.display = 'none';
+
+    let text;
+    try {
+      text = await file.text();
+      JSON.parse(text);
+    } catch {
+      errEl.textContent = 'Invalid JSON file.';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    let result;
+    try {
+      const res = await fetch('/api/service-account', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({content: text}),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+      result = await res.json();
+    } catch (err) {
+      errEl.textContent = 'Failed to save credentials: ' + err.message;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    const emailEl = document.getElementById('lobby-email');
+    emailEl.textContent = result.email;
+    emailEl.style.color = '';
+    emailEl.style.cursor = 'pointer';
+    emailEl.onclick = copyEmail;
+    emailEl.title = 'Click to copy';
+    document.getElementById('lobby-sa-section').style.display = '';
+    document.getElementById('lobby-url').disabled = false;
+    document.getElementById('lobby-btn').disabled = false;
+  }
+
+  document.getElementById('sa-file-input').addEventListener('change', function() {
+    if (this.files[0]) uploadSaFile(this.files[0]);
+    this.value = '';
+  });
+
+  // --- Node drawer ---
+
+  let _drawerHistory = [];
+
+  async function openNode(id) {
+    _drawerHistory = [id];
+    await _renderDrawerNode(id);
+    document.getElementById('node-drawer').classList.add('open');
+    document.getElementById('drawer-overlay').classList.add('visible');
+  }
+
+  async function drawerNav(id) {
+    _drawerHistory.push(id);
+    await _renderDrawerNode(id);
+  }
+
+  async function drawerBack() {
+    if (_drawerHistory.length <= 1) return;
+    _drawerHistory.pop();
+    await _renderDrawerNode(_drawerHistory[_drawerHistory.length - 1]);
+  }
+
+  function closeDrawer() {
+    document.getElementById('node-drawer').classList.remove('open');
+    document.getElementById('drawer-overlay').classList.remove('visible');
+    _drawerHistory = [];
+  }
+
+  async function _renderDrawerNode(id) {
+    const content = document.getElementById('drawer-content');
+    const backBtn = document.getElementById('drawer-back');
+    backBtn.disabled = _drawerHistory.length <= 1;
+    content.innerHTML = '<div class="empty-state">Loading…</div>';
+
+    let data;
+    try {
+      const res = await fetch('/query/node/' + encodeURIComponent(id));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (e) {
+      content.innerHTML = '<div class="empty-state">Error: ' + esc(e.message) + '</div>';
+      return;
+    }
+
+    const { node, edges_out, edges_in } = data;
+
+    const props = Object.entries(node.properties)
+      .filter(([, v]) => v !== '' && v != null)
+      .map(([k, v]) => `<div class="prop-row">
+        <span class="prop-key">${esc(k)}</span>
+        <span class="prop-val">${esc(String(v))}</span>
+      </div>`).join('');
+
+    const edgeRows = (edges, dir) => edges.length
+      ? edges.map(e => {
+          const label = dir === 'out'
+            ? `${esc(e.label)} →`
+            : `← ${esc(e.label)}`;
+          return `<div class="edge-row" onclick="drawerNav('${esc(e.node.id)}')">
+            <span class="edge-label">${label}</span>
+            <span class="node-id-link">${esc(e.node.id)}</span>
+            <span class="node-type-badge">${esc(e.node.type)}</span>
+          </div>`;
+        }).join('')
+      : '<div class="edge-empty">None</div>';
+
+    const suspectBanner = node.suspect ? `
+      <div class="suspect-banner">
+        <span class="suspect-text">
+          <span class="suspect-label">SUSPECT</span>${node.suspect_reason ? esc(node.suspect_reason) : ''}
+        </span>
+        <button class="suspect-clear" onclick="clearSuspect('${esc(node.id)}')">Mark Reviewed</button>
+      </div>` : '';
+
+    content.innerHTML = `
+      <div class="drawer-node-header">
+        <span class="node-type-badge">${esc(node.type)}</span>
+        <span class="drawer-node-id">${esc(node.id)}</span>
+      </div>
+      ${suspectBanner}
+      <div class="prop-section">${props}</div>
+      <div class="edge-section">
+        <div class="edge-section-title">Out (${edges_out.length})</div>
+        ${edgeRows(edges_out, 'out')}
+      </div>
+      <div class="edge-section">
+        <div class="edge-section-title">In (${edges_in.length})</div>
+        ${edgeRows(edges_in, 'in')}
+      </div>`;
+  }
+
+  async function clearSuspect(id) {
+    await fetch('/suspect/' + encodeURIComponent(id) + '/clear', {method: 'POST'});
+    await _renderDrawerNode(id);
+    loadData();
+    if (document.getElementById('tab-review').classList.contains('active')) loadSuspects();
+  }
+
+  // --- Inline row expansion ---
+
+  const _expanded = new Map();
+
+  async function toggleRow(id, btn, colspan) {
+    if (_expanded.has(id)) {
+      _expanded.get(id).remove();
+      _expanded.delete(id);
+      btn.textContent = '▶';
+      btn.classList.remove('open');
+      return;
+    }
+    btn.textContent = '▼';
+    btn.classList.add('open');
+
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'detail-row';
+    detailTr.innerHTML = `<td colspan="${colspan}"><div class="detail-inner"><span style="color:#aaa;font-size:13px">Loading…</span></div></td>`;
+    btn.closest('tr').after(detailTr);
+    _expanded.set(id, detailTr);
+
+    const inner = detailTr.querySelector('.detail-inner');
+    await _fillNodeDetail(inner, id, false);
+  }
+
+  async function _fillNodeDetail(container, id, showProps = true) {
+    let data;
+    try {
+      const res = await fetch('/query/node/' + encodeURIComponent(id));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (e) {
+      container.innerHTML = `<span style="color:#c0392b;font-size:13px">Error: ${esc(e.message)}</span>`;
+      return;
+    }
+
+    const { node, edges_out, edges_in } = data;
+
+    const props = Object.entries(node.properties)
+      .filter(([, v]) => v !== '' && v != null)
+      .map(([k, v]) => `<div class="dp-row">
+        <span class="dp-key">${esc(k)}</span>
+        <span class="dp-val">${esc(String(v))}</span>
+      </div>`).join('') || '';
+
+    const suspect = node.suspect ? `
+      <div class="di-suspect">
+        <span><strong>SUSPECT</strong>${node.suspect_reason ? ' — ' + esc(node.suspect_reason) : ''}</span>
+        <button onclick="clearSuspect('${esc(node.id)}')">Mark Reviewed</button>
+      </div>` : '';
+
+    container.innerHTML = `
+      ${suspect}
+      ${showProps ? `<div class="detail-props">${props}</div>` : ''}
+      <div class="tree-sections">
+        ${_treeSection('OUT', edges_out, 'out')}
+        ${_treeSection('IN', edges_in, 'in')}
+      </div>`;
+  }
+
+  function _treeSection(label, edges, dir) {
+    const items = edges.map(e => _treeNodeHtml(e, dir)).join('');
+    return `
+      <div class="tree-section">
+        <div class="tree-section-header" onclick="toggleTreeSection(this)">
+          <button class="expand-btn">▶</button>
+          <span class="tree-section-label">${label}</span>
+          <span class="tree-count">${edges.length}</span>
+        </div>
+        <div class="tree-section-body" style="display:none">
+          ${items || '<div class="de-none">—</div>'}
+        </div>
+      </div>`;
+  }
+
+  function _treeNodeHtml(e, dir) {
+    const arrow = dir === 'out' ? '→' : '←';
+    return `
+      <div class="tree-node">
+        <div class="tree-node-header">
+          <button class="expand-btn" onclick="toggleTreeNode(this,'${esc(e.node.id)}')">▶</button>
+          <span class="tree-edge-label">${arrow} ${esc(e.label)}</span>
+          <span class="tree-node-id">${esc(e.node.id)}</span>
+          <span class="node-type-badge">${esc(e.node.type)}</span>
+        </div>
+        <div class="tree-node-body" style="display:none"></div>
+      </div>`;
+  }
+
+  function toggleTreeSection(header) {
+    const body = header.nextElementSibling;
+    const btn = header.querySelector('.expand-btn');
+    const opening = body.style.display === 'none';
+    body.style.display = opening ? '' : 'none';
+    btn.textContent = opening ? '▼' : '▶';
+    btn.classList.toggle('open', opening);
+  }
+
+  async function toggleTreeNode(btn, id) {
+    const header = btn.closest('.tree-node-header');
+    const body = header.nextElementSibling;
+    const opening = body.style.display === 'none';
+    body.style.display = opening ? '' : 'none';
+    btn.textContent = opening ? '▼' : '▶';
+    btn.classList.toggle('open', opening);
+    if (opening && !body.dataset.loaded) {
+      body.dataset.loaded = '1';
+      body.innerHTML = '<span style="color:#aaa;font-size:12px">Loading…</span>';
+      await _fillNodeDetail(body, id);
+      // Auto-expand OUT and IN sections for nested nodes
+      body.querySelectorAll('.tree-section-body').forEach(sec => {
+        sec.style.display = '';
+        const btn = sec.previousElementSibling.querySelector('.expand-btn');
+        if (btn) { btn.textContent = '▼'; btn.classList.add('open'); }
+      });
+    }
+  }
+
+  function _closeAllExpanded() {
+    _expanded.forEach(tr => tr.remove());
+    _expanded.clear();
+  }
+
+  // --- Impact analysis ---
+
+  async function runImpact() {
+    const id = document.getElementById('impact-input').value.trim();
+    const errEl = document.getElementById('impact-error');
+    const result = document.getElementById('impact-result');
+    errEl.style.display = 'none';
+    if (!id) return;
+    result.innerHTML = '<div class="empty-state">Analyzing…</div>';
+
+    let data;
+    try {
+      const res = await fetch('/query/impact/' + encodeURIComponent(id));
+      if (res.status === 404) throw new Error(`Node "${id}" not found`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (e) {
+      errEl.textContent = e.message;
+      errEl.style.display = 'block';
+      result.innerHTML = '';
+      return;
+    }
+
+    if (data.length === 0) {
+      result.innerHTML = '<div class="empty-state">No downstream impact — nothing depends on this node via traced edges.</div>';
+      return;
+    }
+
+    result.innerHTML = `
+      <p style="font-size:13px; color:#555; margin-bottom:12px;">
+        Changing <strong>${esc(id)}</strong> would affect <strong>${data.length}</strong> node${data.length === 1 ? '' : 's'}:
+      </p>
+      <div class="card">
+        <table>
+          <thead><tr><th>Node ID</th><th>Type</th><th>Via</th></tr></thead>
+          <tbody>
+            ${data.map(n => `<tr>
+              <td><button class="expand-btn" onclick="toggleRow('${esc(n.id)}',this,3)">▶</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><span class="node-type-badge">${esc(n.type)}</span></td>
+              <td><span class="tree-edge-label">${esc(n.dir)} ${esc(n.via)}</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  // --- Suspects / Review ---
+
+  async function loadSuspects() {
+    const errEl = document.getElementById('review-error');
+    const result = document.getElementById('review-result');
+    errEl.style.display = 'none';
+
+    let data;
+    try {
+      const res = await fetch('/query/suspects');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load: ' + e.message;
+      errEl.style.display = 'block';
+      return;
+    }
+
+    _updateSuspectBadge(data.length);
+
+    if (data.length === 0) {
+      result.innerHTML = '<div class="empty-state">No suspect nodes — all clear.</div>';
+      return;
+    }
+
+    result.innerHTML = `
+      <div class="card">
+        <table>
+          <thead><tr><th>Node ID</th><th>Type</th><th>Reason</th><th></th></tr></thead>
+          <tbody>
+            ${data.map(n => `<tr class="suspect">
+              <td><button class="expand-btn" onclick="toggleRow('${esc(n.id)}',this,4)">▶</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><span class="node-type-badge">${esc(n.type)}</span></td>
+              <td style="font-size:12px; color:#7a5c00;">${esc(n.suspect_reason || '')}</td>
+              <td><button class="suspect-clear" onclick="clearSuspect('${esc(n.id)}')">Mark Reviewed</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function _updateSuspectBadge(count) {
+    const headerBadge = document.getElementById('suspect-header-badge');
+    const navBadge = document.getElementById('suspect-nav-badge');
+    if (count > 0) {
+      const label = count + ' suspect';
+      headerBadge.textContent = '⚠ ' + label;
+      headerBadge.style.display = 'inline';
+      navBadge.textContent = count;
+      navBadge.style.display = 'inline';
+    } else {
+      headerBadge.style.display = 'none';
+      navBadge.style.display = 'none';
+    }
+  }
+
+  async function refreshSuspectBadge() {
+    try {
+      const res = await fetch('/query/suspects');
+      const data = await res.json();
+      _updateSuspectBadge(data.length);
+    } catch (_) {}
+  }
+
+  // --- Lobby ---
+
+  async function initApp() {
+    let status;
+    try {
+      const res = await fetch('/api/status');
+      status = await res.json();
+    } catch (e) {
+      // Server unreachable — show main app and let loadData handle errors
+      loadData();
+      return;
+    }
+
+    if (status.configured) {
+      loadData();
+      return;
+    }
+
+    // Show lobby
+    const lobby = document.getElementById('lobby');
+    lobby.classList.add('visible');
+
+    applyStatus(status);
+  }
+
+  async function connectSheet() {
+    const urlInput = document.getElementById('lobby-url');
+    const errEl = document.getElementById('lobby-error');
+    const btn = document.getElementById('lobby-btn');
+
+    const url = urlInput.value.trim();
+    if (!url.includes('/spreadsheets/d/')) {
+      errEl.textContent = 'Please paste a valid Google Sheets URL (must contain /spreadsheets/d/).';
+      errEl.style.display = 'block';
+      return;
+    }
+    errEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Connecting…';
+
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({sheet_url: url}),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      errEl.textContent = 'Failed to connect: ' + e.message;
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Connect';
+      return;
+    }
+
+    document.getElementById('lobby').classList.remove('visible');
+    loadData();
+  }
+
+  function copyEmail() {
+    const email = document.getElementById('lobby-email').textContent;
+    navigator.clipboard.writeText(email).then(() => {
+      const hint = document.getElementById('copy-hint');
+      hint.style.display = 'inline';
+      setTimeout(() => { hint.style.display = 'none'; }, 2000);
+    });
+  }
+
+  // --- Init ---
+  initApp();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,28 @@
+# Zig build and cache outputs (any depth)
+.zig-cache/
+zig-out/
+
+# Legacy artifacts under sys
+trace/.zig-cache/
+trace/zig-out/
+
+# Local runtime/state files
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Editor / IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+*.orig
+*~
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*

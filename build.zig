@@ -1,0 +1,286 @@
+const std = @import("std");
+
+const ReleaseTarget = struct {
+    triple: []const u8,
+    trace_name: []const u8,
+    live_name: []const u8,
+    lib_suffix: []const u8,
+};
+
+const release_targets = [_]ReleaseTarget{
+    .{
+        .triple = "aarch64-macos",
+        .trace_name = "rtmify-trace-macos-arm64",
+        .live_name = "rtmify-live-macos-arm64",
+        .lib_suffix = "macos-arm64",
+    },
+    .{
+        .triple = "x86_64-macos",
+        .trace_name = "rtmify-trace-macos-x64",
+        .live_name = "rtmify-live-macos-x64",
+        .lib_suffix = "macos-x64",
+    },
+    .{
+        .triple = "x86_64-windows",
+        .trace_name = "rtmify-trace-windows-x64",
+        .live_name = "rtmify-live-windows-x64",
+        .lib_suffix = "windows-x64",
+    },
+    .{
+        .triple = "aarch64-windows",
+        .trace_name = "rtmify-trace-windows-arm64",
+        .live_name = "rtmify-live-windows-arm64",
+        .lib_suffix = "windows-arm64",
+    },
+    .{
+        .triple = "x86_64-linux-musl",
+        .trace_name = "rtmify-trace-linux-x64",
+        .live_name = "rtmify-live-linux-x64",
+        .lib_suffix = "linux-x64",
+    },
+    .{
+        .triple = "aarch64-linux-musl",
+        .trace_name = "rtmify-trace-linux-arm64",
+        .live_name = "rtmify-live-linux-arm64",
+        .lib_suffix = "linux-arm64",
+    },
+};
+
+fn addSqlite(compile: *std.Build.Step.Compile, b: *std.Build) void {
+    const sqlite_flags = &.{
+        "-DSQLITE_THREADSAFE=2",
+        "-DSQLITE_OMIT_LOAD_EXTENSION=1",
+    };
+
+    compile.addCSourceFile(.{ .file = b.path("lib/vendor/sqlite3.c"), .flags = sqlite_flags });
+    compile.addIncludePath(b.path("lib/vendor"));
+    compile.linkLibC();
+}
+
+pub fn build(b: *std.Build) void {
+    const version = "20260308-a";
+
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", version);
+    const opts_mod = opts.createModule();
+
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const native_rtmify_mod = b.createModule(.{
+        .root_source_file = b.path("lib/src/lib.zig"),
+        .target = target,
+    });
+
+    const trace_exe = b.addExecutable(.{
+        .name = "rtmify-trace",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trace/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "rtmify", .module = native_rtmify_mod },
+                .{ .name = "build_options", .module = opts_mod },
+            },
+        }),
+    });
+
+    const live_exe = b.addExecutable(.{
+        .name = "rtmify-live",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/src/main_live.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "rtmify", .module = native_rtmify_mod },
+                .{ .name = "build_options", .module = opts_mod },
+            },
+        }),
+    });
+    addSqlite(live_exe, b);
+
+    const shared_lib = b.addLibrary(.{
+        .name = "rtmify",
+        .linkage = .dynamic,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lib/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    const static_lib = b.addLibrary(.{
+        .name = "rtmify",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lib/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    static_lib.bundle_compiler_rt = true;
+
+    const install_trace = b.addInstallArtifact(trace_exe, .{});
+    const install_live = b.addInstallArtifact(live_exe, .{});
+    const install_shared_lib = b.addInstallArtifact(shared_lib, .{});
+    const install_static_lib = b.addInstallArtifact(static_lib, .{});
+
+    b.getInstallStep().dependOn(&install_trace.step);
+    b.getInstallStep().dependOn(&install_live.step);
+    b.getInstallStep().dependOn(&install_shared_lib.step);
+    b.getInstallStep().dependOn(&install_static_lib.step);
+
+    const trace_step = b.step("trace", "Build rtmify-trace");
+    trace_step.dependOn(&install_trace.step);
+
+    const live_step = b.step("live", "Build rtmify-live");
+    live_step.dependOn(&install_live.step);
+
+    const lib_step = b.step("lib", "Build librtmify static and shared libraries");
+    lib_step.dependOn(&install_shared_lib.step);
+    lib_step.dependOn(&install_static_lib.step);
+
+    const run_trace_cmd = b.addRunArtifact(trace_exe);
+    if (b.args) |args| run_trace_cmd.addArgs(args);
+    const run_trace_step = b.step("run-trace", "Run rtmify-trace");
+    run_trace_step.dependOn(&run_trace_cmd.step);
+
+    const run_live_cmd = b.addRunArtifact(live_exe);
+    if (b.args) |args| run_live_cmd.addArgs(args);
+    const run_live_step = b.step("run-live", "Run rtmify-live");
+    run_live_step.dependOn(&run_live_cmd.step);
+
+    const lib_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lib/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_lib_tests = b.addRunArtifact(lib_tests);
+
+    const trace_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trace/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "rtmify", .module = native_rtmify_mod },
+                .{ .name = "build_options", .module = opts_mod },
+            },
+        }),
+    });
+    const run_trace_tests = b.addRunArtifact(trace_tests);
+
+    const live_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/src/lib_live.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "rtmify", .module = native_rtmify_mod },
+            },
+        }),
+    });
+    addSqlite(live_tests, b);
+    const run_live_tests = b.addRunArtifact(live_tests);
+
+    const test_lib_step = b.step("test-lib", "Run librtmify unit tests");
+    test_lib_step.dependOn(&run_lib_tests.step);
+
+    const test_trace_step = b.step("test-trace", "Run trace CLI unit tests");
+    test_trace_step.dependOn(&run_trace_tests.step);
+
+    const test_live_step = b.step("test-live", "Run live module unit tests");
+    test_live_step.dependOn(&run_live_tests.step);
+
+    const test_step = b.step("test", "Run all unit tests");
+    test_step.dependOn(&run_lib_tests.step);
+    test_step.dependOn(&run_trace_tests.step);
+    test_step.dependOn(&run_live_tests.step);
+
+    const win_gui_exe = b.addExecutable(.{
+        .name = "rtmify-trace",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trace/windows/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    win_gui_exe.linkLibrary(static_lib);
+    win_gui_exe.subsystem = .Windows;
+    win_gui_exe.linkSystemLibrary("ws2_32");
+    win_gui_exe.linkSystemLibrary("crypt32");
+    win_gui_exe.linkSystemLibrary("advapi32");
+    win_gui_exe.addWin32ResourceFile(.{ .file = b.path("trace/windows/res/rtmify.rc") });
+
+    const install_win_gui = b.addInstallArtifact(win_gui_exe, .{});
+    const win_gui_step = b.step("win-gui", "Build rtmify-trace.exe (use -Dtarget=x86_64-windows)");
+    win_gui_step.dependOn(&install_win_gui.step);
+
+    const release_step = b.step("release", "Build trace, live, and static librtmify for all release targets");
+
+    for (release_targets) |rt| {
+        const query = std.Target.Query.parse(.{ .arch_os_abi = rt.triple }) catch
+            @panic("invalid release target triple");
+        const cross_target = b.resolveTargetQuery(query);
+
+        const cross_rtmify_mod = b.createModule(.{
+            .root_source_file = b.path("lib/src/lib.zig"),
+            .target = cross_target,
+        });
+
+        const trace_release_exe = b.addExecutable(.{
+            .name = rt.trace_name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("trace/src/main.zig"),
+                .target = cross_target,
+                .optimize = .ReleaseSafe,
+                .imports = &.{
+                    .{ .name = "rtmify", .module = cross_rtmify_mod },
+                    .{ .name = "build_options", .module = opts_mod },
+                },
+            }),
+        });
+
+        const install_trace_release = b.addInstallArtifact(trace_release_exe, .{
+            .dest_dir = .{ .override = .{ .custom = "release" } },
+        });
+        release_step.dependOn(&install_trace_release.step);
+
+        const live_release_exe = b.addExecutable(.{
+            .name = rt.live_name,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("live/src/main_live.zig"),
+                .target = cross_target,
+                .optimize = .ReleaseSafe,
+                .imports = &.{
+                    .{ .name = "rtmify", .module = cross_rtmify_mod },
+                    .{ .name = "build_options", .module = opts_mod },
+                },
+            }),
+        });
+        addSqlite(live_release_exe, b);
+
+        const install_live_release = b.addInstallArtifact(live_release_exe, .{
+            .dest_dir = .{ .override = .{ .custom = "release" } },
+        });
+        release_step.dependOn(&install_live_release.step);
+
+        const static_release_lib = b.addLibrary(.{
+            .name = b.fmt("rtmify-{s}", .{rt.lib_suffix}),
+            .linkage = .static,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("lib/src/lib.zig"),
+                .target = cross_target,
+                .optimize = .ReleaseSafe,
+            }),
+        });
+        static_release_lib.bundle_compiler_rt = true;
+
+        const install_release_lib = b.addInstallArtifact(static_release_lib, .{
+            .dest_dir = .{ .override = .{ .custom = "release" } },
+        });
+        release_step.dependOn(&install_release_lib.step);
+    }
+}
