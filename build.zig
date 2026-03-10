@@ -179,6 +179,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "rtmify", .module = native_rtmify_mod },
+                .{ .name = "build_options", .module = opts_mod },
             },
         }),
     });
@@ -217,6 +218,24 @@ pub fn build(b: *std.Build) void {
     const install_win_gui = b.addInstallArtifact(win_gui_exe, .{});
     const win_gui_step = b.step("win-gui", "Build rtmify-trace.exe (use -Dtarget=x86_64-windows)");
     win_gui_step.dependOn(&install_win_gui.step);
+
+    const win_gui_live_exe = b.addExecutable(.{
+        .name = "RTMify Live",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    win_gui_live_exe.subsystem = .Windows;
+    win_gui_live_exe.linkSystemLibrary("user32");
+    win_gui_live_exe.linkSystemLibrary("shell32");
+    win_gui_live_exe.linkSystemLibrary("advapi32");
+    win_gui_live_exe.addWin32ResourceFile(.{ .file = b.path("live/windows/res/rtmify_live.rc") });
+
+    const install_win_gui_live = b.addInstallArtifact(win_gui_live_exe, .{});
+    const win_gui_live_step = b.step("win-gui-live", "Build RTMify Live.exe (use -Dtarget=x86_64-windows)");
+    win_gui_live_step.dependOn(&install_win_gui_live.step);
 
     const release_step = b.step("release", "Build trace, live, and static librtmify for all release targets");
 

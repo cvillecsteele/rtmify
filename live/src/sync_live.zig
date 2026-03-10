@@ -15,6 +15,11 @@ const xlsx = @import("rtmify").xlsx;
 
 const graph_live = @import("graph_live.zig");
 const sheets_mod = @import("sheets.zig");
+const repo_mod = @import("repo.zig");
+const annotations_mod = @import("annotations.zig");
+const git_mod = @import("git.zig");
+const profile_mod = @import("profile.zig");
+const provision_mod = @import("provision.zig");
 
 const GraphDb = graph_live.GraphDb;
 const TokenCache = sheets_mod.TokenCache;
@@ -129,6 +134,25 @@ pub fn syncThread(cfg: SyncConfig) void {
 
         std.log.info("sync: sheet changed (modifiedTime={d}), ingesting…", .{mt});
 
+        // Provision missing tabs BEFORE sync so blank sheets are viable (non-fatal)
+        {
+            var prov_arena = std.heap.ArenaAllocator.init(alloc);
+            defer prov_arena.deinit();
+            const pa = prov_arena.allocator();
+            const prov_done = (cfg.db.getConfig("rtmify_provisioned", pa) catch null) orelse "";
+            if (prov_done.len == 0) {
+                const prof_name = (cfg.db.getConfig("profile", pa) catch null) orelse "generic";
+                const pid = profile_mod.fromString(prof_name) orelse .generic;
+                const prof = profile_mod.get(pid);
+                const tab_ids = sheets_mod.getSheetTabIds(&http_client, token, cfg.sheet_id, pa) catch &.{};
+                _ = provision_mod.provisionSheet(&http_client, token, cfg.sheet_id, prof, tab_ids, pa) catch |e| blk: {
+                    std.log.warn("provision failed: {s}", .{@errorName(e)});
+                    break :blk @as([][]const u8, &.{});
+                };
+                cfg.db.storeConfig("rtmify_provisioned", "1") catch {};
+            }
+        }
+
         // Run a full sync cycle
         runSyncCycle(cfg.db, &http_client, token, cfg.sheet_id, cfg.state, alloc) catch |e| {
             const msg = @errorName(e);
@@ -167,11 +191,15 @@ fn runSyncCycle(
     defer arena.deinit();
     const a = arena.allocator();
 
-    // 1. Fetch all 4 tabs (include header row: start from row 1)
+    // 1. Fetch core tabs (include header row: start from row 1)
     const tests_rows = try sheets_mod.readRows(client, token, sheet_id, "Tests!A1:Z", a);
     const un_rows = try sheets_mod.readRows(client, token, sheet_id, "User%20Needs!A1:Z", a);
     const req_rows = try sheets_mod.readRows(client, token, sheet_id, "Requirements!A1:Z", a);
     const risk_rows = try sheets_mod.readRows(client, token, sheet_id, "Risks!A1:Z", a);
+    // Extended tabs — non-fatal, may not exist for all profiles
+    const di_rows = sheets_mod.readRows(client, token, sheet_id, "Design%20Inputs!A1:Z", a) catch &.{};
+    const do_rows = sheets_mod.readRows(client, token, sheet_id, "Design%20Outputs!A1:Z", a) catch &.{};
+    const ci_rows = sheets_mod.readRows(client, token, sheet_id, "Configuration%20Items!A1:Z", a) catch &.{};
 
     // 2. Convert [][][]const u8 rows to xlsx.SheetData
     const sheet_data = [_]xlsx.SheetData{
@@ -179,6 +207,9 @@ fn runSyncCycle(
         .{ .name = "User Needs", .rows = @ptrCast(un_rows) },
         .{ .name = "Requirements", .rows = @ptrCast(req_rows) },
         .{ .name = "Risks", .rows = @ptrCast(risk_rows) },
+        .{ .name = "Design Inputs", .rows = @ptrCast(di_rows) },
+        .{ .name = "Design Outputs", .rows = @ptrCast(do_rows) },
+        .{ .name = "Configuration Items", .rows = @ptrCast(ci_rows) },
     };
 
     // 3. Ingest into ephemeral in-memory Graph via schema.zig
@@ -559,10 +590,333 @@ fn colLetter(idx: usize) [3]u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Repo scan thread (code traceability)
+// ---------------------------------------------------------------------------
+
+pub const RepoScanCtx = struct {
+    db: *GraphDb,
+    repo_paths: []const []const u8,
+    state: *SyncState,
+    alloc: Allocator,
+    git_exe_override: ?[]const u8 = null,
+    git_timeout_ms_override: ?u64 = null,
+};
+
+/// Background thread: scans repos for source files + annotations + commits.
+/// Loops every 60 seconds. Each cycle:
+///   1. Builds list of known req IDs from the graph DB.
+///   2. For each repo_path: scans files, upserts SourceFile/TestFile nodes.
+///   3. Scans each file for annotations, upserts CodeAnnotation nodes + edges.
+///   4. Runs git log, upserts Commit nodes + COMMITTED_IN edges.
+///   5. Rate-limited blame: first 50 annotations per cycle.
+pub fn repoScanThread(ctx: *RepoScanCtx) void {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+
+    // Verify git is on PATH before starting scan loop
+    {
+        const git_check = std.process.Child.run(.{
+            .argv = &.{ "git", "--version" },
+            .allocator = gpa,
+        }) catch {
+            std.log.err("git not found on PATH — repo scan disabled", .{});
+            return;
+        };
+        defer gpa.free(git_check.stdout);
+        defer gpa.free(git_check.stderr);
+        if (git_check.term != .Exited or git_check.term.Exited != 0) {
+            std.log.err("git check failed — repo scan disabled", .{});
+            return;
+        }
+    }
+
+    while (true) {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        repoScanCycle(ctx, a) catch |e| {
+            std.log.warn("repo scan cycle failed: {s}", .{@errorName(e)});
+        };
+
+        std.Thread.sleep(60 * std.time.ns_per_s);
+    }
+}
+
+fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
+    const git_options = git_mod.GitOptions{
+        .exe = ctx.git_exe_override,
+        .timeout_ms = ctx.git_timeout_ms_override,
+    };
+    // Build dynamic list of repo paths from DB (picks up UI-added repos each cycle)
+    var dyn_paths: std.ArrayList([]const u8) = .empty;
+    defer dyn_paths.deinit(alloc);
+    {
+        var idx: usize = 0;
+        while (idx < 64) : (idx += 1) {
+            const key = try std.fmt.allocPrint(alloc, "repo_path_{d}", .{idx});
+            defer alloc.free(key);
+            const p = (try ctx.db.getConfig(key, alloc)) orelse continue;
+            try dyn_paths.append(alloc, p);
+        }
+    }
+    // Merge CLI-provided paths (already stored in DB at startup, but keep as fallback)
+    outer: for (ctx.repo_paths) |p| {
+        for (dyn_paths.items) |dp| {
+            if (std.mem.eql(u8, dp, p)) continue :outer;
+        }
+        try dyn_paths.append(alloc, try alloc.dupe(u8, p));
+    }
+
+    if (dyn_paths.items.len == 0) return; // no repos configured yet
+
+    // Build known req IDs from database
+    const known_ids = try annotations_mod.buildKnownIds(ctx.db, alloc);
+
+    for (dyn_paths.items) |repo_path| {
+        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("repo_scan", repo_path);
+        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("git", repo_path);
+        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("annotation", repo_path);
+
+        // Get last scan time for this repo
+        const last_scan_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{repo_path});
+        const last_scan_str = (try ctx.db.getConfig(last_scan_key, alloc)) orelse "0";
+        const last_scan: i64 = std.fmt.parseInt(i64, last_scan_str, 10) catch 0;
+
+        // Get last git hash
+        const git_key = try std.fmt.allocPrint(alloc, "git_last_hash_{s}", .{repo_path});
+        const last_hash = try ctx.db.getConfig(git_key, alloc);
+
+        // Scan repo files
+        const files = repo_mod.scanRepo(repo_path, last_scan, alloc) catch |e| {
+            std.log.warn("repo scan {s}: {s}", .{ repo_path, @errorName(e) });
+            try upsertRuntimeDiag(ctx.db, "repo_scan", 904, "err", "Repo path not readable", try std.fmt.allocPrint(alloc, "Repo scan failed for {s}: {s}", .{ repo_path, @errorName(e) }), repo_path, "{}");
+            continue;
+        };
+
+        // Collect existing CodeAnnotation IDs for this repo (for stale removal)
+        var existing_ann_ids = std.StringHashMap(void).init(alloc);
+        defer existing_ann_ids.deinit();
+        {
+            var st = try ctx.db.db.prepare(
+                "SELECT id FROM nodes WHERE type='CodeAnnotation' AND id LIKE ? || '%'"
+            );
+            defer st.finalize();
+            try st.bindText(1, repo_path);
+            while (try st.step()) {
+                const id = try alloc.dupe(u8, st.columnText(0));
+                try existing_ann_ids.put(id, {});
+            }
+        }
+
+        var seen_ann_ids = std.StringHashMap(void).init(alloc);
+        defer seen_ann_ids.deinit();
+
+        var blame_count: usize = 0;
+
+        for (files) |file| {
+            // Upsert SourceFile or TestFile node
+            const node_type: []const u8 = switch (file.kind) {
+                .source => "SourceFile",
+                .test_file => "TestFile",
+                .ignored => continue,
+            };
+
+            // Scan for annotations
+            const scan = annotations_mod.scanFileDetailed(file.path, known_ids, alloc) catch |e| {
+                try upsertRuntimeDiag(ctx.db, "annotation", 1105, "info", "Unrecognized file extension", try std.fmt.allocPrint(alloc, "Annotation scan failed for {s}: {s}", .{ file.path, @errorName(e) }), file.path, "{}");
+                continue;
+            };
+            const anns = scan.annotations;
+            const annotation_count = anns.len;
+            const props = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"repo\":\"{s}\",\"annotation_count\":{d}}}", .{ file.path, repo_path, annotation_count });
+            try ctx.db.upsertNode(file.path, node_type, props, null);
+
+            if (hasDuplicateAnnotationLine(anns)) {
+                try upsertRuntimeDiag(ctx.db, "annotation", 1106, "info", "Multiple annotations on same line", try std.fmt.allocPrint(alloc, "File {s} has multiple requirement annotations on the same line", .{file.path}), file.path, "{}");
+            }
+
+            for (scan.unknown_refs) |unknown| {
+                const subject = try std.fmt.allocPrint(alloc, "{s}:{d}:{s}", .{ unknown.file_path, unknown.line_number, unknown.ref_id });
+                const details = try std.fmt.allocPrint(alloc, "{{\"ref_id\":\"{s}\",\"line\":{d}}}", .{ unknown.ref_id, unknown.line_number });
+                try upsertRuntimeDiag(ctx.db, "annotation", 1101, "warn", "Annotation references unknown requirement ID", try std.fmt.allocPrint(alloc, "Unknown annotation reference {s} at {s}:{d}", .{ unknown.ref_id, unknown.file_path, unknown.line_number }), subject, details);
+            }
+
+            for (anns) |ann| {
+                // Upsert CodeAnnotation node with context
+                const ann_id = try std.fmt.allocPrint(alloc, "{s}:{d}", .{ file.path, ann.line_number });
+                {
+                    var ap: std.ArrayList(u8) = .empty;
+                    try ap.appendSlice(alloc, "{\"req_id\":\"");
+                    try appendJsonEscaped(&ap, ann.req_id, alloc);
+                    try ap.appendSlice(alloc, "\",\"file_path\":\"");
+                    try appendJsonEscaped(&ap, ann.file_path, alloc);
+                    try ap.writer(alloc).print("\",\"line_number\":{d},\"context\":\"", .{ann.line_number});
+                    try appendJsonEscaped(&ap, ann.context, alloc);
+                    try ap.appendSlice(alloc, "\"}");
+                    try ctx.db.upsertNode(ann_id, "CodeAnnotation", ap.items, null);
+                }
+                try seen_ann_ids.put(try alloc.dupe(u8, ann_id), {});
+
+                // PRD edge model:
+                // Requirement → CodeAnnotation via ANNOTATED_AT
+                ctx.db.addEdge(ann.req_id, ann_id, "ANNOTATED_AT") catch {};
+                // SourceFile/TestFile → CodeAnnotation via CONTAINS
+                ctx.db.addEdge(file.path, ann_id, "CONTAINS") catch {};
+                // Requirement → SourceFile via IMPLEMENTED_IN (source files only)
+                if (file.kind == .source) {
+                    ctx.db.addEdge(ann.req_id, file.path, "IMPLEMENTED_IN") catch {};
+                }
+                // Requirement → TestFile via VERIFIED_BY_CODE (test files only)
+                if (file.kind == .test_file) {
+                    ctx.db.addEdge(ann.req_id, file.path, "VERIFIED_BY_CODE") catch {};
+                }
+
+                // Rate-limited blame
+                if (blame_count < 50) {
+                    const blame_subject = try std.fmt.allocPrint(alloc, "{s}:{d}", .{ file.path, ann.line_number });
+                    if (git_mod.gitBlameWithOptions(repo_path, file.path, ann.line_number, git_options, alloc)) |blame| {
+                        var bp: std.ArrayList(u8) = .empty;
+                        try bp.appendSlice(alloc, "{\"req_id\":\"");
+                        try appendJsonEscaped(&bp, ann.req_id, alloc);
+                        try bp.appendSlice(alloc, "\",\"file_path\":\"");
+                        try appendJsonEscaped(&bp, ann.file_path, alloc);
+                        try bp.writer(alloc).print("\",\"line_number\":{d},\"blame_author\":\"", .{ann.line_number});
+                        try appendJsonEscaped(&bp, blame.author, alloc);
+                        try bp.appendSlice(alloc, "\",\"author_email\":\"");
+                        try appendJsonEscaped(&bp, blame.author_email, alloc);
+                        try bp.writer(alloc).print("\",\"author_time\":{d},\"short_hash\":\"", .{blame.author_time});
+                        const sh = blame.commit_hash[0..@min(7, blame.commit_hash.len)];
+                        try appendJsonEscaped(&bp, sh, alloc);
+                        try bp.appendSlice(alloc, "\",\"context\":\"");
+                        try appendJsonEscaped(&bp, ann.context, alloc);
+                        try bp.appendSlice(alloc, "\"}");
+                        try ctx.db.upsertNode(ann_id, "CodeAnnotation", bp.items, null);
+                        try clearRuntimeDiagByCodeAndSubject(ctx.db, "annotation", blame_subject, 1002);
+                        try clearRuntimeDiagByCodeAndSubject(ctx.db, "annotation", blame_subject, 1004);
+                        try clearRuntimeDiagByCodeAndSubject(ctx.db, "annotation", blame_subject, 1005);
+                        blame_count += 1;
+                    } else |e| {
+                        const diag_code: u16 = if (e == error.Timeout)
+                            1005
+                        else if (e == error.BlameParseErr)
+                            1004
+                        else
+                            1002;
+                        const title = if (diag_code == 1005)
+                            "git command timed out (> 10s)"
+                        else if (diag_code == 1004)
+                            "Failed to parse git blame output"
+                        else
+                            "git blame command failed";
+                        try upsertRuntimeDiag(ctx.db, "annotation", diag_code, "warn", title, try std.fmt.allocPrint(alloc, "git blame failed for {s}:{d}: {s}", .{ file.path, ann.line_number, @errorName(e) }), blame_subject, "{}");
+                    }
+                }
+            }
+        }
+
+        // Git log integration
+        const commits = git_mod.gitLogWithOptions(repo_path, last_hash, known_ids, git_options, alloc) catch |e| blk: {
+            const diag_code: u16 = if (e == error.Timeout)
+                1005
+            else if (e == error.CommitParseErr)
+                1003
+            else
+                1001;
+            const title = if (diag_code == 1005)
+                "git command timed out (> 10s)"
+            else if (diag_code == 1003)
+                "Commit message parse error"
+            else
+                "git log command failed";
+            try upsertRuntimeDiag(ctx.db, "git", diag_code, "warn", title, try std.fmt.allocPrint(alloc, "git log failed for {s}: {s}", .{ repo_path, @errorName(e) }), repo_path, "{}");
+            break :blk &.{};
+        };
+        if (commits.len > 0) {
+            try clearRuntimeDiagByCodeAndSubject(ctx.db, "git", repo_path, 1001);
+            try clearRuntimeDiagByCodeAndSubject(ctx.db, "git", repo_path, 1003);
+            try clearRuntimeDiagByCodeAndSubject(ctx.db, "git", repo_path, 1005);
+        }
+        var last_hash_new: ?[]const u8 = null;
+        for (commits) |commit| {
+            // Upsert Commit node with full fields including email and req_ids
+            var cp: std.ArrayList(u8) = .empty;
+            try cp.appendSlice(alloc, "{\"hash\":\"");
+            try appendJsonEscaped(&cp, commit.hash, alloc);
+            try cp.appendSlice(alloc, "\",\"short_hash\":\"");
+            try appendJsonEscaped(&cp, commit.short_hash, alloc);
+            try cp.appendSlice(alloc, "\",\"author\":\"");
+            try appendJsonEscaped(&cp, commit.author, alloc);
+            try cp.appendSlice(alloc, "\",\"email\":\"");
+            try appendJsonEscaped(&cp, commit.email, alloc);
+            try cp.appendSlice(alloc, "\",\"date\":\"");
+            try appendJsonEscaped(&cp, commit.date_iso, alloc);
+            try cp.appendSlice(alloc, "\",\"message\":\"");
+            try appendJsonEscaped(&cp, commit.message, alloc);
+            try cp.appendSlice(alloc, "\",\"req_ids\":[");
+            for (commit.req_ids, 0..) |rid, ri| {
+                if (ri > 0) try cp.append(alloc, ',');
+                try cp.append(alloc, '"');
+                try appendJsonEscaped(&cp, rid, alloc);
+                try cp.append(alloc, '"');
+            }
+            try cp.appendSlice(alloc, "]}");
+            try ctx.db.upsertNode(commit.hash, "Commit", cp.items, null);
+            for (commit.req_ids) |req_id| {
+                ctx.db.addEdge(req_id, commit.hash, "COMMITTED_IN") catch {};
+            }
+            if (last_hash_new == null) last_hash_new = commit.hash; // most recent
+        }
+
+        // Remove stale CodeAnnotation nodes (annotations removed from source since last scan)
+        var stale_it = existing_ann_ids.keyIterator();
+        while (stale_it.next()) |id| {
+            if (seen_ann_ids.contains(id.*)) continue;
+            ctx.db.deleteNode(id.*) catch |e| {
+                std.log.warn("deleteNode {s}: {s}", .{ id.*, @errorName(e) });
+            };
+        }
+
+        // Update config: last scan time and git hash
+        const now_str = try std.fmt.allocPrint(alloc, "{d}", .{std.time.timestamp()});
+        try ctx.db.storeConfig(last_scan_key, now_str);
+        if (last_hash_new) |h| try ctx.db.storeConfig(git_key, h);
+    }
+
+    // Store unified last_scan_at timestamp
+    const scan_now_str = try std.fmt.allocPrint(alloc, "{d}", .{std.time.timestamp()});
+    ctx.db.storeConfig("last_scan_at", scan_now_str) catch {};
+}
+
+fn hasDuplicateAnnotationLine(anns: []const annotations_mod.Annotation) bool {
+    for (anns, 0..) |ann, i| {
+        for (anns[i + 1 ..]) |other| {
+            if (ann.line_number == other.line_number) return true;
+        }
+    }
+    return false;
+}
+
+fn upsertRuntimeDiag(db: *GraphDb, source: []const u8, code: u16, severity: []const u8, title: []const u8, message: []const u8, subject: ?[]const u8, details_json: []const u8) !void {
+    const subject_part = subject orelse "";
+    const dedupe_key = try std.fmt.allocPrint(std.heap.page_allocator, "{s}:{s}:{d}", .{ source, subject_part, code });
+    defer std.heap.page_allocator.free(dedupe_key);
+    try db.upsertRuntimeDiagnostic(dedupe_key, code, severity, title, message, source, subject, details_json);
+}
+
+fn clearRuntimeDiagByCodeAndSubject(db: *GraphDb, source: []const u8, subject: []const u8, code: u16) !void {
+    const dedupe_key = try std.fmt.allocPrint(std.heap.page_allocator, "{s}:{s}:{d}", .{ source, subject, code });
+    defer std.heap.page_allocator.free(dedupe_key);
+    try db.clearRuntimeDiagnostic(dedupe_key);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+const builtin = @import("builtin");
 
 test "colLetter single" {
     const a = colLetter(0);
@@ -596,4 +950,118 @@ test "SyncState error round-trip" {
     try testing.expectEqualStrings("connection refused", buf[0..n]);
     s.clearError();
     try testing.expect(!s.has_error.load(.seq_cst));
+}
+
+test "repoScanCycle with no repos is a no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{},
+        .state = &state,
+        .alloc = alloc,
+    };
+
+    try repoScanCycle(&ctx, alloc);
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer diags.deinit(alloc);
+    try db.listRuntimeDiagnostics(null, alloc, &diags);
+    try testing.expectEqual(@as(usize, 0), diags.items.len);
+}
+
+test "repoScanCycle emits E1101 for unknown refs and E1005 for hanging git" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.makePath("repo");
+    {
+        const f = try tmp.dir.createFile("repo/main.c", .{});
+        defer f.close();
+        try f.writeAll(
+            \\// REQ-001 implemented here
+            \\// REQ-999 is stale
+            \\int main(void) { return 0; }
+        );
+    }
+    {
+        const f = try tmp.dir.createFile("fake-git.sh", .{});
+        defer f.close();
+        try f.writeAll(
+            \\#!/bin/sh
+            \\cmd="$1"
+            \\if [ "$cmd" = "log" ] || [ "$cmd" = "blame" ]; then
+            \\  sleep 1
+            \\  exit 0
+            \\fi
+            \\exit 1
+        );
+        try f.chmod(0o755);
+    }
+
+    var repo_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const repo_path = try tmp.dir.realpath("repo", &repo_path_buf);
+    var git_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const git_path = try tmp.dir.realpath("fake-git.sh", &git_path_buf);
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{repo_path},
+        .state = &state,
+        .alloc = alloc,
+        .git_exe_override = git_path,
+        .git_timeout_ms_override = 100,
+    };
+
+    try repoScanCycle(&ctx, alloc);
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            alloc.free(d.dedupe_key);
+            alloc.free(d.severity);
+            alloc.free(d.title);
+            alloc.free(d.message);
+            alloc.free(d.source);
+            if (d.subject) |s| alloc.free(s);
+            alloc.free(d.details_json);
+        }
+        diags.deinit(alloc);
+    }
+    try db.listRuntimeDiagnostics(null, alloc, &diags);
+
+    var found_unknown = false;
+    var found_git_timeout = false;
+    var found_blame_timeout = false;
+    for (diags.items) |d| {
+        if (d.code == 1101 and std.mem.eql(u8, d.source, "annotation") and std.mem.indexOf(u8, d.message, "REQ-999") != null) {
+            found_unknown = true;
+        }
+        if (d.code == 1005 and std.mem.eql(u8, d.source, "git")) {
+            found_git_timeout = true;
+        }
+        if (d.code == 1005 and std.mem.eql(u8, d.source, "annotation")) {
+            found_blame_timeout = true;
+        }
+    }
+
+    try testing.expect(found_unknown);
+    try testing.expect(found_git_timeout);
+    try testing.expect(found_blame_timeout);
 }

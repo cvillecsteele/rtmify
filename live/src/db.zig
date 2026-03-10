@@ -187,6 +187,19 @@ pub const Db = struct {
             \\    key   TEXT PRIMARY KEY,
             \\    value TEXT NOT NULL
             \\);
+            \\CREATE TABLE IF NOT EXISTS runtime_diagnostics (
+            \\    dedupe_key   TEXT PRIMARY KEY,
+            \\    code         INTEGER NOT NULL,
+            \\    severity     TEXT NOT NULL,
+            \\    title        TEXT NOT NULL,
+            \\    message      TEXT NOT NULL,
+            \\    source       TEXT NOT NULL,
+            \\    subject      TEXT,
+            \\    details_json TEXT NOT NULL,
+            \\    updated_at   INTEGER NOT NULL
+            \\);
+            \\CREATE INDEX IF NOT EXISTS idx_runtime_diag_source ON runtime_diagnostics(source);
+            \\CREATE INDEX IF NOT EXISTS idx_runtime_diag_subject ON runtime_diagnostics(subject);
         );
     }
 };

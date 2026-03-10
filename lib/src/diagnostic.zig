@@ -76,6 +76,34 @@ pub const E = struct {
     // Layer 7: Cross-reference resolution
     pub const ref_not_found:            Code = 801;
     pub const ref_wrong_type:           Code = 802;
+    // E9xx — Repo configuration (Phase 3)
+    pub const repo_path_not_exist:      Code = 901;
+    pub const repo_not_a_directory:     Code = 902;
+    pub const repo_no_git_dir:          Code = 903;
+    pub const repo_not_readable:        Code = 904;
+    pub const repo_git_not_found:       Code = 905;
+    pub const repo_git_too_old:         Code = 906;
+    // E10xx — Git integration (Phase 4)
+    pub const git_log_failed:           Code = 1001;
+    pub const git_blame_failed:         Code = 1002;
+    pub const git_commit_parse_err:     Code = 1003;
+    pub const git_blame_parse_err:      Code = 1004;
+    pub const git_timeout:              Code = 1005;
+    // E11xx — Annotation scanning (Phase 3)
+    pub const annotation_unknown_req:   Code = 1101;
+    pub const annotation_not_comment:   Code = 1102;
+    pub const annotation_file_large:    Code = 1103;
+    pub const annotation_binary:        Code = 1104;
+    pub const annotation_unknown_ext:   Code = 1105;
+    pub const annotation_multi_line:    Code = 1106;
+    // E12xx — Industry profile (Phase 5)
+    pub const chain_incomplete:         Code = 1201;
+    pub const di_without_do:            Code = 1202;
+    pub const hlr_without_llr:          Code = 1203;
+    pub const asil_not_specified:       Code = 1204;
+    pub const asil_inheritance:         Code = 1205;
+    pub const chain_gap:                Code = 1206;
+    pub const profile_not_configured:   Code = 1207;
 };
 
 // ---------------------------------------------------------------------------
@@ -136,6 +164,30 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 711, .title = "Test group has no associated test cases" },
     .{ .code = 801, .title = "Cross-reference target not found in the graph" },
     .{ .code = 802, .title = "Cross-reference target has an unexpected node type" },
+    .{ .code = 901, .title = "Repository path does not exist" },
+    .{ .code = 902, .title = "Repository path is not a directory" },
+    .{ .code = 903, .title = "Repository path has no .git directory" },
+    .{ .code = 904, .title = "Repository path is not readable" },
+    .{ .code = 905, .title = "git executable not found in PATH" },
+    .{ .code = 906, .title = "git version is too old (requires 2.0+)" },
+    .{ .code = 1001, .title = "git log command failed" },
+    .{ .code = 1002, .title = "git blame command failed" },
+    .{ .code = 1003, .title = "Failed to parse git commit output" },
+    .{ .code = 1004, .title = "Failed to parse git blame output" },
+    .{ .code = 1005, .title = "git command timed out (> 10s)" },
+    .{ .code = 1101, .title = "Annotation references unknown requirement ID" },
+    .{ .code = 1102, .title = "Annotation found outside of a comment block" },
+    .{ .code = 1103, .title = "Source file too large to scan (> 10 MB)" },
+    .{ .code = 1104, .title = "Source file appears to be binary — skipped" },
+    .{ .code = 1105, .title = "Source file has unknown extension — annotation scanning skipped" },
+    .{ .code = 1106, .title = "Multi-line annotation detected — only first line captured" },
+    .{ .code = 1201, .title = "Traceability chain is incomplete for this node" },
+    .{ .code = 1202, .title = "Design Input has no linked Design Output" },
+    .{ .code = 1203, .title = "High-level requirement has no linked low-level requirement" },
+    .{ .code = 1204, .title = "ASIL level not specified for this requirement" },
+    .{ .code = 1205, .title = "ASIL inheritance inconsistency detected" },
+    .{ .code = 1206, .title = "Gap in traceability chain" },
+    .{ .code = 1207, .title = "Industry profile not configured" },
 };
 
 /// Look up the human-readable title for a code. Returns "Unknown" for unlisted codes.
@@ -164,6 +216,9 @@ pub const Source = enum {
     row_parsing,
     semantic,
     cross_ref,
+    repo_scan,
+    git_integration,
+    profile,
 };
 
 // ---------------------------------------------------------------------------
@@ -439,6 +494,14 @@ test "catalog covers all E constants" {
         E.req_obsolete_traced, E.risk_score_mismatch, E.risk_unmitigated,
         E.risk_residual_no_init, E.risk_residual_exceeds, E.test_group_empty,
         E.ref_not_found, E.ref_wrong_type,
+        E.repo_path_not_exist, E.repo_not_a_directory, E.repo_no_git_dir,
+        E.repo_not_readable, E.repo_git_not_found, E.repo_git_too_old,
+        E.git_log_failed, E.git_blame_failed, E.git_commit_parse_err,
+        E.git_blame_parse_err, E.git_timeout,
+        E.annotation_unknown_req, E.annotation_not_comment, E.annotation_file_large,
+        E.annotation_binary, E.annotation_unknown_ext, E.annotation_multi_line,
+        E.chain_incomplete, E.di_without_do, E.hlr_without_llr, E.asil_not_specified,
+        E.asil_inheritance, E.chain_gap, E.profile_not_configured,
     };
     for (e_codes) |code| {
         var found = false;

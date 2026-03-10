@@ -35,7 +35,15 @@ const tools_json =
     \\{"name":"get_impact","description":"Get impact analysis for a node: all nodes upstream and downstream in the graph.","inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The node ID to analyse"}},"required":["id"]}},
     \\{"name":"get_schema","description":"Get the graph schema: node types, edge labels, and their semantic meanings.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"get_status","description":"Get sync state: last sync timestamp, error status, and license validity.","inputSchema":{"type":"object","properties":{},"required":[]}},
-    \\{"name":"clear_suspect","description":"Mark a suspect node as reviewed, clearing the suspect flag.","inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The node ID to clear"}},"required":["id"]}}
+    \\{"name":"clear_suspect","description":"Mark a suspect node as reviewed, clearing the suspect flag.","inputSchema":{"type":"object","properties":{"id":{"type":"string","description":"The node ID to clear"}},"required":["id"]}},
+    \\{"name":"code_traceability","description":"Source and test files with annotation counts.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"unimplemented_requirements","description":"Requirements with no IMPLEMENTED_IN edge (not yet linked to source code).","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"untested_source_files","description":"Source files with no VERIFIED_BY_CODE edge (not yet linked to a test).","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"file_annotations","description":"Code annotations found in a specific source file.","inputSchema":{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute or relative file path"}},"required":["file_path"]}},
+    \\{"name":"blame_for_requirement","description":"Code annotations with blame data linked to a requirement.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string","description":"Requirement node ID (e.g. REQ-001)"}},"required":["req_id"]}},
+    \\{"name":"commit_history","description":"Commits linked to a requirement via COMMITTED_IN edges.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string","description":"Requirement node ID"}},"required":["req_id"]}},
+    \\{"name":"design_history","description":"Full upstream/downstream chain for a requirement: user needs, DI/DO/CI, tests, source files, commits.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string","description":"Requirement node ID"}},"required":["req_id"]}},
+    \\{"name":"chain_gaps","description":"Traceability chain gaps for the active industry profile (medical/aerospace/automotive/generic).","inputSchema":{"type":"object","properties":{},"required":[]}}
     \\]
 ;
 
@@ -207,6 +215,50 @@ fn dispatchToolCall(
             return sendError(req, id_raw, -32602, "Missing argument: id", alloc);
         };
         const data = try routes.handleClearSuspect(db, node_id, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "code_traceability")) {
+        const data = try routes.handleCodeTraceability(db, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "unimplemented_requirements")) {
+        const data = try routes.handleUnimplementedRequirements(db, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "untested_source_files")) {
+        const data = try routes.handleUntestedSourceFiles(db, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "file_annotations")) {
+        const file_path = extractField(args_start, "file_path") orelse {
+            return sendError(req, id_raw, -32602, "Missing argument: file_path", alloc);
+        };
+        const data = try routes.handleFileAnnotations(db, file_path, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "blame_for_requirement")) {
+        const req_id = extractField(args_start, "req_id") orelse {
+            return sendError(req, id_raw, -32602, "Missing argument: req_id", alloc);
+        };
+        const data = try routes.handleBlameForRequirement(db, req_id, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "commit_history")) {
+        const req_id = extractField(args_start, "req_id") orelse {
+            return sendError(req, id_raw, -32602, "Missing argument: req_id", alloc);
+        };
+        const data = try routes.handleCommitHistory(db, req_id, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "design_history")) {
+        const req_id = extractField(args_start, "req_id") orelse {
+            return sendError(req, id_raw, -32602, "Missing argument: req_id", alloc);
+        };
+        const data = try routes.handleDesignHistory(db, req_id, alloc);
+        defer alloc.free(data);
+        try sendToolResult(req, id_raw, data, alloc);
+    } else if (std.mem.eql(u8, name, "chain_gaps")) {
+        const data = try routes.handleChainGaps(db, alloc);
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else {

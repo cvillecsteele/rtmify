@@ -17,6 +17,8 @@ const help_text =
     \\  --port <N>             Listen port (default: 8000)
     \\  --db <path>            SQLite database path (default: graph.db)
     \\  --no-browser           Don't open browser on startup
+    \\  --repo <path>          Repository path to scan (repeatable)
+    \\  --profile <name>       Industry profile: medical|aerospace|automotive|generic
     \\  --activate <key>       Activate license key
     \\  --deactivate           Deactivate license
     \\  --version              Print version and exit
@@ -40,6 +42,8 @@ pub fn main() !void {
     var no_browser = false;
     var activate_key: ?[]const u8 = null;
     var do_deactivate = false;
+    var repo_paths: std.ArrayList([]const u8) = .empty;
+    var profile_name: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -64,6 +68,12 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--port") and i + 1 < args.len) {
             i += 1;
             port = try std.fmt.parseInt(u16, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--repo") and i + 1 < args.len) {
+            i += 1;
+            try repo_paths.append(gpa, args[i]);
+        } else if (std.mem.eql(u8, arg, "--profile") and i + 1 < args.len) {
+            i += 1;
+            profile_name = args[i];
         }
     }
 
@@ -129,20 +139,88 @@ pub fn main() !void {
         }
     }
 
-    // Open browser (unless --no-browser)
+    // Store profile if given
+    const profile_str = profile_name orelse "generic";
+    try g.storeConfig("profile", profile_str);
+
+    // Store CLI --repo paths in DB so they persist and are picked up by dynamic scan loop
+    for (repo_paths.items) |p| {
+        // Check if already stored to avoid duplicates
+        var already: bool = false;
+        var ci: usize = 0;
+        while (ci < 64) : (ci += 1) {
+            const ck = try std.fmt.allocPrint(gpa, "repo_path_{d}", .{ci});
+            defer gpa.free(ck);
+            const cv = try g.getConfig(ck, gpa);
+            if (cv) |v| {
+                defer gpa.free(v);
+                if (std.mem.eql(u8, v, p)) { already = true; break; }
+            } else break;
+        }
+        if (already) continue;
+        // Find next empty slot
+        var si: usize = 0;
+        while (si < 64) : (si += 1) {
+            const sk = try std.fmt.allocPrint(gpa, "repo_path_{d}", .{si});
+            defer gpa.free(sk);
+            const sv = try g.getConfig(sk, gpa);
+            if (sv == null) {
+                try g.storeConfig(sk, p);
+                break;
+            }
+            gpa.free(sv.?);
+        }
+    }
+
+    // Always spawn repo scan thread (picks up repos from DB dynamically each cycle)
+    {
+        const scan_ctx = try gpa.create(sync_live.RepoScanCtx);
+        scan_ctx.* = .{
+            .db = &g,
+            .repo_paths = try repo_paths.toOwnedSlice(gpa),
+            .state = &state,
+            .alloc = gpa,
+        };
+        const t = try std.Thread.spawn(.{}, sync_live.repoScanThread, .{scan_ctx});
+        t.detach();
+        std.log.info("repo scan thread started", .{});
+    }
+
+    // Find first available port (8000-8010) via quick probe
+    var actual_port = port;
+    while (actual_port <= port + 10) : (actual_port += 1) {
+        const probe_addr = try std.net.Address.parseIp("0.0.0.0", actual_port);
+        var probe = probe_addr.listen(.{ .reuse_address = true }) catch |e| {
+            if (e == error.AddressInUse) {
+                std.log.warn("port {d} in use, trying {d}...", .{ actual_port, actual_port + 1 });
+                continue;
+            }
+            return e;
+        };
+        probe.deinit();
+        break;
+    }
+
+    // Store actual port so UI/reload knows where to connect
+    const port_str = try std.fmt.allocPrint(gpa, "{d}", .{actual_port});
+    defer gpa.free(port_str);
+    try g.storeConfig("actual_port", port_str);
+
+    // Open browser with the correct port
     if (!no_browser) {
-        openBrowser(port, gpa) catch |e| {
+        openBrowser(actual_port, gpa) catch |e| {
             std.log.warn("browser open failed: {s}", .{@errorName(e)});
         };
     }
 
-    // Start HTTP server (blocks forever)
-    try server.listen(port, .{
+    // Start HTTP server (blocks until shutdown)
+    const ctx: server.ServerCtx = .{
         .db = &g,
         .state = &state,
         .alloc = gpa,
         .startSyncFn = startSyncCallback,
-    });
+    };
+    server.listen(actual_port, ctx) catch |e| return e;
 }
 
 /// Callback passed to ServerCtx so that POST /api/config can trigger sync start.
@@ -233,4 +311,29 @@ fn openBrowser(port: u16, alloc: std.mem.Allocator) !void {
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
     _ = try child.spawnAndWait();
+}
+
+const testing = std.testing;
+
+test "unescapeNewlines converts escaped newlines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const out = try unescapeNewlines("line1\\nline2\\n", alloc);
+    try testing.expectEqualStrings("line1\nline2\n", out);
+}
+
+test "maybeStartSync returns false and resets state for invalid credential" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: sync_live.SyncState = .{};
+
+    const started = try maybeStartSync(&db, &state, "{\"type\":\"service_account\"}", "sheet-123", alloc);
+    try testing.expect(!started);
+    try testing.expect(!state.sync_started.load(.seq_cst));
 }

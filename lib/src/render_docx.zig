@@ -19,7 +19,7 @@ const RiskRow = graph.RiskRow;
 // ---------------------------------------------------------------------------
 
 const COL_UN = [4]u32{ 840, 4800, 2160, 1560 }; // User Needs
-const COL_RTM = [8]u32{ 840, 840, 2880, 720, 720, 840, 840, 1680 }; // RTM
+const COL_RTM = [11]u32{ 720, 720, 1800, 540, 540, 720, 720, 900, 1080, 1080, 540 }; // RTM
 const COL_TST = [5]u32{ 840, 840, 1800, 1800, 4080 }; // Tests
 const COL_RISK = [10]u32{ 720, 3600, 480, 480, 480, 1440, 720, 480, 480, 480 }; // Risks
 
@@ -449,7 +449,7 @@ fn buildDocument(
     // === Requirements Traceability ===
     try writePara(w, "Heading1", false, "Requirements Traceability");
     try tableStart(w, &COL_RTM);
-    try writeHeaderRow(w, &[_][]const u8{ "Req ID", "User Need", "Statement", "Test Group", "Test ID", "Type", "Method", "Status" }, &COL_RTM);
+    try writeHeaderRow(w, &[_][]const u8{ "Req ID", "User Need", "Statement", "Test Group", "Test ID", "Type", "Method", "Status", "Source File", "Test File", "Last Commit" }, &COL_RTM);
     for (rtm_rows.items) |row| {
         const has_gap = nodeHasId(untested.items, row.req_id) or nodeHasId(orphan.items, row.req_id);
         const fill: ?[]const u8 = if (has_gap) GAP_FILL else null;
@@ -466,6 +466,9 @@ fn buildDocument(
             row.test_type orelse DASH,
             row.test_method orelse DASH,
             row.status,
+            row.source_file orelse "",
+            row.test_file orelse "",
+            row.last_commit orelse "",
         };
         try writeDataRow(w, &cells, &COL_RTM, fill);
     }

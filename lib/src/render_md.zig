@@ -58,8 +58,8 @@ pub fn renderMd(
     // Requirements Traceability
     // -----------------------------------------------------------------------
     try writer.writeAll("\n## Requirements Traceability\n\n");
-    try writer.writeAll("| Req ID | User Need | Statement | Test Group | Test ID | Type | Method | Status |\n");
-    try writer.writeAll("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
+    try writer.writeAll("| Req ID | User Need | Statement | Test Group | Test ID | Type | Method | Status | Source File | Test File | Last Commit |\n");
+    try writer.writeAll("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
 
     var rtm_rows: std.ArrayList(RtmRow) = .empty;
     try g.rtm(alloc, &rtm_rows);
@@ -81,9 +81,12 @@ pub fn renderMd(
         const tid = row.test_id orelse DASH;
         const typ = row.test_type orelse DASH;
         const meth = row.test_method orelse DASH;
-        try writer.print("| {s}{s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} |\n", .{
+        try writer.print("| {s}{s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} |\n", .{
             req_prefix, row.req_id, un, row.statement,
             tg, tid, typ, meth, row.status,
+            row.source_file orelse "",
+            row.test_file orelse "",
+            row.last_commit orelse "",
         });
     }
 
@@ -224,6 +227,63 @@ pub fn renderMd(
         for (unresolved.items) |r| {
             try writer.print("- {s} \u{2192} {s}\n", .{ r.risk_id, r.req_id });
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DHR report
+// ---------------------------------------------------------------------------
+
+/// Write a Design History Record (DHR) markdown report for `g` to `writer`.
+/// Sections are organized per UserNeed, showing the full UN → REQ chain.
+pub fn renderDhr(
+    g: *const Graph,
+    writer: anytype,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try writer.writeAll("# Design History Record\n\n");
+
+    var uns: std.ArrayList(*const graph.Node) = .empty;
+    try g.nodesByType(.user_need, alloc, &uns);
+    std.mem.sort(*const graph.Node, uns.items, {}, nodeIdLt);
+
+    for (uns.items) |un| {
+        try writer.print("## {s}\n\n", .{un.id});
+        const statement = un.get("statement") orelse "";
+        if (statement.len > 0) {
+            try writer.print("**Statement**: {s}\n\n", .{statement});
+        }
+
+        // Find requirements derived from this user need
+        var reqs: std.ArrayList(*const graph.Node) = .empty;
+        for (g.edges.items) |e| {
+            if (e.label == .derives_from and std.mem.eql(u8, e.to_id, un.id)) {
+                if (g.getNode(e.from_id)) |req| {
+                    try reqs.append(alloc, req);
+                }
+            }
+        }
+        std.mem.sort(*const graph.Node, reqs.items, {}, nodeIdLt);
+
+        if (reqs.items.len == 0) {
+            try writer.writeAll("_No requirements linked._\n\n");
+            continue;
+        }
+
+        try writer.writeAll("### Requirements\n\n");
+        for (reqs.items) |req| {
+            const req_stmt = req.get("statement") orelse "";
+            const req_status = req.get("status") orelse "";
+            try writer.print("- **{s}**: {s}", .{ req.id, req_stmt });
+            if (req_status.len > 0) {
+                try writer.print(" _(status: {s})_", .{req_status});
+            }
+            try writer.writeByte('\n');
+        }
+        try writer.writeByte('\n');
     }
 }
 

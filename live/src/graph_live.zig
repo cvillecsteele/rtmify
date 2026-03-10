@@ -25,6 +25,18 @@ pub const Edge = struct {
     label: []const u8,
 };
 
+pub const RuntimeDiagnostic = struct {
+    dedupe_key: []const u8,
+    code: u16,
+    severity: []const u8,
+    title: []const u8,
+    message: []const u8,
+    source: []const u8,
+    subject: ?[]const u8,
+    details_json: []const u8,
+    updated_at: i64,
+};
+
 pub const RtmRow = struct {
     req_id: []const u8,
     statement: ?[]const u8,
@@ -76,7 +88,7 @@ pub const ImpactNode = struct {
 // ---------------------------------------------------------------------------
 
 /// Forward: from_id changes → to_id becomes suspect
-const SUSPECT_FORWARD = [_][]const u8{ "TESTED_BY", "HAS_TEST", "MITIGATED_BY" };
+const SUSPECT_FORWARD = [_][]const u8{ "TESTED_BY", "HAS_TEST", "MITIGATED_BY", "IMPLEMENTED_IN", "VERIFIED_BY_CODE" };
 /// Backward: to_id changes → from_id becomes suspect
 const SUSPECT_BACKWARD = [_][]const u8{"MITIGATED_BY"};
 
@@ -236,6 +248,22 @@ pub const GraphDb = struct {
         defer st.finalize();
         while (try st.step()) {
             try result.append(alloc, try alloc.dupe(u8, st.columnText(0)));
+        }
+    }
+
+    /// Returns SourceFile and TestFile nodes whose properties contain
+    /// `"repo": "<repo_path>"`.
+    pub fn nodesByRepo(g: *GraphDb, repo_path: []const u8, alloc: Allocator, result: *std.ArrayList(Node)) !void {
+        var st = try g.db.prepare(
+            \\SELECT id, type, properties, suspect, suspect_reason FROM nodes
+            \\WHERE type IN ('SourceFile','TestFile')
+            \\AND json_extract(properties,'$.repo') = ?
+            \\ORDER BY id
+        );
+        defer st.finalize();
+        try st.bindText(1, repo_path);
+        while (try st.step()) {
+            try result.append(alloc, try stmtToNode(&st, alloc));
         }
     }
 
@@ -690,6 +718,124 @@ pub const GraphDb = struct {
         if (!try st.step()) return null;
         return try alloc.dupe(u8, st.columnText(0));
     }
+
+    pub fn upsertRuntimeDiagnostic(
+        g: *GraphDb,
+        dedupe_key: []const u8,
+        code: u16,
+        severity: []const u8,
+        title: []const u8,
+        message: []const u8,
+        source: []const u8,
+        subject: ?[]const u8,
+        details_json: []const u8,
+    ) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare(
+            \\INSERT OR REPLACE INTO runtime_diagnostics
+            \\(dedupe_key, code, severity, title, message, source, subject, details_json, updated_at)
+            \\VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        );
+        defer st.finalize();
+        try st.bindText(1, dedupe_key);
+        try st.bindInt(2, code);
+        try st.bindText(3, severity);
+        try st.bindText(4, title);
+        try st.bindText(5, message);
+        try st.bindText(6, source);
+        if (subject) |s| try st.bindText(7, s) else try st.bindNull(7);
+        try st.bindText(8, details_json);
+        try st.bindInt(9, std.time.timestamp());
+        _ = try st.step();
+    }
+
+    pub fn clearRuntimeDiagnosticsBySource(g: *GraphDb, source: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare("DELETE FROM runtime_diagnostics WHERE source=?");
+        defer st.finalize();
+        try st.bindText(1, source);
+        _ = try st.step();
+    }
+
+    pub fn clearRuntimeDiagnosticsBySubjectPrefix(g: *GraphDb, source: []const u8, prefix: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare(
+            "DELETE FROM runtime_diagnostics WHERE source=? AND subject IS NOT NULL AND subject LIKE ? || '%'"
+        );
+        defer st.finalize();
+        try st.bindText(1, source);
+        try st.bindText(2, prefix);
+        _ = try st.step();
+    }
+
+    pub fn clearRuntimeDiagnostic(g: *GraphDb, dedupe_key: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare("DELETE FROM runtime_diagnostics WHERE dedupe_key=?");
+        defer st.finalize();
+        try st.bindText(1, dedupe_key);
+        _ = try st.step();
+    }
+
+    pub fn listRuntimeDiagnostics(
+        g: *GraphDb,
+        source_filter: ?[]const u8,
+        alloc: Allocator,
+        result: *std.ArrayList(RuntimeDiagnostic),
+    ) !void {
+        if (source_filter) |source| {
+            var st = try g.db.prepare(
+                \\SELECT dedupe_key, code, severity, title, message, source, subject, details_json, updated_at
+                \\FROM runtime_diagnostics WHERE source=? ORDER BY severity DESC, code, dedupe_key
+            );
+            defer st.finalize();
+            try st.bindText(1, source);
+            while (try st.step()) {
+                try result.append(alloc, try stmtToRuntimeDiagnostic(&st, alloc));
+            }
+        } else {
+            var st = try g.db.prepare(
+                \\SELECT dedupe_key, code, severity, title, message, source, subject, details_json, updated_at
+                \\FROM runtime_diagnostics ORDER BY severity DESC, code, dedupe_key
+            );
+            defer st.finalize();
+            while (try st.step()) {
+                try result.append(alloc, try stmtToRuntimeDiagnostic(&st, alloc));
+            }
+        }
+    }
+
+    /// Delete a node and all its edges. Acquires write_mu.
+    pub fn deleteNode(g: *GraphDb, id: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        {
+            var st = try g.db.prepare("DELETE FROM edges WHERE from_id=? OR to_id=?");
+            defer st.finalize();
+            try st.bindText(1, id);
+            try st.bindText(2, id);
+            _ = try st.step();
+        }
+        {
+            var st = try g.db.prepare("DELETE FROM nodes WHERE id=?");
+            defer st.finalize();
+            try st.bindText(1, id);
+            _ = try st.step();
+        }
+    }
+
+    /// Delete a config key. Acquires write_mu.
+    pub fn deleteConfig(g: *GraphDb, key: []const u8) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare("DELETE FROM config WHERE key=?");
+        defer st.finalize();
+        try st.bindText(1, key);
+        _ = try st.step();
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -712,6 +858,20 @@ fn stmtToEdge(st: *Stmt, alloc: Allocator) !Edge {
         .from_id = try alloc.dupe(u8, st.columnText(1)),
         .to_id = try alloc.dupe(u8, st.columnText(2)),
         .label = try alloc.dupe(u8, st.columnText(3)),
+    };
+}
+
+fn stmtToRuntimeDiagnostic(st: *Stmt, alloc: Allocator) !RuntimeDiagnostic {
+    return .{
+        .dedupe_key = try alloc.dupe(u8, st.columnText(0)),
+        .code = @intCast(st.columnInt(1)),
+        .severity = try alloc.dupe(u8, st.columnText(2)),
+        .title = try alloc.dupe(u8, st.columnText(3)),
+        .message = try alloc.dupe(u8, st.columnText(4)),
+        .source = try alloc.dupe(u8, st.columnText(5)),
+        .subject = if (st.columnIsNull(6)) null else try alloc.dupe(u8, st.columnText(6)),
+        .details_json = try alloc.dupe(u8, st.columnText(7)),
+        .updated_at = st.columnInt(8),
     };
 }
 
@@ -1005,6 +1165,39 @@ test "getConfig missing returns null" {
     defer g.deinit();
     const val = try g.getConfig("nonexistent", alloc);
     try testing.expect(val == null);
+}
+
+test "runtime diagnostics round-trip and clear" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+
+    try g.upsertRuntimeDiagnostic(
+        "git:/tmp/repo:1001",
+        1001,
+        "warn",
+        "git log command failed",
+        "git log failed for /tmp/repo",
+        "git",
+        "/tmp/repo",
+        "{}",
+    );
+
+    var diags: std.ArrayList(RuntimeDiagnostic) = .empty;
+    defer diags.deinit(alloc);
+    try g.listRuntimeDiagnostics(null, alloc, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqual(@as(u16, 1001), diags.items[0].code);
+    try testing.expectEqualStrings("git", diags.items[0].source);
+
+    try g.clearRuntimeDiagnosticsBySubjectPrefix("git", "/tmp/repo");
+
+    diags.clearRetainingCapacity();
+    try g.listRuntimeDiagnostics(null, alloc, &diags);
+    try testing.expectEqual(@as(usize, 0), diags.items.len);
 }
 
 test "allNodes and allNodeTypes" {

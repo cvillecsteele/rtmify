@@ -55,7 +55,7 @@ const HDR_B: f32 = 0.851;
 // ---------------------------------------------------------------------------
 
 const COL_UN = [4]f32{ 42, 240, 108, 78 };
-const COL_RTM = [8]f32{ 42, 42, 144, 36, 36, 42, 42, 84 };
+const COL_RTM = [11]f32{ 36, 36, 92, 28, 28, 36, 36, 44, 54, 54, 24 };
 const COL_TST = [5]f32{ 42, 42, 90, 90, 204 };
 const COL_RISK = [10]f32{ 36, 180, 24, 24, 24, 72, 36, 24, 24, 24 };
 
@@ -450,13 +450,13 @@ pub fn renderPdf(
     // Requirements Traceability
     try pb.drawSection("Requirements Traceability");
     try pb.drawTableHeader(
-        &.{ "Req ID", "User Need", "Statement", "Test Group", "Test ID", "Type", "Method", "Status" },
+        &.{ "Req ID", "User Need", "Statement", "Test Group", "Test ID", "Type", "Method", "Status", "Src File", "Test File", "Commit" },
         &COL_RTM,
     );
     for (rtm_rows.items) |row| {
         const has_gap = nodeHasId(untested.items, row.req_id) or
             nodeHasId(orphan.items, row.req_id);
-        const cells = [8][]const u8{
+        const cells = [11][]const u8{
             row.req_id,
             row.user_need_id orelse "-",
             row.statement,
@@ -465,6 +465,9 @@ pub fn renderPdf(
             row.test_type orelse "-",
             row.test_method orelse "-",
             row.status,
+            row.source_file orelse "",
+            row.test_file orelse "",
+            row.last_commit orelse "",
         };
         try pb.drawDataRow(&cells, &COL_RTM, has_gap);
     }
@@ -549,6 +552,63 @@ pub fn renderPdf(
     // Flush the last page
     if (pb.cur.items.len > 0) try pb.finalizePage();
 
+    try writePdf(alloc, pb.pages.items, writer);
+}
+
+// ---------------------------------------------------------------------------
+// DHR report (PDF)
+// ---------------------------------------------------------------------------
+
+/// Write a Design History Record (DHR) PDF report for `g` to `writer`.
+pub fn renderDhrPdf(
+    g: *const Graph,
+    writer: anytype,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var pb = PageBuilder.init(alloc);
+    defer pb.deinit();
+
+    try pb.cur.print(alloc, "BT\n/F2 {d:.1} Tf\n{d:.1} {d:.1} Td\n(Design History Record) Tj\nET\n", .{
+        FONT_TITLE, MARGIN, pb.y - SECTION_HDR_H,
+    });
+    pb.y -= SECTION_HDR_H + SECTION_GAP;
+
+    var uns: std.ArrayList(*const graph.Node) = .empty;
+    try g.nodesByType(.user_need, alloc, &uns);
+    std.mem.sort(*const graph.Node, uns.items, {}, nodeIdLt);
+
+    for (uns.items) |un| {
+        const section_title = try std.fmt.allocPrint(alloc, "{s}", .{un.id});
+        try pb.drawSection(section_title);
+
+        const statement = un.get("statement") orelse "";
+        if (statement.len > 0) {
+            const line = try std.fmt.allocPrint(alloc, "Statement: {s}", .{statement});
+            try pb.drawText(line, FONT_BODY, false);
+        }
+
+        // Find requirements derived from this user need
+        var reqs: std.ArrayList(*const graph.Node) = .empty;
+        for (g.edges.items) |e| {
+            if (e.label == .derives_from and std.mem.eql(u8, e.to_id, un.id)) {
+                if (g.getNode(e.from_id)) |req| {
+                    try reqs.append(alloc, req);
+                }
+            }
+        }
+        std.mem.sort(*const graph.Node, reqs.items, {}, nodeIdLt);
+
+        for (reqs.items) |req| {
+            const req_stmt = req.get("statement") orelse "";
+            const line = try std.fmt.allocPrint(alloc, "  - {s}: {s}", .{ req.id, req_stmt });
+            try pb.drawText(line, FONT_BODY, false);
+        }
+    }
+
+    if (pb.cur.items.len > 0) try pb.finalizePage();
     try writePdf(alloc, pb.pages.items, writer);
 }
 

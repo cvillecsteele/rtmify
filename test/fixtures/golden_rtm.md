@@ -11,11 +11,11 @@ Generated: 2024-01-01T00:00:00Z
 
 ## Requirements Traceability
 
-| Req ID | User Need | Statement | Test Group | Test ID | Type | Method | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| **⚠** REQ-001 | UN-001 | The system SHALL work | — | — | — | — | Approved |
-| **⚠** REQ-002 | — | The system SHALL NOT be broken | TG-001 | T-001 | Verification | Inspection | Draft |
-| **⚠** REQ-002 | — | The system SHALL NOT be broken | TG-001 | T-002 | Validation | Demonstration | Draft |
+| Req ID | User Need | Statement | Test Group | Test ID | Type | Method | Status | Source File | Test File | Last Commit |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **⚠** REQ-001 | UN-001 | The system SHALL work | — | — | — | — | Approved |  |  |  |
+| **⚠** REQ-002 | — | The system SHALL NOT be broken | TG-001 | T-001 | Verification | Inspection | Draft |  |  |  |
+| **⚠** REQ-002 | — | The system SHALL NOT be broken | TG-001 | T-002 | Validation | Demonstration | Draft |  |  |  |
 
 ## Tests
 

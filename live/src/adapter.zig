@@ -143,3 +143,73 @@ fn parsePropsJson(json: []const u8, alloc: Allocator) ![]graph_mod.Property {
 
     return props.toOwnedSlice(alloc);
 }
+
+const testing = std.testing;
+
+fn freeProps(props: []graph_mod.Property, alloc: Allocator) void {
+    for (props) |p| {
+        alloc.free(p.key);
+        alloc.free(p.value);
+    }
+    alloc.free(props);
+}
+
+test "parsePropsJson handles strings numbers bools and null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const props = try parsePropsJson("{\"name\":\"gps\",\"count\":3,\"enabled\":true,\"skip\":null}", alloc);
+    defer freeProps(props, alloc);
+
+    try testing.expectEqual(@as(usize, 4), props.len);
+    try testing.expectEqualStrings("name", props[0].key);
+    try testing.expectEqualStrings("gps", props[0].value);
+    try testing.expectEqualStrings("count", props[1].key);
+    try testing.expectEqualStrings("3", props[1].value);
+    try testing.expectEqualStrings("enabled", props[2].key);
+    try testing.expectEqualStrings("true", props[2].value);
+    try testing.expectEqualStrings("skip", props[3].key);
+    try testing.expectEqualStrings("", props[3].value);
+}
+
+test "buildGraphFromSqlite ports extended live nodes and edges" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Detect GPS loss\"}", null);
+    try db.addNode("DI-001", "DesignInput", "{\"description\":\"Timing spec\"}", null);
+    try db.addNode("DO-001", "DesignOutput", "{\"description\":\"Firmware\"}", null);
+    try db.addNode("CI-001", "ConfigurationItem", "{\"version\":\"1.0\"}", null);
+    try db.addNode("src/gps.c", "SourceFile", "{\"path\":\"src/gps.c\"}", null);
+
+    try db.addEdge("REQ-001", "DI-001", "ALLOCATED_TO");
+    try db.addEdge("DI-001", "DO-001", "SATISFIED_BY");
+    try db.addEdge("DO-001", "CI-001", "CONTROLLED_BY");
+    try db.addEdge("DO-001", "src/gps.c", "IMPLEMENTED_IN");
+
+    var g = try buildGraphFromSqlite(&db, alloc);
+    defer g.deinit();
+
+    try testing.expect(g.getNode("REQ-001") != null);
+    try testing.expect(g.getNode("DI-001") != null);
+    try testing.expect(g.getNode("DO-001") != null);
+    try testing.expect(g.getNode("CI-001") != null);
+
+    var edges: std.ArrayList(graph_mod.Edge) = .empty;
+    defer edges.deinit(alloc);
+    try g.edgesFrom("DO-001", alloc, &edges);
+
+    var found_controlled_by = false;
+    var found_implemented_in = false;
+    for (edges.items) |e| {
+        if (e.label == .controlled_by and std.mem.eql(u8, e.to_id, "CI-001")) found_controlled_by = true;
+        if (e.label == .implemented_in and std.mem.eql(u8, e.to_id, "src/gps.c")) found_implemented_in = true;
+    }
+    try testing.expect(found_controlled_by);
+    try testing.expect(found_implemented_in);
+}

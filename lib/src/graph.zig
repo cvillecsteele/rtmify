@@ -11,6 +11,13 @@ pub const NodeType = enum {
     test_group,
     test_case,
     risk,
+    design_input,
+    design_output,
+    config_item,
+    source_file,
+    test_file,
+    commit_node,
+    code_annotation,
 
     pub fn fromString(s: []const u8) ?NodeType {
         if (std.mem.eql(u8, s, "UserNeed")) return .user_need;
@@ -18,6 +25,13 @@ pub const NodeType = enum {
         if (std.mem.eql(u8, s, "TestGroup")) return .test_group;
         if (std.mem.eql(u8, s, "Test")) return .test_case;
         if (std.mem.eql(u8, s, "Risk")) return .risk;
+        if (std.mem.eql(u8, s, "DesignInput")) return .design_input;
+        if (std.mem.eql(u8, s, "DesignOutput")) return .design_output;
+        if (std.mem.eql(u8, s, "ConfigurationItem")) return .config_item;
+        if (std.mem.eql(u8, s, "SourceFile")) return .source_file;
+        if (std.mem.eql(u8, s, "TestFile")) return .test_file;
+        if (std.mem.eql(u8, s, "Commit")) return .commit_node;
+        if (std.mem.eql(u8, s, "CodeAnnotation")) return .code_annotation;
         return null;
     }
 
@@ -28,6 +42,13 @@ pub const NodeType = enum {
             .test_group => "TestGroup",
             .test_case => "Test",
             .risk => "Risk",
+            .design_input => "DesignInput",
+            .design_output => "DesignOutput",
+            .config_item => "ConfigurationItem",
+            .source_file => "SourceFile",
+            .test_file => "TestFile",
+            .commit_node => "Commit",
+            .code_annotation => "CodeAnnotation",
         };
     }
 };
@@ -37,12 +58,32 @@ pub const EdgeLabel = enum {
     tested_by,
     has_test,
     mitigated_by,
+    allocated_to,
+    satisfied_by,
+    refined_by,
+    controlled_by,
+    implemented_in,
+    verified_by_code,
+    committed_in,
+    annotated_at,
+    contains,
+    contains_annotation, // kept for backward-compat with old DB rows
 
     pub fn fromString(s: []const u8) ?EdgeLabel {
         if (std.mem.eql(u8, s, "DERIVES_FROM")) return .derives_from;
         if (std.mem.eql(u8, s, "TESTED_BY")) return .tested_by;
         if (std.mem.eql(u8, s, "HAS_TEST")) return .has_test;
         if (std.mem.eql(u8, s, "MITIGATED_BY")) return .mitigated_by;
+        if (std.mem.eql(u8, s, "ALLOCATED_TO")) return .allocated_to;
+        if (std.mem.eql(u8, s, "SATISFIED_BY")) return .satisfied_by;
+        if (std.mem.eql(u8, s, "REFINED_BY")) return .refined_by;
+        if (std.mem.eql(u8, s, "CONTROLLED_BY")) return .controlled_by;
+        if (std.mem.eql(u8, s, "IMPLEMENTED_IN")) return .implemented_in;
+        if (std.mem.eql(u8, s, "VERIFIED_BY_CODE")) return .verified_by_code;
+        if (std.mem.eql(u8, s, "COMMITTED_IN")) return .committed_in;
+        if (std.mem.eql(u8, s, "ANNOTATED_AT")) return .annotated_at;
+        if (std.mem.eql(u8, s, "CONTAINS")) return .contains;
+        if (std.mem.eql(u8, s, "CONTAINS_ANNOTATION")) return .contains_annotation;
         return null;
     }
 
@@ -52,6 +93,16 @@ pub const EdgeLabel = enum {
             .tested_by => "TESTED_BY",
             .has_test => "HAS_TEST",
             .mitigated_by => "MITIGATED_BY",
+            .allocated_to => "ALLOCATED_TO",
+            .satisfied_by => "SATISFIED_BY",
+            .refined_by => "REFINED_BY",
+            .controlled_by => "CONTROLLED_BY",
+            .implemented_in => "IMPLEMENTED_IN",
+            .verified_by_code => "VERIFIED_BY_CODE",
+            .committed_in => "COMMITTED_IN",
+            .annotated_at => "ANNOTATED_AT",
+            .contains => "CONTAINS",
+            .contains_annotation => "CONTAINS_ANNOTATION",
         };
     }
 };
@@ -88,6 +139,12 @@ pub const RtmRow = struct {
     test_id: ?[]const u8,
     test_type: ?[]const u8,
     test_method: ?[]const u8,
+    /// First SourceFile linked via IMPLEMENTED_IN edge (if any).
+    source_file: ?[]const u8 = null,
+    /// First TestFile linked via VERIFIED_BY_CODE edge (if any).
+    test_file: ?[]const u8 = null,
+    /// blame_author + short_hash from first linked CodeAnnotation (if any).
+    last_commit: ?[]const u8 = null,
 };
 
 /// One row of the Risk Register.
@@ -299,6 +356,33 @@ pub const Graph = struct {
                 }
             }
 
+            // Scan for code traceability edges
+            var source_file_id: ?[]const u8 = null;
+            var test_file_id: ?[]const u8 = null;
+            var last_commit: ?[]const u8 = null;
+            for (self.edges.items) |e| {
+                if (std.mem.eql(u8, e.from_id, req.id)) {
+                    if (e.label == .implemented_in and source_file_id == null) {
+                        source_file_id = e.to_id;
+                    } else if (e.label == .verified_by_code and test_file_id == null) {
+                        test_file_id = e.to_id;
+                    }
+                } else if (e.label == .contains_annotation and std.mem.eql(u8, e.to_id, req.id)) {
+                    if (last_commit == null) {
+                        if (self.nodes.get(e.from_id)) |ann| {
+                            const hash = ann.get("short_hash") orelse "";
+                            if (hash.len > 0) {
+                                const author = ann.get("blame_author") orelse "";
+                                last_commit = if (author.len > 0)
+                                    std.fmt.allocPrint(alloc, "{s} {s}", .{ author, hash }) catch null
+                                else
+                                    hash;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (test_group_id == null) {
                 try result.append(alloc, .{
                     .req_id = req.id,
@@ -309,6 +393,9 @@ pub const Graph = struct {
                     .test_id = null,
                     .test_type = null,
                     .test_method = null,
+                    .source_file = source_file_id,
+                    .test_file = test_file_id,
+                    .last_commit = last_commit,
                 });
                 continue;
             }
@@ -327,6 +414,9 @@ pub const Graph = struct {
                         .test_id = e.to_id,
                         .test_type = if (t) |n| n.get("test_type") else null,
                         .test_method = if (t) |n| n.get("test_method") else null,
+                        .source_file = source_file_id,
+                        .test_file = test_file_id,
+                        .last_commit = last_commit,
                     });
                 }
             }
@@ -340,6 +430,9 @@ pub const Graph = struct {
                     .test_id = null,
                     .test_type = null,
                     .test_method = null,
+                    .source_file = source_file_id,
+                    .test_file = test_file_id,
+                    .last_commit = last_commit,
                 });
             }
         }
@@ -653,4 +746,39 @@ test "risks empty graph" {
     defer rows.deinit(testing.allocator);
     try g.risks(testing.allocator, &rows);
     try testing.expectEqual(0, rows.items.len);
+}
+
+test "NodeType DI/DO/CI fromString and toString roundtrip" {
+    try testing.expectEqual(NodeType.design_input, NodeType.fromString("DesignInput").?);
+    try testing.expectEqual(NodeType.design_output, NodeType.fromString("DesignOutput").?);
+    try testing.expectEqual(NodeType.config_item, NodeType.fromString("ConfigurationItem").?);
+    try testing.expectEqualStrings("DesignInput", NodeType.design_input.toString());
+    try testing.expectEqualStrings("DesignOutput", NodeType.design_output.toString());
+    try testing.expectEqualStrings("ConfigurationItem", NodeType.config_item.toString());
+    try testing.expect(NodeType.fromString("Unknown") == null);
+}
+
+test "EdgeLabel new variants fromString and toString roundtrip" {
+    try testing.expectEqual(EdgeLabel.allocated_to, EdgeLabel.fromString("ALLOCATED_TO").?);
+    try testing.expectEqual(EdgeLabel.satisfied_by, EdgeLabel.fromString("SATISFIED_BY").?);
+    try testing.expectEqual(EdgeLabel.refined_by, EdgeLabel.fromString("REFINED_BY").?);
+    try testing.expectEqual(EdgeLabel.controlled_by, EdgeLabel.fromString("CONTROLLED_BY").?);
+    try testing.expectEqualStrings("ALLOCATED_TO", EdgeLabel.allocated_to.toString());
+    try testing.expectEqualStrings("SATISFIED_BY", EdgeLabel.satisfied_by.toString());
+    try testing.expectEqualStrings("REFINED_BY", EdgeLabel.refined_by.toString());
+    try testing.expectEqualStrings("CONTROLLED_BY", EdgeLabel.controlled_by.toString());
+}
+
+test "addNode and nodesByType for design_input" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    try g.addNode("DI-001", .design_input, &.{.{ .key = "description", .value = "GPS timing spec" }});
+    try g.addNode("DO-001", .design_output, &.{.{ .key = "description", .value = "GPS module" }});
+    try g.addNode("CI-001", .config_item, &.{.{ .key = "version", .value = "1.0" }});
+
+    var dis: std.ArrayList(*const Node) = .empty;
+    defer dis.deinit(testing.allocator);
+    try g.nodesByType(.design_input, testing.allocator, &dis);
+    try testing.expectEqual(1, dis.items.len);
+    try testing.expectEqualStrings("DI-001", dis.items[0].id);
 }

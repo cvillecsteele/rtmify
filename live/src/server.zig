@@ -66,7 +66,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
     const target = req.head.target;
 
     // Strip query string for routing
-    const path = if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+    const path = stripQuery(target);
 
     // Route
     if (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html")) {
@@ -121,6 +121,18 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.eql(u8, path, "/api/status")) {
             const body = try routes.handleStatus(ctx.db, ctx.state, alloc);
             try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
+            const qprofile = queryParam(target, "profile");
+            const qsheet = queryParam(target, "sheet_url");
+            const body = try routes.handleProvisionPreview(ctx.db, qprofile, qsheet, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/diagnostics")) {
+            const qsource = queryParam(target, "source");
+            const body = try routes.handleDiagnostics(ctx.db, qsource, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/report/coverage.md")) {
+            const body = try routes.handleCoverageReport(ctx.db, alloc);
+            try sendText(req, body, "text/plain; charset=utf-8");
         } else if (std.mem.eql(u8, path, "/report/rtm")) {
             const body = try routes.handleReportRtmPdf(ctx.db, alloc);
             try sendPdf(req, body);
@@ -130,6 +142,41 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.eql(u8, path, "/report/rtm.docx")) {
             const body = try routes.handleReportRtmDocx(ctx.db, alloc);
             try sendDocx(req, body);
+        } else if (std.mem.eql(u8, path, "/api/profile")) {
+            const body = try routes.handleGetProfile(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/repos")) {
+            const body = try routes.handleGetRepos(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/chain-gaps")) {
+            const body = try routes.handleChainGaps(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/code-traceability")) {
+            const body = try routes.handleCodeTraceability(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/recent-commits")) {
+            const body = try routes.handleRecentCommits(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/unimplemented-requirements")) {
+            const body = try routes.handleUnimplementedRequirements(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/untested-source-files")) {
+            const body = try routes.handleUntestedSourceFiles(ctx.db, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/file-annotations")) {
+            const file_path = queryParam(target, "file_path") orelse "";
+            const body = try routes.handleFileAnnotations(ctx.db, file_path, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.startsWith(u8, path, "/query/commit-history/")) {
+            const req_id = path["/query/commit-history/".len..];
+            const body = try routes.handleCommitHistory(ctx.db, req_id, alloc);
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/report/dhr/md")) {
+            const body = try routes.handleReportDhrMd(ctx.db, alloc);
+            try sendText(req, body, "text/markdown");
+        } else if (std.mem.eql(u8, path, "/report/dhr/pdf")) {
+            const body = try routes.handleReportDhrPdf(ctx.db, alloc);
+            try sendPdf(req, body);
         } else if (std.mem.eql(u8, path, "/mcp")) {
             // SSE endpoint — delegated to mcp.zig (streamed, not a simple response)
             try @import("mcp.zig").handleSse(req, ctx.db, alloc);
@@ -140,6 +187,14 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         if (std.mem.eql(u8, path, "/mcp")) {
             const body_bytes = try readBody(req, alloc);
             try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.state, alloc);
+        } else if (std.mem.eql(u8, path, "/api/profile")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handlePostProfile(ctx.db, body_bytes, alloc);
+            try sendJson(req, resp);
+        } else if (std.mem.eql(u8, path, "/api/repos")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handlePostRepo(ctx.db, body_bytes, alloc);
+            try sendJson(req, resp);
         } else if (std.mem.eql(u8, path, "/api/service-account")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleServiceAccount(ctx.db, body_bytes, alloc);
@@ -149,6 +204,9 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const resp = try routes.handleConfig(ctx.db, body_bytes, alloc);
             // Trigger sync thread start if credentials + sheet_id are now available
             if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+            try sendJson(req, resp);
+        } else if (std.mem.eql(u8, path, "/api/provision")) {
+            const resp = try routes.handleProvision(ctx.db, alloc);
             try sendJson(req, resp);
         } else if (std.mem.startsWith(u8, path, "/suspect/") and
             std.mem.endsWith(u8, path, "/clear"))
@@ -160,6 +218,14 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleIngest(ctx.db, body_bytes, alloc);
             try sendJson(req, resp);
+        } else {
+            try send404(req);
+        }
+    } else if (req.head.method == .DELETE) {
+        if (std.mem.startsWith(u8, path, "/api/repos/")) {
+            const idx = path["/api/repos/".len..];
+            const body = try routes.handleDeleteRepo(ctx.db, idx, alloc);
+            try sendJson(req, body);
         } else {
             try send404(req);
         }
@@ -177,7 +243,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
 
 const cors_headers = [_]std.http.Header{
     .{ .name = "Access-Control-Allow-Origin", .value = "*" },
-    .{ .name = "Access-Control-Allow-Methods", .value = "GET, POST, OPTIONS" },
+    .{ .name = "Access-Control-Allow-Methods", .value = "GET, POST, DELETE, OPTIONS" },
     .{ .name = "Access-Control-Allow-Headers", .value = "Content-Type" },
     .{ .name = "Connection", .value = "close" },
 };
@@ -282,4 +348,21 @@ fn queryParam(target: []const u8, key: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, pair[0..eq], key)) return pair[eq + 1 ..];
     }
     return null;
+}
+
+fn stripQuery(target: []const u8) []const u8 {
+    return if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+}
+
+const testing = std.testing;
+
+test "stripQuery removes query string and preserves bare path" {
+    try testing.expectEqualStrings("/api/provision-preview", stripQuery("/api/provision-preview?profile=medical&sheet_url=abc"));
+    try testing.expectEqualStrings("/query/chain-gaps", stripQuery("/query/chain-gaps"));
+}
+
+test "queryParam extracts expected values" {
+    try testing.expectEqualStrings("medical", queryParam("/api/provision-preview?profile=medical&sheet_url=https://example", "profile").?);
+    try testing.expectEqualStrings("https://example", queryParam("/api/provision-preview?profile=medical&sheet_url=https://example", "sheet_url").?);
+    try testing.expect(queryParam("/api/provision-preview?profile=medical", "missing") == null);
 }

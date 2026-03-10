@@ -3,12 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CALM</title>
+  <title>RTMify Live</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --font-body: 'DM Sans', system-ui, sans-serif;
+      --font-mono: 'IBM Plex Mono', monospace;
+      --dark: #1a1a2e;
+      --mid: #2a2a4e;
+      --text: #1a1a1a;
+      --muted: #555555;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: var(--font-body);
       font-size: 14px;
       color: #1a1a1a;
       background: #f5f5f5;
@@ -31,6 +43,7 @@
       padding: 0 24px;
       display: flex;
       gap: 0;
+      align-items: center;
     }
     nav button {
       background: none;
@@ -45,8 +58,18 @@
     nav button.active {
       color: #1a1a2e;
       border-bottom-color: #1a1a2e;
+      font-weight: 600;
     }
     nav button:hover:not(.active) { color: #333; }
+    .nav-sep {
+      display: inline-block;
+      width: 1px;
+      height: 20px;
+      background: #ddd;
+      margin: 0 6px;
+      align-self: center;
+      flex-shrink: 0;
+    }
 
     main { padding: 24px; }
 
@@ -85,6 +108,22 @@
       display: inline-block;
     }
     button.btn:hover { background: #2a2a4e; }
+    button.btn-danger {
+      background: transparent; color: #c0392b; border: 1px solid #c0392b;
+      border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 14px; line-height: 1;
+    }
+    button.btn-danger:hover { background: #fdecea; }
+    .repo-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 0; border-bottom: 1px solid var(--mid,#2a2a4e);
+    }
+    .repo-row:last-child { border-bottom: none; }
+    .file-annotations {
+      background: #f7f7fb; padding: 10px 16px; margin: 2px 0; border-radius: 4px; font-size: 0.8rem;
+    }
+    .ann-row { display: flex; align-items: center; gap: 12px; padding: 3px 0; }
+    .ann-line { color: #888; }
+    .ann-blame { color: #555; font-style: italic; }
     a.btn {
       background: #1a1a2e;
       color: #fff;
@@ -129,8 +168,8 @@
     tr.error { background: #fef2f2; }
     tr.error td:first-child { border-left: 3px solid #ef4444; }
 
-    .req-id { font-family: monospace; font-size: 13px; font-weight: 600; white-space: nowrap; }
-    .test-id { font-family: monospace; font-size: 13px; white-space: nowrap; }
+    .req-id { font-family: var(--font-mono); font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .test-id { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
     .result-pass { color: #2d7a2d; font-weight: 600; }
     .result-fail { color: #c0392b; font-weight: 600; }
     .result-pending { color: #888; font-style: italic; }
@@ -140,10 +179,13 @@
     }
 
     .empty-state {
-      padding: 48px;
+      padding: 48px 24px;
       text-align: center;
-      color: #999;
+      color: #aaa;
+      font-size: 13px;
+      line-height: 1.6;
     }
+    .empty-state strong { color: #888; display: block; margin-bottom: 4px; font-size: 14px; }
 
     .error-banner {
       background: #fde8e8;
@@ -160,7 +202,7 @@
       display: none;
       position: fixed;
       inset: 0;
-      background: #f5f5f5;
+      background: #eeeef5;
       z-index: 100;
       align-items: center;
       justify-content: center;
@@ -169,26 +211,39 @@
     .lobby-card {
       background: #fff;
       border: 1px solid #ddd;
+      border-top: 3px solid var(--dark);
       border-radius: 8px;
       padding: 36px 40px;
       width: 480px;
       max-width: 95vw;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     }
-    .lobby-card h2 { font-size: 18px; font-weight: 600; margin-bottom: 24px; color: #1a1a2e; }
+    .lobby-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 4px; color: #1a1a2e; }
+    .lobby-subtitle { color: #888; font-size: 13px; margin-bottom: 24px; }
+    .lobby-step { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; margin-top: 20px; }
+    .lobby-step:first-of-type { margin-top: 0; }
+    .step-num {
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--dark); color: #fff;
+      font-size: 11px; font-weight: 600;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .step-label { font-size: 12px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.05em; }
     .lobby-label { font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
     .lobby-email {
-      font-family: monospace;
+      font-family: var(--font-mono);
       font-size: 13px;
-      background: #f2f2f2;
-      border: 1px solid #ddd;
+      background: #f0f0f8;
+      border: 1.5px solid var(--dark);
       border-radius: 4px;
-      padding: 8px 12px;
+      padding: 10px 12px;
       margin-bottom: 20px;
       cursor: pointer;
       word-break: break-all;
       min-height: 36px;
     }
-    .lobby-email:hover { background: #e8e8e8; }
+    .lobby-email:hover { background: #e8e8f0; }
     .lobby-input {
       width: 100%;
       font-size: 14px;
@@ -277,7 +332,7 @@
       display: flex; align-items: baseline; gap: 10px;
       margin-bottom: 18px;
     }
-    .drawer-node-id { font-family: monospace; font-size: 16px; font-weight: 600; }
+    .drawer-node-id { font-family: var(--font-mono); font-size: 16px; font-weight: 600; }
     .node-type-badge {
       font-size: 11px; font-weight: 600; text-transform: uppercase;
       letter-spacing: 0.04em; color: #555; background: #eee;
@@ -303,11 +358,11 @@
     }
     .edge-row:hover { background: #f5f5f5; border-color: #ddd; }
     .edge-label {
-      font-size: 11px; color: #888; font-family: monospace;
+      font-size: 11px; color: #888; font-family: var(--font-mono);
       white-space: nowrap;
     }
     .node-id-link {
-      font-family: monospace; font-size: 13px; font-weight: 600;
+      font-family: var(--font-mono); font-size: 13px; font-weight: 600;
       color: #1a1a2e; flex: 1;
     }
     .edge-empty { font-size: 13px; color: #aaa; padding: 4px 0; }
@@ -358,8 +413,8 @@
     .tree-node-header {
       display: flex; align-items: center; gap: 6px; padding: 2px 0;
     }
-    .tree-edge-label { font-size: 10px; color: #bbb; font-family: monospace; white-space: nowrap; }
-    .tree-node-id { font-family: monospace; font-size: 13px; font-weight: 600; color: #1a1a2e; }
+    .tree-edge-label { font-size: 10px; color: #bbb; font-family: var(--font-mono); white-space: nowrap; }
+    .tree-node-id { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: #1a1a2e; }
     .tree-node-body { padding-left: 18px; margin-top: 4px; }
     .tree-node-props { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 6px; }
     .suspect-banner {
@@ -383,6 +438,27 @@
     .suspect-clear:hover { background: #f57f17; }
     tr.suspect td:first-child { border-left: 3px solid #f9a825; }
     tr.suspect { background: #fffde7; }
+
+    /* Profile selector */
+    .profile-radios { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
+    .profile-radio {
+      display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;
+      border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .profile-radio:has(input:checked) { border-color: var(--dark); background: #f0f0f8; }
+    .profile-radio input[type=radio] { margin: 0; accent-color: var(--dark); }
+    .profile-desc { color: #888; font-size: 11px; }
+
+    /* Chain gaps tab */
+    .gap-badge-sev { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
+    .gap-badge-sev.error { background: #fde8e8; color: #c0392b; }
+    .gap-badge-sev.warn  { background: #fff8e1; color: #7a5900; }
+    .gap-badge-sev.info  { background: #e8f4e8; color: #2d5a2d; }
+
+    /* Code tab */
+    .code-add-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    .code-add-row input { flex: 1; }
 
     /* Reports tab */
     .report-card {
@@ -412,18 +488,42 @@
       ondragover="onSaDragOver(event)"
       ondragleave="onSaDragLeave(event)"
       ondrop="onSaDrop(event)">
-    <h2>CALM — Connect your Google Sheet</h2>
+    <h2>RTMify Live</h2>
+    <p class="lobby-subtitle">Connect your compliance workspace</p>
     <div id="lobby-error" class="lobby-error" style="display:none"></div>
     <input type="file" id="sa-file-input" accept=".json,application/json" style="display:none">
     <div id="lobby-sa-section">
+      <div class="lobby-step"><span class="step-num">1</span><span class="step-label">Upload credentials</span></div>
+      <p class="drop-hint" style="margin-top:0">Drop service-account.json anywhere in this panel to update credentials</p>
+      <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Share with service account</span></div>
       <p class="lobby-label">Share your sheet with:</p>
       <div class="lobby-email" id="lobby-email" onclick="copyEmail()" title="Click to copy"></div>
       <span class="copied-hint" id="copy-hint" style="display:none">Copied!</span>
     </div>
-    <p class="drop-hint">Drop service-account.json anywhere in this panel to update credentials</p>
-    <p class="lobby-label" style="margin-top:16px">Then paste the sheet link here:</p>
+    <div class="lobby-step"><span class="step-num">3</span><span class="step-label">Paste sheet URL</span></div>
     <input id="lobby-url" class="lobby-input" type="text"
+      oninput="updateProvisionPreview()"
       placeholder="https://docs.google.com/spreadsheets/d/…" />
+    <div class="lobby-step"><span class="step-num">4</span><span class="step-label">Choose profile</span></div>
+    <div class="profile-radios">
+      <label class="profile-radio">
+        <input type="radio" name="profile" value="generic" checked onchange="updateProvisionPreview()">
+        <span>Generic <span class="profile-desc">— Basic requirements traceability</span></span>
+      </label>
+      <label class="profile-radio">
+        <input type="radio" name="profile" value="medical" onchange="updateProvisionPreview()">
+        <span>Medical <span class="profile-desc">— ISO 13485 / IEC 62304 / FDA 21 CFR Part 11</span></span>
+      </label>
+      <label class="profile-radio">
+        <input type="radio" name="profile" value="aerospace" onchange="updateProvisionPreview()">
+        <span>Aerospace <span class="profile-desc">— DO-178C / AS9100</span></span>
+      </label>
+      <label class="profile-radio">
+        <input type="radio" name="profile" value="automotive" onchange="updateProvisionPreview()">
+        <span>Automotive <span class="profile-desc">— ISO 26262 / ASPICE</span></span>
+      </label>
+    </div>
+    <div id="provision-preview" style="font-size:12px;color:#555;margin-bottom:12px;display:none"></div>
     <div class="lobby-actions">
       <button id="lobby-btn" class="btn" onclick="connectSheet()">Connect</button>
     </div>
@@ -443,8 +543,11 @@
   <button onclick="showTab('tests')">Tests</button>
   <button onclick="showTab('rtm')">RTM</button>
   <button onclick="showTab('risks')">Risks</button>
+  <span class="nav-sep"></span>
   <button onclick="showTab('impact')">Impact</button>
   <button id="nav-review" onclick="showTab('review')">Review <span id="suspect-nav-badge" class="badge" style="display:none"></span></button>
+  <button onclick="showTab('chain-gaps')">Chain Gaps</button>
+  <button onclick="showTab('code')">Code</button>
   <button onclick="showTab('reports')">Reports</button>
 </nav>
 
@@ -468,9 +571,7 @@
             <th>Result</th>
           </tr>
         </thead>
-        <tbody id="req-body">
-          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
-        </tbody>
+        <tbody id="req-body"></tbody>
       </table>
     </div>
   </section>
@@ -489,9 +590,7 @@
             <th>Priority</th>
           </tr>
         </thead>
-        <tbody id="un-body">
-          <tr><td colspan="4" class="empty-state">Loading…</td></tr>
-        </tbody>
+        <tbody id="un-body"></tbody>
       </table>
     </div>
   </section>
@@ -511,9 +610,7 @@
             <th>Linked Requirement</th>
           </tr>
         </thead>
-        <tbody id="tests-body">
-          <tr><td colspan="5" class="empty-state">Loading…</td></tr>
-        </tbody>
+        <tbody id="tests-body"></tbody>
       </table>
     </div>
   </section>
@@ -538,9 +635,7 @@
             <th>Result</th>
           </tr>
         </thead>
-        <tbody id="rtm-body">
-          <tr><td colspan="8" class="empty-state">Loading…</td></tr>
-        </tbody>
+        <tbody id="rtm-body"></tbody>
       </table>
     </div>
   </section>
@@ -565,9 +660,7 @@
             <th>Res Score</th>
           </tr>
         </thead>
-        <tbody id="risks-body">
-          <tr><td colspan="10" class="empty-state">Loading…</td></tr>
-        </tbody>
+        <tbody id="risks-body"></tbody>
       </table>
     </div>
   </section>
@@ -595,6 +688,117 @@
     <div id="review-result"></div>
   </section>
 
+  <!-- Chain Gaps tab -->
+  <section id="tab-chain-gaps">
+    <div class="toolbar">
+      <h2>Chain Gaps</h2>
+      <button class="btn" onclick="loadChainGaps()">Refresh</button>
+    </div>
+    <div id="gaps-error" class="error-banner" style="display:none"></div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="toolbar" style="padding:0 0 12px 0">
+        <span style="font-weight:600;font-size:14px">Industry Profile</span>
+        <span id="chain-gap-count" class="badge" style="display:none"></span>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <select id="profile-select" class="lobby-input" style="max-width:280px;margin-bottom:0" onchange="changeProfile()">
+          <option value="generic">Generic</option>
+          <option value="medical">Medical</option>
+          <option value="aerospace">Aerospace</option>
+          <option value="automotive">Automotive</option>
+        </select>
+        <button id="profile-provision-btn" class="btn" onclick="provisionMissingTabs()" style="display:none">Create Missing Tabs</button>
+      </div>
+      <div id="profile-desc" style="font-size:12px;color:#666;margin-bottom:6px"></div>
+      <div id="profile-preview" style="font-size:12px;color:#555;display:none"></div>
+    </div>
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Title</th>
+            <th>Type</th>
+            <th>Node ID</th>
+            <th>Severity</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="chain-gaps-body">
+          <tr><td colspan="6" class="empty-state">Select a profile and click Refresh to check for gaps.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Code tab -->
+  <section id="tab-code">
+    <div class="toolbar"><h2>Code Traceability</h2></div>
+    <div class="card" style="margin-bottom:16px">
+      <p class="lobby-label">Add repository path:</p>
+      <div class="code-add-row">
+        <input id="repo-path-input" class="lobby-input" style="margin-bottom:0" type="text" placeholder="/path/to/repository" />
+        <button class="btn" onclick="addRepo()">Add Repo</button>
+      </div>
+      <div id="repo-error" style="color:#c0392b;font-size:13px;display:none"></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="toolbar" style="padding:0 0 8px 0">
+        <span style="font-weight:600;font-size:14px">Runtime Diagnostics</span>
+      </div>
+      <div id="diagnostics-list"><em style="color:var(--muted);font-size:13px">No diagnostics.</em></div>
+    </div>
+    <div class="card" style="margin-bottom:16px" id="repos-card">
+      <div class="toolbar" style="padding:0 0 8px 0">
+        <span style="font-weight:600;font-size:14px">Repo Status</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Path</th>
+            <th>Last Scan</th>
+            <th>Source</th>
+            <th>Tests</th>
+            <th>Annotations</th>
+            <th>Commits</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="repos-list">
+          <tr><td colspan="7" class="empty-state">No repos yet. Add a local Git repository path above.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="toolbar" style="padding:0 0 12px 0">
+        <span style="font-weight:600;font-size:14px">Files by Repo</span>
+        <button class="btn" onclick="loadCodeTraceability()">Refresh</button>
+      </div>
+      <div id="code-body"><em style="color:var(--muted);font-size:13px">Click Refresh to scan repository files.</em></div>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="toolbar" style="padding:0 0 12px 0">
+        <span style="font-weight:600;font-size:14px">Coverage Gaps</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+        <div>
+          <h3 style="margin-top:0">Unimplemented Requirements</h3>
+          <div id="unimplemented-list"><em style="color:var(--muted);font-size:13px">Run a repo scan to see unimplemented requirements.</em></div>
+        </div>
+        <div>
+          <h3 style="margin-top:0">Untested Source Files</h3>
+          <div id="untested-files-list"><em style="color:var(--muted);font-size:13px">Run a repo scan to see untested source files.</em></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="toolbar" style="padding:0 0 12px 0">
+        <span style="font-weight:600;font-size:14px">Recent Commits</span>
+      </div>
+      <div id="recent-commits"><em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run a scan.</em></div>
+    </div>
+  </section>
+
   <!-- Reports tab -->
   <section id="tab-reports">
     <div class="toolbar"><h2>Reports</h2></div>
@@ -608,6 +812,27 @@
         <a class="btn" href="/report/rtm" target="_blank">PDF</a>
         <a class="btn" href="/report/rtm.md" download="rtm.md">Markdown</a>
         <a class="btn" href="/report/rtm.docx" download="rtm.docx">Word (.docx)</a>
+      </div>
+    </div>
+    <div class="report-card" style="margin-top:16px">
+      <h3>Design History Record (DHR)</h3>
+      <p>
+        Full design history per User Need, tracing through requirements,
+        design inputs/outputs, and configuration items.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <a class="btn" href="/report/dhr/pdf" target="_blank">PDF</a>
+        <a class="btn" href="/report/dhr/md" download="dhr.md">Markdown</a>
+      </div>
+    </div>
+    <div class="report-card" style="margin-top:16px">
+      <h3>Code Coverage Report</h3>
+      <p>
+        Implementation coverage: requirements with code annotations, orphan source files,
+        and verification status derived from live repository scans.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <a class="btn" href="/report/coverage.md" download="coverage.md">Markdown</a>
       </div>
     </div>
   </section>
@@ -624,6 +849,8 @@
     if (event && event.currentTarget) event.currentTarget.classList.add('active');
     else document.getElementById('nav-review').classList.add('active');
     if (name === 'review') loadSuspects();
+    if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
+    if (name === 'code') loadCodeTraceability();
   }
 
   // --- Data loading ---
@@ -631,6 +858,7 @@
   async function loadData() {
     _closeAllExpanded();
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
+    await loadProfileState();
   }
 
   async function renderRequirements() {
@@ -664,7 +892,7 @@
     badge.style.display = 'inline-block';
 
     if (reqs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No requirements found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><strong>No requirements</strong>Sync your Google Sheet or click Refresh.</td></tr>';
       return;
     }
 
@@ -702,7 +930,7 @@
       return;
     }
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No user needs found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><strong>No user needs</strong>Check your sheet\'s User Needs tab.</td></tr>';
       return;
     }
     rows.sort((a, b) => a.id.localeCompare(b.id));
@@ -733,7 +961,7 @@
       return;
     }
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No tests found.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><strong>No tests</strong>Check your sheet\'s Tests tab.</td></tr>';
       return;
     }
     tbody.innerHTML = rows.map(r => {
@@ -769,7 +997,7 @@
     }
 
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No data.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No RTM data</strong>Requirements and tests must both be loaded.</td></tr>';
       return;
     }
 
@@ -815,7 +1043,7 @@
     }
 
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No risks recorded.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="empty-state"><strong>No risks</strong>Check your sheet\'s Risks tab.</td></tr>';
       return;
     }
 
@@ -877,12 +1105,13 @@
       const status = await res.json();
       applyStatus(status);
     } catch (_) {}
+    updateProvisionPreview();
   }
 
   function applyStatus(status) {
     const emailEl = document.getElementById('lobby-email');
-    if (status.service_account_email) {
-      emailEl.textContent = status.service_account_email;
+    if (status.email) {
+      emailEl.textContent = status.email;
       emailEl.style.color = '';
       emailEl.style.cursor = 'pointer';
       emailEl.onclick = copyEmail;
@@ -961,6 +1190,7 @@
     document.getElementById('lobby-sa-section').style.display = '';
     document.getElementById('lobby-url').disabled = false;
     document.getElementById('lobby-btn').disabled = false;
+    updateProvisionPreview();
   }
 
   document.getElementById('sa-file-input').addEventListener('change', function() {
@@ -1213,7 +1443,7 @@
     }
 
     if (data.length === 0) {
-      result.innerHTML = '<div class="empty-state">No downstream impact — nothing depends on this node via traced edges.</div>';
+      result.innerHTML = '<div class="empty-state"><strong>No downstream impact</strong>Nothing depends on this node via traced edges.</div>';
       return;
     }
 
@@ -1256,7 +1486,7 @@
     _updateSuspectBadge(data.length);
 
     if (data.length === 0) {
-      result.innerHTML = '<div class="empty-state">No suspect nodes — all clear.</div>';
+      result.innerHTML = '<div class="empty-state"><strong>All clear</strong>No nodes flagged for review.</div>';
       return;
     }
 
@@ -1324,6 +1554,42 @@
     applyStatus(status);
   }
 
+  const PROFILE_DESCRIPTIONS = {
+    generic: 'Basic requirements traceability',
+    medical: 'ISO 13485 / IEC 62304 / FDA 21 CFR Part 11',
+    aerospace: 'DO-178C / AS9100',
+    automotive: 'ISO 26262 / ASPICE',
+  };
+
+  async function updateProvisionPreview() {
+    const previewEl = document.getElementById('provision-preview');
+    const emailEl = document.getElementById('lobby-email');
+    const url = document.getElementById('lobby-url').value.trim();
+    if (!emailEl.textContent.trim()) {
+      previewEl.style.display = 'none';
+      return;
+    }
+    try {
+      const profileVal = document.querySelector('input[name=profile]:checked');
+      const profile = profileVal ? profileVal.value : 'generic';
+      let endpoint = '/api/provision-preview?profile=' + encodeURIComponent(profile);
+      if (url.includes('/spreadsheets/d/')) {
+        endpoint += '&sheet_url=' + encodeURIComponent(url);
+      }
+      const res = await fetch(endpoint);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.ready) {
+        previewEl.style.display = 'none';
+        return;
+      }
+      previewEl.textContent = provisionPreviewText(data);
+      previewEl.style.display = 'block';
+    } catch (_) {
+      previewEl.style.display = 'none';
+    }
+  }
+
   async function connectSheet() {
     const urlInput = document.getElementById('lobby-url');
     const errEl = document.getElementById('lobby-error');
@@ -1340,6 +1606,14 @@
     btn.textContent = 'Connecting…';
 
     try {
+      const profileVal = document.querySelector('input[name=profile]:checked');
+      if (profileVal) {
+        await fetch('/api/profile', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({profile: profileVal.value}),
+        });
+      }
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -1359,6 +1633,330 @@
 
     document.getElementById('lobby').classList.remove('visible');
     loadData();
+  }
+
+  // --- Chain Gaps tab ---
+
+  async function loadProfileState() {
+    const select = document.getElementById('profile-select');
+    if (!select) return;
+    try {
+      const res = await fetch('/api/profile');
+      if (!res.ok) return;
+      const data = await res.json();
+      const profile = data.profile || 'generic';
+      select.value = profile;
+      document.getElementById('profile-desc').textContent = PROFILE_DESCRIPTIONS[profile] || '';
+      await refreshDashboardProvisionPreview(profile);
+    } catch (_) {}
+  }
+
+  async function refreshDashboardProvisionPreview(profile) {
+    const previewEl = document.getElementById('profile-preview');
+    const btn = document.getElementById('profile-provision-btn');
+    try {
+      const res = await fetch('/api/provision-preview?profile=' + encodeURIComponent(profile));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.ready) {
+        previewEl.style.display = 'none';
+        btn.style.display = 'none';
+        return;
+      }
+      previewEl.textContent = provisionPreviewText(data);
+      previewEl.style.display = 'block';
+      btn.style.display = (data.missing_count || 0) > 0 ? 'inline-block' : 'none';
+    } catch (_) {
+      previewEl.style.display = 'none';
+      btn.style.display = 'none';
+    }
+  }
+
+  async function changeProfile() {
+    const select = document.getElementById('profile-select');
+    const errEl = document.getElementById('gaps-error');
+    const profile = select.value;
+    errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/profile', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({profile}),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      document.getElementById('profile-desc').textContent = PROFILE_DESCRIPTIONS[profile] || '';
+      await refreshDashboardProvisionPreview(profile);
+      await loadChainGaps();
+    } catch (e) {
+      errEl.textContent = 'Failed to change profile: ' + e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  async function provisionMissingTabs() {
+    const errEl = document.getElementById('gaps-error');
+    errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/provision', { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      await refreshDashboardProvisionPreview(document.getElementById('profile-select').value);
+      await loadChainGaps();
+    } catch (e) {
+      errEl.textContent = 'Provisioning failed: ' + e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  async function loadChainGaps() {
+    const errEl = document.getElementById('gaps-error');
+    const tbody = document.getElementById('chain-gaps-body');
+    const badge = document.getElementById('chain-gap-count');
+    errEl.style.display = 'none';
+
+    let gaps;
+    try {
+      const res = await fetch('/query/chain-gaps');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      gaps = await res.json();
+    } catch (e) {
+      errEl.textContent = 'Failed to load chain gaps: ' + e.message;
+      errEl.style.display = 'block';
+      tbody.innerHTML = '';
+      badge.style.display = 'none';
+      return;
+    }
+
+    badge.textContent = String((gaps || []).length);
+    badge.style.display = 'inline-block';
+
+    if (!gaps || gaps.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No gaps</strong>All traceability checks pass for this profile.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = gaps.map(g => {
+      const sev = (g.severity || 'info').toLowerCase();
+      return `<tr>
+        <td>${esc(String(g.code || ''))}</td>
+        <td>${esc(g.title || '')}</td>
+        <td>${esc(g.gap_type || '')}</td>
+        <td>${esc(g.node_id || '')}</td>
+        <td><span class="gap-badge-sev ${sev}">${esc(sev)}</span></td>
+        <td>${esc(g.message || '')}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // --- Code Traceability tab ---
+
+  async function addRepo() {
+    const input = document.getElementById('repo-path-input');
+    const errEl = document.getElementById('repo-error');
+    const path = input.value.trim();
+    if (!path) return;
+    errEl.style.display = 'none';
+
+    try {
+      const res = await fetch('/api/repos', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path}),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) throw new Error(formatDiagnosticsError(data));
+      input.value = '';
+      loadCodeTraceability();
+    } catch (e) {
+      errEl.textContent = e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  async function deleteRepo(idx) {
+    await fetch('/api/repos/' + idx, { method: 'DELETE' });
+    loadCodeTraceability();
+  }
+
+  async function loadRepos() {
+    const el = document.getElementById('repos-list');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/repos');
+      if (!res.ok) return;
+      const data = await res.json();
+      const repos = data.repos || [];
+      if (repos.length === 0) {
+        el.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No repos yet</strong>Add a local Git repository path above.</td></tr>';
+        return;
+      }
+      el.innerHTML = repos.map((r, i) => `<tr>
+        <td style="font-family:var(--font-mono);font-size:12px">${esc(r.path)}</td>
+        <td>${esc(String(r.last_scan || '0'))}</td>
+        <td>${esc(String(r.source_file_count || 0))}</td>
+        <td>${esc(String(r.test_file_count || 0))}</td>
+        <td>${esc(String(r.annotation_count || 0))}</td>
+        <td>${esc(String(r.commit_count || 0))}</td>
+        <td><button class="btn-danger" onclick="deleteRepo(${i})" title="Remove repo">×</button></td>
+      </tr>`).join('');
+    } catch (_) {}
+  }
+
+  async function loadDiagnostics() {
+    const el = document.getElementById('diagnostics-list');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/diagnostics?source=all');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const diagnostics = data.diagnostics || [];
+      if (diagnostics.length === 0) {
+        el.innerHTML = '<em style="color:var(--muted);font-size:13px">No diagnostics.</em>';
+        return;
+      }
+      el.innerHTML = diagnostics.map(d => `<div class="repo-row" style="display:block">
+        <div><strong>E${esc(String(d.code))}</strong> ${esc(d.title || '')} <span class="gap-badge-sev ${(d.severity || 'info').toLowerCase()}">${esc((d.severity || '').toLowerCase())}</span></div>
+        <div style="font-size:12px;color:#555">${esc(d.message || '')}</div>
+        ${d.subject ? `<div style="font-family:var(--font-mono);font-size:12px;color:#666">${esc(d.subject)}</div>` : ''}
+      </div>`).join('');
+    } catch (e) {
+      el.innerHTML = `<div class="empty-state">Failed to load diagnostics: ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function loadCodeTraceability() {
+    await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits()]);
+    const container = document.getElementById('code-body');
+
+    let files;
+    try {
+      const res = await fetch('/query/code-traceability');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      files = await res.json();
+    } catch (e) {
+      container.innerHTML = `<div class="empty-state">Error: ${esc(e.message)}</div>`;
+      return;
+    }
+
+    const combined = [...(files.source_files || []), ...(files.test_files || [])];
+    if (combined.length === 0) {
+      container.innerHTML = '<div class="empty-state">No source files indexed yet.</div>';
+      return;
+    }
+
+    const groups = new Map();
+    combined.forEach(f => {
+      const props = (() => { try { return JSON.parse(f.properties || '{}'); } catch { return {}; } })();
+      const repo = props.repo || 'Unknown Repo';
+      if (!groups.has(repo)) groups.set(repo, []);
+      groups.get(repo).push({ node: f, props });
+    });
+
+    container.innerHTML = Array.from(groups.entries()).map(([repo, entries]) => {
+      const rows = entries.map(({node, props}) => {
+        const filePath = props.path || node.id;
+        return `<tr data-expanded="0" onclick="expandFile(this, ${JSON.stringify(filePath)})" style="cursor:pointer">
+          <td>${esc(node.type || '')}</td>
+          <td style="font-family:var(--font-mono);font-size:12px">${esc(filePath)}</td>
+          <td>${esc(String(props.annotation_count || 0))}</td>
+        </tr>`;
+      }).join('');
+      return `<div class="card" style="margin-bottom:12px">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;font-family:var(--font-mono)">${esc(repo)}</div>
+        <table>
+          <thead><tr><th>Type</th><th>Path</th><th>Annotations</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    }).join('');
+  }
+
+  async function expandFile(row, filePath) {
+    if (row.dataset.expanded === '1') {
+      row.nextElementSibling?.remove();
+      row.dataset.expanded = '0';
+      return;
+    }
+    let anns = [];
+    try {
+      const res = await fetch('/query/file-annotations?file_path=' + encodeURIComponent(filePath));
+      if (res.ok) anns = await res.json();
+    } catch (_) {}
+    const detail = document.createElement('tr');
+    detail.className = 'file-annotation-row';
+    const annHtml = anns.length
+      ? anns.map(a => {
+          const p = (() => { try { return JSON.parse(a.properties || '{}'); } catch { return {}; } })();
+          return `<div class="ann-row">
+            <code>${esc(p.req_id || a.id)}</code>
+            <span class="ann-line">line ${esc(String(p.line_number || ''))}</span>
+            <span class="ann-blame">${esc(p.blame_author || '')} ${esc(p.short_hash || '')}</span>
+          </div>`;
+        }).join('')
+      : '<em style="color:var(--muted)">No annotations found.</em>';
+    detail.innerHTML = `<td colspan="3"><div class="file-annotations">${annHtml}</div></td>`;
+    row.parentNode.insertBefore(detail, row.nextSibling);
+    row.dataset.expanded = '1';
+  }
+
+  async function loadCoverageGaps() {
+    const unimplementedEl = document.getElementById('unimplemented-list');
+    const untestedEl = document.getElementById('untested-files-list');
+    const [unimplementedRes, untestedRes] = await Promise.all([
+      fetch('/query/unimplemented-requirements'),
+      fetch('/query/untested-source-files'),
+    ]);
+    const unimplemented = unimplementedRes.ok ? await unimplementedRes.json() : [];
+    const untested = untestedRes.ok ? await untestedRes.json() : [];
+    unimplementedEl.innerHTML = renderSimpleNodeList(unimplemented, 'No unimplemented requirements.');
+    untestedEl.innerHTML = renderSimpleNodeList(untested, 'No untested source files.');
+  }
+
+  async function loadRecentCommits() {
+    const el = document.getElementById('recent-commits');
+    try {
+      const res = await fetch('/query/recent-commits');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const commits = await res.json();
+      if (!commits.length) {
+        el.innerHTML = '<em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run a scan.</em>';
+        return;
+      }
+      el.innerHTML = commits.map(c => {
+        const p = (() => { try { return JSON.parse(c.properties || '{}'); } catch { return {}; } })();
+        return `<div class="repo-row" style="display:block">
+          <div><strong>${esc(p.short_hash || c.id)}</strong> ${esc(p.date || '')} ${esc(p.author || '')}</div>
+          <div style="font-size:12px;color:#555">${esc(p.message || '')}</div>
+          <div style="font-size:12px;color:#666">${esc((p.req_ids || []).join(', '))}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      el.innerHTML = `<div class="empty-state">Failed to load commits: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderSimpleNodeList(nodes, emptyMessage) {
+    if (!nodes || nodes.length === 0) {
+      return `<em style="color:var(--muted);font-size:13px">${esc(emptyMessage)}</em>`;
+    }
+    return nodes.map(n => `<div class="repo-row" style="display:block">
+      <div><strong>${esc(n.id || '')}</strong></div>
+      <div style="font-size:12px;color:#666">${esc(n.type || '')}</div>
+    </div>`).join('');
+  }
+
+  function provisionPreviewText(data) {
+    const missing = data.missing || [];
+    const existing = data.existing || [];
+    if ((data.missing_count || 0) === 0) return 'All required tabs already exist for this profile.';
+    if ((data.existing_count || 0) === 0) return `This will create ${missing.length} tabs in your sheet: ${missing.join(', ')}`;
+    return `Found ${existing.length} existing tabs. Will create ${missing.length} additional tabs: ${missing.join(', ')}`;
+  }
+
+  function formatDiagnosticsError(data) {
+    const diagnostics = data.diagnostics || [];
+    if (!diagnostics.length) return data.error || 'Request failed';
+    return diagnostics.map(d => `E${d.code}: ${d.message}`).join(' ');
   }
 
   function copyEmail() {
