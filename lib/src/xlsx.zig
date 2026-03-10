@@ -592,8 +592,14 @@ fn parseWorkbookAndRels(
             if (attrVal(tag, "Target")) |target| {
                 // Only include worksheet relationships
                 if (std.mem.indexOf(u8, tag, "worksheet") != null) {
+                    const normalized = blk: {
+                        if (std.mem.startsWith(u8, target, "/xl/")) break :blk target[4..];
+                        if (std.mem.startsWith(u8, target, "xl/")) break :blk target[3..];
+                        if (std.mem.startsWith(u8, target, "/")) break :blk target[1..];
+                        break :blk target;
+                    };
                     const k = try allocator.dupe(u8, id);
-                    const v = try allocator.dupe(u8, target);
+                    const v = try allocator.dupe(u8, normalized);
                     try target_map.put(k, v);
                 }
             }
@@ -642,6 +648,17 @@ fn parseWorksheet(
 
         // Find the end of the opening row tag
         const row_gt = std.mem.indexOfScalarPos(u8, sheet_data, row_tag_start, '>') orelse break;
+
+        // Empty rows may be emitted as self-closing tags: <row .../>.
+        if (row_gt > 0 and sheet_data[row_gt - 1] == '/') {
+            const row = try parseRow("", shared, allocator);
+            if (is_first_row) {
+                try rows.append(allocator, row);
+                is_first_row = false;
+            }
+            pos = row_gt + 1;
+            continue;
+        }
 
         // Find </row>
         const row_end_rel = std.mem.indexOf(u8, sheet_data[row_gt..], "</row>") orelse
@@ -1030,4 +1047,38 @@ test "parseValidated clean fixture" {
     try testing.expect(sheets.len >= 4);
     try testing.expect(findSheetByName(sheets, "Requirements") != null);
     try testing.expectEqual(@as(u32, 0), d.warning_count);
+}
+
+test "parseValidated realistic workbook fixture" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var d = @import("diagnostic.zig").Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const sheets = try parseValidated(alloc, "test/fixtures/RTMify_Test_Sheet_Realistic.xlsx", &d);
+    try testing.expect(sheets.len >= 5);
+    try testing.expect(findSheetByName(sheets, "README") != null);
+    try testing.expect(findSheetByName(sheets, "User Needs") != null);
+    try testing.expect(findSheetByName(sheets, "Requirements") != null);
+    try testing.expect(findSheetByName(sheets, "Tests") != null);
+    try testing.expect(findSheetByName(sheets, "Risks") != null);
+    try testing.expectEqual(@as(u32, 0), d.error_count);
+}
+
+test "parseValidated extended profile tabs fixture" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var d = @import("diagnostic.zig").Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const sheets = try parseValidated(alloc, "test/fixtures/RTMify_Profile_Tabs_Golden.xlsx", &d);
+    try testing.expectEqual(@as(usize, 7), sheets.len);
+    try testing.expect(findSheetByName(sheets, "Design Inputs") != null);
+    try testing.expect(findSheetByName(sheets, "Design Outputs") != null);
+    try testing.expect(findSheetByName(sheets, "Configuration Items") != null);
+    try testing.expectEqual(@as(u32, 0), d.error_count);
 }

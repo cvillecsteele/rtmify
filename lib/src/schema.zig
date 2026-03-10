@@ -21,6 +21,9 @@ pub const IngestStats = struct {
     test_group_count: u32 = 0,
     test_count: u32 = 0,
     risk_count: u32 = 0,
+    design_input_count: u32 = 0,
+    design_output_count: u32 = 0,
+    config_item_count: u32 = 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -65,6 +68,15 @@ pub fn ingestValidated(g: *Graph, sheets: []const SheetData, diag: *Diagnostics)
         try diag.info(diagnostic.E.optional_tab_missing, .tab_discovery, null, null,
             "'Risks' tab not found — risk register will not be tracked", .{});
     }
+    if (resolveTab(sheets, "Design Inputs", design_inputs_synonyms, diag)) |s| {
+        try ingestDesignInputs(g, s, diag, &stats);
+    }
+    if (resolveTab(sheets, "Design Outputs", design_outputs_synonyms, diag)) |s| {
+        try ingestDesignOutputs(g, s, diag, &stats);
+    }
+    if (resolveTab(sheets, "Configuration Items", config_items_synonyms, diag)) |s| {
+        try ingestConfigItems(g, s, diag, &stats);
+    }
     try semanticValidate(g, diag);
     return stats;
 }
@@ -99,6 +111,16 @@ const tests_synonyms = &[_][]const u8{
 const risks_synonyms = &[_][]const u8{
     "risk register", "risk analysis", "risk assessment", "fmea",
     "hazard analysis", "risk matrix", "risk log",
+};
+const design_inputs_synonyms = &[_][]const u8{
+    "design input", "design inputs", "di", "inputs",
+};
+const design_outputs_synonyms = &[_][]const u8{
+    "design output", "design outputs", "do", "outputs", "design artifacts",
+};
+const config_items_synonyms = &[_][]const u8{
+    "configuration items", "ci", "config items", "controlled items",
+    "configuration", "bom",
 };
 
 // ---------------------------------------------------------------------------
@@ -278,6 +300,28 @@ const risk_mit_syns   = &[_][]const u8{ "Mitigation", "Control", "Risk Control",
 const risk_req_syns   = &[_][]const u8{ "Linked Requirement", "Mitigating Requirement", "Control Requirement", "REQ ID", "Requirement ID", "Mitigated By", "Linked REQ ID", "Linked REQ" };
 const risk_rsev_syns  = &[_][]const u8{ "Residual Severity", "Residual Sev", "Post-mitigation Severity", "RS", "Res Sev" };
 const risk_rlik_syns  = &[_][]const u8{ "Residual Likelihood", "Residual Lik", "Post-mitigation Likelihood", "RP", "Residual Occurrence", "Res Lik" };
+
+// Design Inputs
+const di_id_syns      = &[_][]const u8{ "DI ID", "Design Input ID", "Input ID", "Item ID", "Number", "#" };
+const di_desc_syns    = &[_][]const u8{ "Description", "Design Input", "Input Description", "Requirement Statement", "Statement" };
+const di_src_req_syns = &[_][]const u8{ "Source Requirement", "Source REQ", "REQ ID", "Requirement ID", "Linked Requirement", "Traces To" };
+const di_status_syns  = &[_][]const u8{ "Status", "State", "Lifecycle", "Design Input Status" };
+
+// Design Outputs
+const do_id_syns      = &[_][]const u8{ "DO ID", "Design Output ID", "Output ID", "Item ID", "Number", "#" };
+const do_desc_syns    = &[_][]const u8{ "Description", "Design Output", "Output Description", "Artifact Description", "Statement" };
+const do_type_syns    = &[_][]const u8{ "Type", "Artifact Type", "Output Type", "Category" };
+const do_di_syns      = &[_][]const u8{ "Design Input ID", "DI ID", "Source Design Input", "Input ID", "Linked DI" };
+const do_ver_syns     = &[_][]const u8{ "Version", "Rev", "Revision", "Document Version", "Ver" };
+const do_status_syns  = &[_][]const u8{ "Status", "State", "Lifecycle", "Design Output Status" };
+
+// Configuration Items
+const ci_id_syns      = &[_][]const u8{ "CI ID", "Config Item ID", "Item ID", "Configuration Item ID", "Number", "#" };
+const ci_desc_syns    = &[_][]const u8{ "Description", "Config Item", "Item Description", "Configuration Item", "Component" };
+const ci_type_syns    = &[_][]const u8{ "Type", "Item Type", "Component Type", "Category" };
+const ci_ver_syns     = &[_][]const u8{ "Version", "Rev", "Revision", "Item Version", "Ver" };
+const ci_do_syns      = &[_][]const u8{ "Design Output ID", "DO ID", "Linked DO", "Source DO", "Output ID" };
+const ci_status_syns  = &[_][]const u8{ "Status", "State", "Lifecycle", "CI Status" };
 
 // ---------------------------------------------------------------------------
 // Column resolution (Layer 4)
@@ -811,6 +855,161 @@ fn ingestRisks(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestSt
     }
 }
 
+fn ingestDesignInputs(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestStats) !void {
+    if (sheet.rows.len < 2) return;
+    const headers = sheet.rows[0];
+    const data = sheet.rows[1..];
+    const a = diag.arena.allocator();
+
+    const c_id     = resolveCol(headers, data, "ID",               di_id_syns,      sheet.name, diag, true);
+    const c_desc   = resolveCol(headers, &.{}, "Description",      di_desc_syns,    sheet.name, diag, false);
+    const c_src    = resolveCol(headers, &.{}, "Source Requirement", di_src_req_syns, sheet.name, diag, false);
+    const c_status = resolveCol(headers, &.{}, "Status",           di_status_syns,  sheet.name, diag, false);
+
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+
+    for (data, 0..) |row, ri| {
+        if (isSectionDivider(row, c_id)) continue;
+        const raw_id = cell(row, c_id);
+        if (raw_id.len == 0) {
+            try diag.warn(diagnostic.E.row_no_id, .row_parsing, sheet.name, @intCast(ri + 2),
+                "row has content but ID column is empty — skipping", .{});
+            continue;
+        }
+        const id = try normalizeId(raw_id, a, diag, sheet.name, @intCast(ri + 2));
+        if (id.len == 0) continue;
+        if (seen.contains(id)) {
+            try diag.warn(diagnostic.E.duplicate_id, .row_parsing, sheet.name, @intCast(ri + 2),
+                "duplicate ID '{s}' — skipping", .{id});
+            continue;
+        }
+        try seen.put(id, {});
+
+        try g.addNode(id, .design_input, &.{
+            .{ .key = "description", .value = cell(row, c_desc) },
+            .{ .key = "status",      .value = cell(row, c_status) },
+        });
+        stats.design_input_count += 1;
+
+        // ALLOCATED_TO edges: Requirement → DesignInput (source req links to this DI)
+        const src_raw = cell(row, c_src);
+        if (!isBlankEquivalent(src_raw)) {
+            for (try splitIds(src_raw, a)) |part| {
+                const req_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
+                if (req_id.len == 0) continue;
+                try g.addEdge(req_id, id, .allocated_to);
+            }
+        }
+    }
+}
+
+fn ingestDesignOutputs(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestStats) !void {
+    if (sheet.rows.len < 2) return;
+    const headers = sheet.rows[0];
+    const data = sheet.rows[1..];
+    const a = diag.arena.allocator();
+
+    const c_id     = resolveCol(headers, data, "ID",               do_id_syns,     sheet.name, diag, true);
+    const c_desc   = resolveCol(headers, &.{}, "Description",      do_desc_syns,   sheet.name, diag, false);
+    const c_type   = resolveCol(headers, &.{}, "Type",             do_type_syns,   sheet.name, diag, false);
+    const c_di     = resolveCol(headers, &.{}, "Design Input ID",  do_di_syns,     sheet.name, diag, false);
+    const c_ver    = resolveCol(headers, &.{}, "Version",          do_ver_syns,    sheet.name, diag, false);
+    const c_status = resolveCol(headers, &.{}, "Status",           do_status_syns, sheet.name, diag, false);
+
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+
+    for (data, 0..) |row, ri| {
+        if (isSectionDivider(row, c_id)) continue;
+        const raw_id = cell(row, c_id);
+        if (raw_id.len == 0) {
+            try diag.warn(diagnostic.E.row_no_id, .row_parsing, sheet.name, @intCast(ri + 2),
+                "row has content but ID column is empty — skipping", .{});
+            continue;
+        }
+        const id = try normalizeId(raw_id, a, diag, sheet.name, @intCast(ri + 2));
+        if (id.len == 0) continue;
+        if (seen.contains(id)) {
+            try diag.warn(diagnostic.E.duplicate_id, .row_parsing, sheet.name, @intCast(ri + 2),
+                "duplicate ID '{s}' — skipping", .{id});
+            continue;
+        }
+        try seen.put(id, {});
+
+        try g.addNode(id, .design_output, &.{
+            .{ .key = "description", .value = cell(row, c_desc) },
+            .{ .key = "type",        .value = cell(row, c_type) },
+            .{ .key = "version",     .value = cell(row, c_ver) },
+            .{ .key = "status",      .value = cell(row, c_status) },
+        });
+        stats.design_output_count += 1;
+
+        // SATISFIED_BY edges: DesignInput → DesignOutput
+        const di_raw = cell(row, c_di);
+        if (!isBlankEquivalent(di_raw)) {
+            for (try splitIds(di_raw, a)) |part| {
+                const di_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
+                if (di_id.len == 0) continue;
+                try g.addEdge(di_id, id, .satisfied_by);
+            }
+        }
+    }
+}
+
+fn ingestConfigItems(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestStats) !void {
+    if (sheet.rows.len < 2) return;
+    const headers = sheet.rows[0];
+    const data = sheet.rows[1..];
+    const a = diag.arena.allocator();
+
+    const c_id     = resolveCol(headers, data, "ID",               ci_id_syns,     sheet.name, diag, true);
+    const c_desc   = resolveCol(headers, &.{}, "Description",      ci_desc_syns,   sheet.name, diag, false);
+    const c_type   = resolveCol(headers, &.{}, "Type",             ci_type_syns,   sheet.name, diag, false);
+    const c_ver    = resolveCol(headers, &.{}, "Version",          ci_ver_syns,    sheet.name, diag, false);
+    const c_do     = resolveCol(headers, &.{}, "Design Output ID", ci_do_syns,     sheet.name, diag, false);
+    const c_status = resolveCol(headers, &.{}, "Status",           ci_status_syns, sheet.name, diag, false);
+
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+
+    for (data, 0..) |row, ri| {
+        if (isSectionDivider(row, c_id)) continue;
+        const raw_id = cell(row, c_id);
+        if (raw_id.len == 0) {
+            try diag.warn(diagnostic.E.row_no_id, .row_parsing, sheet.name, @intCast(ri + 2),
+                "row has content but ID column is empty — skipping", .{});
+            continue;
+        }
+        const id = try normalizeId(raw_id, a, diag, sheet.name, @intCast(ri + 2));
+        if (id.len == 0) continue;
+        if (seen.contains(id)) {
+            try diag.warn(diagnostic.E.duplicate_id, .row_parsing, sheet.name, @intCast(ri + 2),
+                "duplicate ID '{s}' — skipping", .{id});
+            continue;
+        }
+        try seen.put(id, {});
+
+        try g.addNode(id, .config_item, &.{
+            .{ .key = "description", .value = cell(row, c_desc) },
+            .{ .key = "type",        .value = cell(row, c_type) },
+            .{ .key = "version",     .value = cell(row, c_ver) },
+            .{ .key = "status",      .value = cell(row, c_status) },
+        });
+        stats.config_item_count += 1;
+
+        // CONTROLLED_BY edges: DesignOutput → ConfigurationItem
+        const do_raw = cell(row, c_do);
+        if (!isBlankEquivalent(do_raw)) {
+            for (try splitIds(do_raw, a)) |part| {
+                const do_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
+                if (do_id.len == 0) continue;
+                try g.addEdge(do_id, id, .controlled_by);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Semantic validation (Layer 6)
 // ---------------------------------------------------------------------------
@@ -943,6 +1142,13 @@ fn semanticValidate(g: *const Graph, diag: *Diagnostics) !void {
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
+
+fn diagnosticsContainCode(diag: *const Diagnostics, code: diagnostic.Code) bool {
+    for (diag.entries.items) |entry| {
+        if (entry.code == code) return true;
+    }
+    return false;
+}
 
 test "ingest fixture into graph" {
     var tmp_arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1753,4 +1959,233 @@ test "resolveTab full tab list in RequirementsTabNotFound error" {
         if (e.level == .err and std.mem.indexOf(u8, e.message, "Sheet1") != null) found_tabs = true;
     }
     try testing.expect(found_tabs);
+}
+
+test "ingestDesignInputs creates DesignInput node and ALLOCATED_TO edge" {
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement", "Lifecycle Status" },
+        &.{ "REQ-001", "The system SHALL detect GPS loss", "approved" },
+    };
+    const di_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Description", "Source Requirement", "Status" },
+        &.{ "DI-001", "GPS loss timing specification", "REQ-001", "draft" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Design Inputs", .rows = di_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 1), stats.design_input_count);
+    try testing.expectEqual(@as(u32, 1), stats.requirement_count);
+
+    const di_node = g.getNode("DI-001");
+    try testing.expect(di_node != null);
+    try testing.expectEqual(graph.NodeType.design_input, di_node.?.node_type);
+    try testing.expectEqualStrings("GPS loss timing specification", di_node.?.get("description").?);
+
+    // Verify ALLOCATED_TO edge REQ-001 → DI-001
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-001", testing.allocator, &edges);
+    var found = false;
+    for (edges.items) |e| {
+        if (e.label == .allocated_to and std.mem.eql(u8, e.to_id, "DI-001")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "ingestDesignOutputs creates DesignOutput node and SATISFIED_BY edge" {
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL detect GPS loss" },
+    };
+    const di_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Description" },
+        &.{ "DI-001", "GPS timing spec" },
+    };
+    const do_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Description", "Type", "Design Input ID", "Version", "Status" },
+        &.{ "DO-001", "GPS timeout module", "Software", "DI-001", "1.0", "released" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Design Inputs", .rows = di_rows },
+        .{ .name = "Design Outputs", .rows = do_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 1), stats.design_output_count);
+
+    const do_node = g.getNode("DO-001");
+    try testing.expect(do_node != null);
+    try testing.expectEqual(graph.NodeType.design_output, do_node.?.node_type);
+
+    // Verify SATISFIED_BY edge DI-001 → DO-001
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("DI-001", testing.allocator, &edges);
+    var found = false;
+    for (edges.items) |e| {
+        if (e.label == .satisfied_by and std.mem.eql(u8, e.to_id, "DO-001")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "ingestConfigItems creates ConfigurationItem node and CONTROLLED_BY edge" {
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL detect GPS loss" },
+    };
+    const do_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Description" },
+        &.{ "DO-001", "GPS timeout module" },
+    };
+    const ci_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Description", "Type", "Version", "Design Output ID", "Status" },
+        &.{ "CI-001", "gps_timeout.c", "Source File", "1.0", "DO-001", "controlled" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Design Outputs", .rows = do_rows },
+        .{ .name = "Configuration Items", .rows = ci_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 1), stats.config_item_count);
+
+    const ci_node = g.getNode("CI-001");
+    try testing.expect(ci_node != null);
+    try testing.expectEqual(graph.NodeType.config_item, ci_node.?.node_type);
+
+    // Verify CONTROLLED_BY edge DO-001 → CI-001
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("DO-001", testing.allocator, &edges);
+    var found = false;
+    for (edges.items) |e| {
+        if (e.label == .controlled_by and std.mem.eql(u8, e.to_id, "CI-001")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "existing 4-tab behavior unchanged with DI/DO/CI tabs present" {
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "GPS SHALL detect loss" },
+        &.{ "REQ-002", "System SHALL restart" },
+    };
+    const un_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "UN-001", "User needs GPS" },
+    };
+    const di_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Description" },
+        &.{ "DI-001", "GPS spec" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "User Needs",   .rows = un_rows },
+        .{ .name = "Design Inputs", .rows = di_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 2), stats.requirement_count);
+    try testing.expectEqual(@as(u32, 1), stats.user_need_count);
+    try testing.expectEqual(@as(u32, 1), stats.design_input_count);
+    try testing.expect(g.getNode("REQ-001") != null);
+    try testing.expect(g.getNode("UN-001") != null);
+    try testing.expect(g.getNode("DI-001") != null);
+}
+
+test "ingest golden profile tabs fixture builds full design chain" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sheets = try xlsx.parse(alloc, "test/fixtures/RTMify_Profile_Tabs_Golden.xlsx");
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 2), stats.user_need_count);
+    try testing.expectEqual(@as(u32, 3), stats.requirement_count);
+    try testing.expectEqual(@as(u32, 3), stats.test_group_count);
+    try testing.expectEqual(@as(u32, 3), stats.test_count);
+    try testing.expectEqual(@as(u32, 2), stats.risk_count);
+    try testing.expectEqual(@as(u32, 3), stats.design_input_count);
+    try testing.expectEqual(@as(u32, 3), stats.design_output_count);
+    try testing.expectEqual(@as(u32, 3), stats.config_item_count);
+    try testing.expectEqual(@as(u32, 0), d.error_count);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+
+    try g.edgesFrom("REQ-001", testing.allocator, &edges);
+    var found_allocated = false;
+    for (edges.items) |e| {
+        if (e.label == .allocated_to and std.mem.eql(u8, e.to_id, "DI-001")) found_allocated = true;
+    }
+    try testing.expect(found_allocated);
+
+    edges.clearRetainingCapacity();
+    try g.edgesFrom("DI-001", testing.allocator, &edges);
+    var found_satisfied = false;
+    for (edges.items) |e| {
+        if (e.label == .satisfied_by and std.mem.eql(u8, e.to_id, "DO-001")) found_satisfied = true;
+    }
+    try testing.expect(found_satisfied);
+
+    edges.clearRetainingCapacity();
+    try g.edgesFrom("DO-001", testing.allocator, &edges);
+    var found_controlled = false;
+    for (edges.items) |e| {
+        if (e.label == .controlled_by and std.mem.eql(u8, e.to_id, "CI-001")) found_controlled = true;
+    }
+    try testing.expect(found_controlled);
+}
+
+test "ingest extended error fixture emits expected diagnostics" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sheets = try xlsx.parse(alloc, "test/fixtures/RTMify_Profile_Tabs_Errors.xlsx");
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    _ = try ingestValidated(&g, sheets, &d);
+
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.ref_not_found));
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.duplicate_id));
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.row_no_id));
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.duplicate_test_id));
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.req_no_shall));
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.risk_unmitigated));
 }
