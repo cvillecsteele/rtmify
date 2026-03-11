@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
 const routes = @import("routes.zig");
+const json_util = @import("json_util.zig");
 
 // ---------------------------------------------------------------------------
 // Tool definitions (JSON Schema, hand-written per PRD §10.2)
@@ -96,15 +97,28 @@ pub fn handlePost(
     state: *sync_live.SyncState,
     alloc: Allocator,
 ) !void {
-    const method = extractField(body, "method") orelse {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
+        return sendError(req, "null", -32600, "Invalid Request", alloc);
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) {
+        return sendError(req, "null", -32600, "Invalid Request", alloc);
+    }
+
+    const method = json_util.getString(root, "method") orelse {
         return sendError(req, "null", -32600, "Invalid Request", alloc);
     };
 
-    // Extract raw id (number, string, or null) for response
-    const id_raw = extractRawId(body) orelse "null";
+    const id_raw = if (json_util.getObjectField(root, "id")) |id_value|
+        try std.json.Stringify.valueAlloc(alloc, id_value, .{})
+    else
+        try alloc.dupe(u8, "null");
+    defer alloc.free(id_raw);
 
     // Notifications have no id — send no response
-    const is_notification = !hasId(body);
+    const is_notification = json_util.getObjectField(root, "id") == null;
 
     if (std.mem.eql(u8, method, "initialize")) {
         try sendResult(req, id_raw, initialize_result, alloc);
@@ -125,7 +139,7 @@ pub fn handlePost(
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "tools/call")) {
-        try dispatchToolCall(req, body, id_raw, db, state, alloc);
+        try dispatchToolCall(req, root, id_raw, db, state, alloc);
     } else {
         try sendError(req, id_raw, -32601, "Method not found", alloc);
     }
@@ -137,22 +151,20 @@ pub fn handlePost(
 
 fn dispatchToolCall(
     req: *std.http.Server.Request,
-    body: []const u8,
+    root: std.json.Value,
     id_raw: []const u8,
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
     alloc: Allocator,
 ) !void {
-    // Extract params.name
-    const params_start = findObjectField(body, "params") orelse {
+    const params = json_util.getObjectField(root, "params") orelse {
         return sendError(req, id_raw, -32602, "Missing params", alloc);
     };
-    const name = extractField(params_start, "name") orelse {
+    const name = json_util.getString(params, "name") orelse {
         return sendError(req, id_raw, -32602, "Missing tool name", alloc);
     };
 
-    // Extract params.arguments (optional JSON object)
-    const args_start = findObjectField(params_start, "arguments") orelse "";
+    const args = json_util.getObjectField(params, "arguments");
 
     if (std.mem.eql(u8, name, "get_rtm")) {
         const data = try routes.handleRtm(db, alloc);
@@ -167,19 +179,22 @@ fn dispatchToolCall(
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "get_nodes")) {
-        const type_filter = extractField(args_start, "type");
+        const type_filter = if (args) |a| json_util.getString(a, "type") else null;
         const data = try routes.handleNodes(db, type_filter, alloc);
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "get_node")) {
-        const node_id = extractField(args_start, "id") orelse {
+        const node_id = (if (args) |a| json_util.getString(a, "id") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: id", alloc);
         };
-        const data = try routes.handleNode(db, node_id, alloc);
+        const data = routes.handleNode(db, node_id, alloc) catch |e| switch (e) {
+            error.NotFound => return sendError(req, id_raw, -32004, "Node not found", alloc),
+            else => return e,
+        };
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "search")) {
-        const q = extractField(args_start, "q") orelse "";
+        const q = if (args) |a| json_util.getString(a, "q") orelse "" else "";
         const data = try routes.handleSearch(db, q, alloc);
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
@@ -196,10 +211,13 @@ fn dispatchToolCall(
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "get_impact")) {
-        const node_id = extractField(args_start, "id") orelse {
+        const node_id = (if (args) |a| json_util.getString(a, "id") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: id", alloc);
         };
-        const data = try routes.handleImpact(db, node_id, alloc);
+        const data = routes.handleImpact(db, node_id, alloc) catch |e| switch (e) {
+            error.NotFound => return sendError(req, id_raw, -32004, "Node not found", alloc),
+            else => return e,
+        };
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "get_schema")) {
@@ -211,7 +229,7 @@ fn dispatchToolCall(
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "clear_suspect")) {
-        const node_id = extractField(args_start, "id") orelse {
+        const node_id = (if (args) |a| json_util.getString(a, "id") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: id", alloc);
         };
         const data = try routes.handleClearSuspect(db, node_id, alloc);
@@ -230,28 +248,28 @@ fn dispatchToolCall(
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "file_annotations")) {
-        const file_path = extractField(args_start, "file_path") orelse {
+        const file_path = (if (args) |a| json_util.getString(a, "file_path") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: file_path", alloc);
         };
         const data = try routes.handleFileAnnotations(db, file_path, alloc);
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "blame_for_requirement")) {
-        const req_id = extractField(args_start, "req_id") orelse {
+        const req_id = (if (args) |a| json_util.getString(a, "req_id") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: req_id", alloc);
         };
         const data = try routes.handleBlameForRequirement(db, req_id, alloc);
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "commit_history")) {
-        const req_id = extractField(args_start, "req_id") orelse {
+        const req_id = (if (args) |a| json_util.getString(a, "req_id") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: req_id", alloc);
         };
         const data = try routes.handleCommitHistory(db, req_id, alloc);
         defer alloc.free(data);
         try sendToolResult(req, id_raw, data, alloc);
     } else if (std.mem.eql(u8, name, "design_history")) {
-        const req_id = extractField(args_start, "req_id") orelse {
+        const req_id = (if (args) |a| json_util.getString(a, "req_id") else null) orelse {
             return sendError(req, id_raw, -32602, "Missing argument: req_id", alloc);
         };
         const data = try routes.handleDesignHistory(db, req_id, alloc);
@@ -300,19 +318,9 @@ fn sendToolResult(
     data_json: []const u8,
     alloc: Allocator,
 ) !void {
-    // Escape the JSON string for embedding in a JSON string value
     var escaped: std.ArrayList(u8) = .empty;
     defer escaped.deinit(alloc);
-    for (data_json) |c| {
-        switch (c) {
-            '"' => try escaped.appendSlice(alloc, "\\\""),
-            '\\' => try escaped.appendSlice(alloc, "\\\\"),
-            '\n' => try escaped.appendSlice(alloc, "\\n"),
-            '\r' => try escaped.appendSlice(alloc, "\\r"),
-            '\t' => try escaped.appendSlice(alloc, "\\t"),
-            else => try escaped.append(alloc, c),
-        }
-    }
+    try json_util.appendJsonEscaped(&escaped, data_json, alloc);
     const resp = try std.fmt.allocPrint(
         alloc,
         "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}}}",
@@ -340,117 +348,65 @@ fn sendError(
 }
 
 // ---------------------------------------------------------------------------
-// JSON extraction helpers
-// ---------------------------------------------------------------------------
-
-/// Extract a string value for a key from a JSON object. Returns the unquoted
-/// content of the string (no allocation — points into `json`).
-fn extractField(json: []const u8, key: []const u8) ?[]const u8 {
-    var needle_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    var pos = key_pos + needle.len;
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-    if (pos >= json.len or json[pos] != '"') return null;
-    pos += 1;
-    const start = pos;
-    while (pos < json.len and json[pos] != '"') {
-        if (json[pos] == '\\') pos += 1;
-        pos += 1;
-    }
-    return json[start..pos];
-}
-
-/// Find the start of a JSON object value for a key.
-/// Returns a slice starting at the '{' of the value object.
-fn findObjectField(json: []const u8, key: []const u8) ?[]const u8 {
-    var needle_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\":", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    var pos = key_pos + needle.len;
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-    if (pos >= json.len or json[pos] != '{') return null;
-    return json[pos..];
-}
-
-/// Extract the raw `id` value from a JSON-RPC body (number, string, or null).
-/// Returns a slice of `json` containing the raw JSON value.
-fn extractRawId(json: []const u8) ?[]const u8 {
-    const needle = "\"id\":";
-    const id_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    var pos = id_pos + needle.len;
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-    if (pos >= json.len) return null;
-    const start = pos;
-    if (json[pos] == '"') {
-        // String id
-        pos += 1;
-        while (pos < json.len and json[pos] != '"') {
-            if (json[pos] == '\\') pos += 1;
-            pos += 1;
-        }
-        if (pos < json.len) pos += 1; // closing "
-        return json[start..pos];
-    }
-    // Number or null
-    while (pos < json.len and json[pos] != ',' and json[pos] != '}' and
-        json[pos] != '\n' and json[pos] != '\r') pos += 1;
-    return std.mem.trim(u8, json[start..pos], " \t");
-}
-
-/// Returns true if the JSON body contains an explicit "id" field.
-/// Notifications omit the id field.
-fn hasId(json: []const u8) bool {
-    return std.mem.indexOf(u8, json, "\"id\":") != null;
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
-test "extractField basic" {
-    const json =
-        \\{"jsonrpc":"2.0","method":"tools/call","id":1}
-    ;
-    try testing.expectEqualStrings("2.0", extractField(json, "jsonrpc").?);
-    try testing.expectEqualStrings("tools/call", extractField(json, "method").?);
-    try testing.expect(extractField(json, "missing") == null);
+fn parseJsonForTest(json: []const u8, alloc: Allocator) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, alloc, json, .{});
 }
 
-test "extractRawId number" {
-    const json = "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"ping\"}";
-    try testing.expectEqualStrings("42", extractRawId(json).?);
+test "json rpc parsing tolerates whitespace after colon" {
+    var parsed = try parseJsonForTest("{\"jsonrpc\" : \"2.0\", \"method\" : \"tools/call\", \"id\" : 1}", testing.allocator);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("2.0", json_util.getString(parsed.value, "jsonrpc").?);
+    try testing.expectEqualStrings("tools/call", json_util.getString(parsed.value, "method").?);
 }
 
-test "extractRawId string" {
-    const json = "{\"jsonrpc\":\"2.0\",\"id\":\"req-1\",\"method\":\"ping\"}";
-    try testing.expectEqualStrings("\"req-1\"", extractRawId(json).?);
+test "json rpc id serialization tolerates whitespace around field" {
+    var parsed = try parseJsonForTest("{\"jsonrpc\":\"2.0\", \"id\" : 42, \"method\":\"ping\"}", testing.allocator);
+    defer parsed.deinit();
+    const id_value = json_util.getObjectField(parsed.value, "id").?;
+    const id_raw = try std.json.Stringify.valueAlloc(testing.allocator, id_value, .{});
+    defer testing.allocator.free(id_raw);
+    try testing.expectEqualStrings("42", id_raw);
 }
 
-test "extractRawId null" {
-    const json = "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}";
-    try testing.expectEqualStrings("null", extractRawId(json).?);
+test "json rpc id string serialization preserves raw JSON string" {
+    var parsed = try parseJsonForTest("{\"jsonrpc\":\"2.0\", \"id\" : \"req-1\", \"method\":\"ping\"}", testing.allocator);
+    defer parsed.deinit();
+    const id_value = json_util.getObjectField(parsed.value, "id").?;
+    const id_raw = try std.json.Stringify.valueAlloc(testing.allocator, id_value, .{});
+    defer testing.allocator.free(id_raw);
+    try testing.expectEqualStrings("\"req-1\"", id_raw);
 }
 
-test "hasId true" {
-    try testing.expect(hasId("{\"id\":1,\"method\":\"ping\"}"));
+test "json rpc id null serialization works" {
+    var parsed = try parseJsonForTest("{\"jsonrpc\":\"2.0\", \"id\" : null, \"method\":\"ping\"}", testing.allocator);
+    defer parsed.deinit();
+    const id_value = json_util.getObjectField(parsed.value, "id").?;
+    const id_raw = try std.json.Stringify.valueAlloc(testing.allocator, id_value, .{});
+    defer testing.allocator.free(id_raw);
+    try testing.expectEqualStrings("null", id_raw);
 }
 
-test "hasId false — notification" {
-    try testing.expect(!hasId("{\"method\":\"notifications/initialized\"}"));
+test "json rpc notification detection tolerates legal spacing" {
+    var parsed = try parseJsonForTest("{\"method\" : \"notifications/initialized\"}", testing.allocator);
+    defer parsed.deinit();
+    try testing.expect(json_util.getObjectField(parsed.value, "id") == null);
 }
 
-test "findObjectField" {
-    const json =
-        \\{"method":"tools/call","params":{"name":"get_rtm","arguments":{}}}
-    ;
-    const params = findObjectField(json, "params").?;
-    try testing.expect(std.mem.startsWith(u8, params, "{"));
-    try testing.expectEqualStrings("get_rtm", extractField(params, "name").?);
+test "json rpc nested params object tolerates whitespace after colon" {
+    var parsed = try parseJsonForTest("{\"method\":\"tools/call\", \"params\" : {\"name\":\"get_rtm\", \"arguments\" : {}}}", testing.allocator);
+    defer parsed.deinit();
+    const params = json_util.getObjectField(parsed.value, "params").?;
+    try testing.expect(params == .object);
+    try testing.expectEqualStrings("get_rtm", json_util.getString(params, "name").?);
 }
 
-test "findObjectField missing" {
-    try testing.expect(findObjectField("{\"a\":1}", "missing") == null);
+test "json rpc missing params object returns null" {
+    var parsed = try parseJsonForTest("{\"a\":1}", testing.allocator);
+    defer parsed.deinit();
+    try testing.expect(json_util.getObjectField(parsed.value, "missing") == null);
 }

@@ -28,7 +28,7 @@ struct MenuBarView: View {
                 .foregroundStyle(.secondary)
         case .running(let port):
             VStack(alignment: .leading) {
-                Label("Running on :\(port)", systemImage: "checkmark.circle")
+                Label("Running on :\(String(port))", systemImage: "checkmark.circle")
                     .foregroundStyle(.green)
                 if let ts = vm.lastSyncAt {
                     Text("Last sync: \(ts)")
@@ -71,7 +71,7 @@ struct MenuBarView: View {
                 set: { _ in vm.toggleLaunchAtLogin() }
             ))
             Divider()
-            Button("Quit RTMify Live") { NSApplication.shared.terminate(nil) }
+            Button("Quit RTMify Live") { vm.quitApp() }
         }
     }
 }

@@ -14,7 +14,7 @@ pub const ServerCtx = struct {
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
     alloc: Allocator,
-    /// Called after POST /api/config to (re)start the sync thread if not already running.
+    /// Called after POST /api/connection to (re)start the sync thread if not already running.
     /// Set by main_live.zig; null means auto-start is not configured.
     startSyncFn: ?*const fn (*graph_live.GraphDb, *sync_live.SyncState, Allocator) void = null,
 };
@@ -67,6 +67,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
 
     // Strip query string for routing
     const path = stripQuery(target);
+    std.log.info("http {s} {s}", .{ @tagName(req.head.method), target });
 
     // Route
     if (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html")) {
@@ -112,19 +113,32 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/impact/")) {
             const node_id = path["/query/impact/".len..];
-            const body = try routes.handleImpact(ctx.db, node_id, alloc);
+            const body = routes.handleImpact(ctx.db, node_id, alloc) catch |e| switch (e) {
+                error.NotFound => {
+                    const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
+                    try sendJsonWithStatus(req, err_body, .not_found);
+                    return;
+                },
+                else => return e,
+            };
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/node/")) {
             const node_id = path["/query/node/".len..];
-            const body = try routes.handleNode(ctx.db, node_id, alloc);
+            const body = routes.handleNode(ctx.db, node_id, alloc) catch |e| switch (e) {
+                error.NotFound => {
+                    const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
+                    try sendJsonWithStatus(req, err_body, .not_found);
+                    return;
+                },
+                else => return e,
+            };
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/status")) {
             const body = try routes.handleStatus(ctx.db, ctx.state, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = queryParam(target, "profile");
-            const qsheet = queryParam(target, "sheet_url");
-            const body = try routes.handleProvisionPreview(ctx.db, qprofile, qsheet, alloc);
+            const body = try routes.handleProvisionPreview(ctx.db, qprofile, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/diagnostics")) {
             const qsource = queryParam(target, "source");
@@ -189,25 +203,26 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.state, alloc);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handlePostProfile(ctx.db, body_bytes, alloc);
-            try sendJson(req, resp);
+            const resp = try routes.handlePostProfileResponse(ctx.db, body_bytes, alloc);
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/repos")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handlePostRepo(ctx.db, body_bytes, alloc);
-            try sendJson(req, resp);
-        } else if (std.mem.eql(u8, path, "/api/service-account")) {
+            const resp = try routes.handlePostRepoResponse(ctx.db, body_bytes, alloc);
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/connection/validate")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleServiceAccount(ctx.db, body_bytes, alloc);
-            try sendJson(req, resp);
-        } else if (std.mem.eql(u8, path, "/api/config")) {
+            const resp = try routes.handleConnectionValidateResponse(body_bytes, alloc);
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/connection")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleConfig(ctx.db, body_bytes, alloc);
-            // Trigger sync thread start if credentials + sheet_id are now available
-            if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
-            try sendJson(req, resp);
+            const resp = try routes.handleConnectionResponse(ctx.db, body_bytes, alloc);
+            if (resp.ok) {
+                if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+            }
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision")) {
-            const resp = try routes.handleProvision(ctx.db, alloc);
-            try sendJson(req, resp);
+            const resp = try routes.handleProvisionResponse(ctx.db, alloc);
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.startsWith(u8, path, "/suspect/") and
             std.mem.endsWith(u8, path, "/clear"))
         {
@@ -224,8 +239,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
     } else if (req.head.method == .DELETE) {
         if (std.mem.startsWith(u8, path, "/api/repos/")) {
             const idx = path["/api/repos/".len..];
-            const body = try routes.handleDeleteRepo(ctx.db, idx, alloc);
-            try sendJson(req, body);
+            const resp = try routes.handleDeleteRepoResponse(ctx.db, idx, alloc);
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else {
             try send404(req);
         }
@@ -249,11 +264,15 @@ const cors_headers = [_]std.http.Header{
 };
 
 fn sendJson(req: *std.http.Server.Request, body: []const u8) !void {
+    try sendJsonWithStatus(req, body, .ok);
+}
+
+fn sendJsonWithStatus(req: *std.http.Server.Request, body: []const u8, status: std.http.Status) !void {
     const headers = cors_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = "application/json" },
     };
     try req.respond(body, .{
-        .status = .ok,
+        .status = status,
         .extra_headers = &headers,
         .keep_alive = false,
     });
@@ -262,6 +281,8 @@ fn sendJson(req: *std.http.Server.Request, body: []const u8) !void {
 fn sendHtml(req: *std.http.Server.Request, body: []const u8) !void {
     const headers = cors_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+        .{ .name = "Cache-Control", .value = "no-store, no-cache, must-revalidate, max-age=0" },
+        .{ .name = "Pragma", .value = "no-cache" },
     };
     try req.respond(body, .{
         .status = .ok,
@@ -357,12 +378,22 @@ fn stripQuery(target: []const u8) []const u8 {
 const testing = std.testing;
 
 test "stripQuery removes query string and preserves bare path" {
-    try testing.expectEqualStrings("/api/provision-preview", stripQuery("/api/provision-preview?profile=medical&sheet_url=abc"));
+    try testing.expectEqualStrings("/api/provision-preview", stripQuery("/api/provision-preview?profile=medical"));
     try testing.expectEqualStrings("/query/chain-gaps", stripQuery("/query/chain-gaps"));
 }
 
 test "queryParam extracts expected values" {
-    try testing.expectEqualStrings("medical", queryParam("/api/provision-preview?profile=medical&sheet_url=https://example", "profile").?);
-    try testing.expectEqualStrings("https://example", queryParam("/api/provision-preview?profile=medical&sheet_url=https://example", "sheet_url").?);
+    try testing.expectEqualStrings("medical", queryParam("/api/provision-preview?profile=medical", "profile").?);
+    try testing.expect(queryParam("/api/provision-preview?profile=medical", "sheet_url") == null);
     try testing.expect(queryParam("/api/provision-preview?profile=medical", "missing") == null);
+}
+
+test "successful connection response should start sync" {
+    const resp = routes.JsonRouteResponse{ .status = .ok, .body = "{}", .ok = true };
+    try testing.expect(resp.ok);
+}
+
+test "failed connection response should not start sync" {
+    const resp = routes.JsonRouteResponse{ .status = .bad_request, .body = "{\"ok\":false}", .ok = false };
+    try testing.expect(!resp.ok);
 }

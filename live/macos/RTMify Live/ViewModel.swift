@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import ServiceManagement
+import Darwin
 
 enum AppState {
     case licenseGate
@@ -78,7 +79,7 @@ final class ViewModel: ObservableObject {
 
     // MARK: - Server control
 
-    func start() {
+    func start(openDashboardOnLaunch: Bool = true) {
         guard case .stopped = state else { return }
         guard let binary = binaryPath() else {
             state = .error(message: "rtmify-live binary not found in Resources.")
@@ -91,12 +92,19 @@ final class ViewModel: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
         process.arguments = ["--port", "\(port)", "--no-browser"]
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dataDir = appSupport.appendingPathComponent("RTMify Live")
+        try? FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        process.currentDirectoryURL = dataDir
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
+        let logURL = serverLogURL()
+        writeLogHeader(logURL, port: port, binary: binary)
 
         process.terminationHandler = { [weak self] proc in
+            appendLogLine("server terminated with code \(proc.terminationStatus)", to: logURL)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.stopStatusPolling()
@@ -105,7 +113,7 @@ final class ViewModel: ObservableObject {
                         self.restartCount += 1
                         self.state = .stopped
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        self.start()
+                        self.start(openDashboardOnLaunch: false)
                     } else {
                         self.state = .error(message: "Server crashed repeatedly (code \(proc.terminationStatus))")
                     }
@@ -115,45 +123,65 @@ final class ViewModel: ObservableObject {
 
         do {
             try process.run()
+            appendLogLine("started server pid=\(process.processIdentifier) port=\(port)", to: logURL)
         } catch {
+            appendLogLine("failed to start server: \(error.localizedDescription)", to: logURL)
             state = .error(message: "Failed to start: \(error.localizedDescription)")
             return
         }
 
         serverProcess = process
 
-        // Watch stdout for "Listening" to confirm startup
+        // Watch combined output for the server listen log to confirm startup.
         let handle = pipe.fileHandleForReading
         Task {
             var buf = Data()
             for try await chunk in handle.bytes {
                 buf.append(chunk)
-                if let str = String(data: buf, encoding: .utf8), str.contains("Listening") {
+                appendLogData(Data([chunk]), to: logURL)
+                if let str = String(data: buf, encoding: .utf8),
+                   str.localizedCaseInsensitiveContains("listening")
+                {
                     await MainActor.run { [weak self] in
-                        self?.state = .running(port: self?.port ?? 8000)
-                        self?.startStatusPolling()
+                        self?.serverDidStart(openDashboardOnLaunch: openDashboardOnLaunch)
                     }
                     return
                 }
-                // Give up waiting after 8 seconds and assume running
-                if buf.count > 65536 { break }
             }
-            // Fallback: assume running after brief delay
+        }
+
+        // Fallback: if the process is still alive after a short delay, mark it running
+        // even if no listen log line has been observed yet.
+        Task { [weak self, weak process] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            if case .starting = self.state {
-                self.state = .running(port: self.port)
-                self.startStatusPolling()
+            await MainActor.run {
+                guard let self else { return }
+                guard case .starting = self.state else { return }
+                guard let process, process.isRunning else {
+                    appendLogLine("server exited before startup completed", to: logURL)
+                    self.state = .error(message: "Server exited during startup.")
+                    return
+                }
+                self.serverDidStart(openDashboardOnLaunch: openDashboardOnLaunch)
             }
         }
     }
 
     func stop() {
         restartCount = 0
-        serverProcess?.terminate()
+        if let process = serverProcess {
+            appendLogLine("stopping server pid=\(process.processIdentifier)", to: serverLogURL())
+            terminateProcessTree(process)
+        }
         serverProcess = nil
         stopStatusPolling()
         if case .running = state { state = .stopped }
         if case .starting = state { state = .stopped }
+    }
+
+    func quitApp() {
+        stop()
+        NSApplication.shared.terminate(nil)
     }
 
     func openDashboard() {
@@ -199,12 +227,9 @@ final class ViewModel: ObservableObject {
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    if let ts = json["last_sync_at"] as? String {
-                        lastSyncAt = ts
-                    }
-                    if let sc = json["last_scan_at"] as? String, sc != "never" {
-                        lastScanAt = sc
-                    }
+                    let payload = StatusPayload.from(json: json)
+                    lastSyncAt = payload.lastSyncAt
+                    lastScanAt = payload.lastScanAt
                 }
             } catch {}
         }
@@ -223,16 +248,33 @@ final class ViewModel: ObservableObject {
         return nil
     }
 
-    private func findAvailablePort() -> Int {
-        let stored = UserDefaults.standard.integer(forKey: "server_port")
-        let start = stored > 0 ? stored : 8000
-        for p in start...(start + 10) {
-            if portAvailable(p) {
-                UserDefaults.standard.set(p, forKey: "server_port")
-                return p
-            }
+    private func serverDidStart(openDashboardOnLaunch: Bool) {
+        state = .running(port: port)
+        startStatusPolling()
+        if openDashboardOnLaunch {
+            openDashboard()
         }
-        return start
+    }
+
+    private func terminateProcessTree(_ process: Process) {
+        let pid = process.processIdentifier
+        process.terminate()
+        let deadline = Date().addingTimeInterval(0.75)
+        while process.isRunning && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        if process.isRunning {
+            appendLogLine("forcing server pid=\(pid) down with SIGKILL", to: serverLogURL())
+            kill(pid, SIGKILL)
+        }
+    }
+
+    private func findAvailablePort() -> Int {
+        let selected = PortSelection.firstAvailable { [self] candidate in
+            portAvailable(candidate)
+        }
+        UserDefaults.standard.set(selected, forKey: "server_port")
+        return selected
     }
 
     private func portAvailable(_ port: Int) -> Bool {
@@ -274,4 +316,37 @@ final class ViewModel: ObservableObject {
             }
         }
     }
+}
+
+private func serverLogURL() -> URL {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let dir = home.appendingPathComponent(".rtmify", isDirectory: true)
+        .appendingPathComponent("log", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir.appendingPathComponent("server.log")
+}
+
+private func writeLogHeader(_ url: URL, port: Int, binary: String) {
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    let header = "\n=== RTMify Live session \(timestamp) port=\(port) binary=\(binary) ===\n"
+    appendLogString(header, to: url)
+}
+
+private func appendLogLine(_ line: String, to url: URL) {
+    appendLogString("[shim] \(line)\n", to: url)
+}
+
+private func appendLogString(_ string: String, to url: URL) {
+    guard let data = string.data(using: .utf8) else { return }
+    appendLogData(data, to: url)
+}
+
+private func appendLogData(_ data: Data, to url: URL) {
+    if !FileManager.default.fileExists(atPath: url.path) {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+    guard let handle = try? FileHandle(forWritingTo: url) else { return }
+    defer { try? handle.close() }
+    _ = try? handle.seekToEnd()
+    try? handle.write(contentsOf: data)
 }

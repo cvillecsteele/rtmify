@@ -7,6 +7,7 @@
 const std = @import("std");
 const state_mod = @import("state.zig");
 const process_mod = @import("process.zig");
+const lifecycle_mod = @import("lifecycle.zig");
 const license_mod = @import("license_gate.zig");
 const tray_mod = @import("tray_menu.zig");
 
@@ -222,12 +223,7 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
         WM_ACTIVATED => {
             // License activated — start server and open dashboard
             if (g_srv_state != .running) {
-                g_srv_state = .starting;
-                if (process_mod.spawnServer(g_port)) {
-                    g_srv_state = .running;
-                } else {
-                    g_srv_state = .@"error";
-                }
+                lifecycle_mod.handleStart(&g_srv_state, process_mod.spawnServer(g_port));
             }
             if (g_srv_state == .running) {
                 var url_buf: [64]u8 = undefined;
@@ -240,9 +236,7 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
         WM_TIMER => {
             if (wparam == TIMER_STATUS) {
                 // Check if server process died
-                if (g_srv_state == .running and !process_mod.serverRunning()) {
-                    g_srv_state = .@"error";
-                }
+                lifecycle_mod.handleTimer(&g_srv_state, process_mod.serverRunning());
             }
         },
         WM_COMMAND => {
@@ -253,7 +247,7 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
         },
         WM_DESTROY => {
             trayIcon(h, NIM_DELETE);
-            process_mod.stopServer();
+            lifecycle_mod.handleDestroy(process_mod.stopServer);
             PostQuitMessage(0);
         },
         else => return DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -271,16 +265,10 @@ fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
             _ = ShellExecuteW(hwnd, W("open"), &url_wide, null, null, 1);
         },
         tray_mod.CMD_START => {
-            g_srv_state = .starting;
-            if (process_mod.spawnServer(g_port)) {
-                g_srv_state = .running;
-            } else {
-                g_srv_state = .@"error";
-            }
+            lifecycle_mod.handleStart(&g_srv_state, process_mod.spawnServer(g_port));
         },
         tray_mod.CMD_STOP => {
-            process_mod.stopServer();
-            g_srv_state = .stopped;
+            lifecycle_mod.handleStop(&g_srv_state, process_mod.stopServer);
         },
         tray_mod.CMD_LICENSE => {
             license_mod.showLicenseDialog(g_hinstance, hwnd, g_port);
@@ -290,7 +278,7 @@ fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
             setLaunchAtLogin(g_launch_at_login);
         },
         tray_mod.CMD_QUIT => {
-            process_mod.stopServer();
+            lifecycle_mod.handleQuit(process_mod.stopServer);
             trayIcon(hwnd, NIM_DELETE);
             PostQuitMessage(0);
         },

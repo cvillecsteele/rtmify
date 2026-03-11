@@ -4,9 +4,16 @@ const build_options = @import("build_options");
 const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
 const server = @import("server.zig");
-const sheets_mod = @import("sheets.zig");
+const connection_mod = @import("connection.zig");
+const online_provider = @import("online_provider.zig");
+const log_sink = @import("log_sink.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
+
+pub const std_options: std.Options = .{
+    .log_level = .info,
+    .logFn = log_sink.logFn,
+};
 
 const help_text =
     \\rtmify-live — requirements traceability live server
@@ -117,6 +124,8 @@ pub fn main() !void {
     var g = try graph_live.GraphDb.init(db_path);
     defer g.deinit();
 
+    try connection_mod.migrateLegacyGoogleConfig(&g, gpa);
+
     var state: sync_live.SyncState = .{};
 
     // License check — result stored in state for the web UI
@@ -126,17 +135,14 @@ pub fn main() !void {
         std.log.warn("license check: {s} — web UI will show license gate", .{@tagName(lic_result)});
     }
 
-    // Check if credentials + sheet_id exist — start sync thread if they do
-    if (try g.getLatestCredential(gpa)) |cred| {
-        defer gpa.free(cred);
-        if (try g.getConfig("sheet_id", gpa)) |sheet_id| {
-            defer gpa.free(sheet_id);
-            const started = maybeStartSync(&g, &state, cred, sheet_id, gpa) catch |e| blk: {
-                std.log.warn("sync thread not started: {s}", .{@errorName(e)});
-                break :blk false;
-            };
-            if (started) std.log.info("sync thread started for sheet: {s}", .{sheet_id});
-        }
+    if (try connection_mod.loadActive(&g, gpa)) |loaded_active| {
+        var active = loaded_active;
+        defer active.deinit(gpa);
+        const started = maybeStartSync(&g, &state, active, gpa) catch |e| blk: {
+            std.log.warn("sync thread not started: {s}", .{@errorName(e)});
+            break :blk false;
+        };
+        if (started) std.log.info("sync thread started for configured provider connection", .{});
     }
 
     // Store profile if given
@@ -223,55 +229,39 @@ pub fn main() !void {
     server.listen(actual_port, ctx) catch |e| return e;
 }
 
-/// Callback passed to ServerCtx so that POST /api/config can trigger sync start.
+/// Callback passed to ServerCtx so that POST /api/connection can trigger sync start.
 fn startSyncCallback(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: std.mem.Allocator) void {
     // Guard: only start once
     if (state.sync_started.load(.seq_cst)) return;
 
-    const cred = db.getLatestCredential(alloc) catch return;
-    const cred_str = cred orelse return;
-    defer alloc.free(cred_str);
+    const active = connection_mod.loadActive(db, alloc) catch return;
+    var conn = active orelse return;
+    defer conn.deinit(alloc);
 
-    const sheet_id = db.getConfig("sheet_id", alloc) catch return;
-    const sid = sheet_id orelse return;
-    defer alloc.free(sid);
-
-    const started = maybeStartSync(db, state, cred_str, sid, alloc) catch |e| blk: {
-        std.log.warn("POST /api/config: sync start failed: {s}", .{@errorName(e)});
+    const started = maybeStartSync(db, state, conn, alloc) catch |e| blk: {
+        std.log.warn("POST /api/connection: sync start failed: {s}", .{@errorName(e)});
         break :blk false;
     };
-    if (started) std.log.info("sync thread started via POST /api/config", .{});
+    if (started) std.log.info("sync thread started via POST /api/connection", .{});
 }
 
 fn maybeStartSync(
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
-    cred_json: []const u8,
-    sheet_id: []const u8,
+    active: @import("provider_common.zig").ActiveConnection,
     alloc: std.mem.Allocator,
 ) !bool {
     // Guard: only start once
     if (state.sync_started.cmpxchgStrong(false, true, .seq_cst, .seq_cst) != null) return false;
 
-    // Extract service account email and private key from credential JSON
-    const email = sheets_mod.extractJsonFieldStatic(cred_json, "client_email") orelse {
-        state.sync_started.store(false, .seq_cst); // reset so it can be retried
-        return false;
-    };
-    const pem = sheets_mod.extractJsonFieldStatic(cred_json, "private_key") orelse {
+    var runtime = online_provider.ProviderRuntime.init(active, alloc) catch {
         state.sync_started.store(false, .seq_cst);
         return false;
     };
-    // Unescape \n in the PEM key
-    const pem_unescaped = try unescapeNewlines(pem, alloc);
-    defer alloc.free(pem_unescaped);
-
-    const key = try sheets_mod.parsePemRsaKey(pem_unescaped, alloc);
+    runtime.deinit(alloc);
 
     const cfg = sync_live.SyncConfig{
-        .email = try alloc.dupe(u8, email),
-        .key = key,
-        .sheet_id = try alloc.dupe(u8, sheet_id),
+        .active = try active.clone(alloc),
         .alloc = alloc,
         .db = db,
         .state = state,
@@ -333,7 +323,17 @@ test "maybeStartSync returns false and resets state for invalid credential" {
     defer db.deinit();
     var state: sync_live.SyncState = .{};
 
-    const started = try maybeStartSync(&db, &state, "{\"type\":\"service_account\"}", "sheet-123", alloc);
+    var active = @import("provider_common.zig").ActiveConnection{
+        .platform = .google,
+        .credential_json = try alloc.dupe(u8, "{\"type\":\"service_account\"}"),
+        .workbook_url = try alloc.dupe(u8, "https://docs.google.com/spreadsheets/d/sheet-123/edit"),
+        .workbook_label = try alloc.dupe(u8, "sheet-123"),
+        .credential_display = null,
+        .target = .{ .google = .{ .sheet_id = try alloc.dupe(u8, "sheet-123") } },
+    };
+    defer active.deinit(alloc);
+
+    const started = try maybeStartSync(&db, &state, active, alloc);
     try testing.expect(!started);
     try testing.expect(!state.sync_started.load(.seq_cst));
 }

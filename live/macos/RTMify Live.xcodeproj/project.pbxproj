@@ -11,7 +11,9 @@
 		84CCBA211B601CBA00E9B192 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA111B601CBA00E9B192 /* ViewModel.swift */; };
 		84CCBA221B601CBA00E9B192 /* LicenseGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA121B601CBA00E9B192 /* LicenseGateView.swift */; };
 		84CCBA231B601CBA00E9B192 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA131B601CBA00E9B192 /* MenuBarView.swift */; };
+		84CCBA321B601CBA00E9B192 /* PortSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA311B601CBA00E9B192 /* PortSelection.swift */; };
 		84CCBA281B601CBA00E9B192 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 84CCBA191B601CBA00E9B192 /* Assets.xcassets */; };
+		84CCBA301B601CBA00E9B192 /* rtmify-live in Resources */ = {isa = PBXBuildFile; fileRef = 84CCBA2F1B601CBA00E9B192 /* rtmify-live */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,8 +21,10 @@
 		84CCBA111B601CBA00E9B192 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ViewModel.swift"; sourceTree = "<group>"; };
 		84CCBA121B601CBA00E9B192 /* LicenseGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LicenseGateView.swift"; sourceTree = "<group>"; };
 		84CCBA131B601CBA00E9B192 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MenuBarView.swift"; sourceTree = "<group>"; };
+		84CCBA311B601CBA00E9B192 /* PortSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PortSelection.swift"; sourceTree = "<group>"; };
 		84CCBA181B601CBA00E9B192 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info.plist"; sourceTree = "<group>"; };
 		84CCBA191B601CBA00E9B192 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Assets.xcassets"; sourceTree = "<group>"; };
+		84CCBA2F1B601CBA00E9B192 /* rtmify-live */ = {isa = PBXFileReference; lastKnownFileType = compiled.mach-o.executable; path = "Resources/rtmify-live"; sourceTree = "<group>"; };
 		84CCBA1B1B601CBA00E9B192 /* RTMify Live.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RTMify Live.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -58,7 +62,9 @@
 				84CCBA111B601CBA00E9B192 /* ViewModel.swift */,
 				84CCBA121B601CBA00E9B192 /* LicenseGateView.swift */,
 				84CCBA131B601CBA00E9B192 /* MenuBarView.swift */,
+				84CCBA311B601CBA00E9B192 /* PortSelection.swift */,
 				84CCBA191B601CBA00E9B192 /* Assets.xcassets */,
+				84CCBA2F1B601CBA00E9B192 /* rtmify-live */,
 				84CCBA181B601CBA00E9B192 /* Info.plist */,
 			);
 			path = "RTMify Live";
@@ -123,6 +129,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				84CCBA281B601CBA00E9B192 /* Assets.xcassets in Resources */,
+				84CCBA301B601CBA00E9B192 /* rtmify-live in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -137,6 +144,7 @@
 				84CCBA211B601CBA00E9B192 /* ViewModel.swift in Sources */,
 				84CCBA221B601CBA00E9B192 /* LicenseGateView.swift in Sources */,
 				84CCBA231B601CBA00E9B192 /* MenuBarView.swift in Sources */,
+				84CCBA321B601CBA00E9B192 /* PortSelection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

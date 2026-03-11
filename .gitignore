@@ -2,6 +2,10 @@
 .zig-cache/
 zig-out/
 
+# macOS app build outputs
+live/macos/.build/
+live/macos/RTMify Live/Resources/rtmify-live
+
 # Legacy artifacts under sys
 trace/.zig-cache/
 trace/zig-out/

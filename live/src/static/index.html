@@ -491,16 +491,38 @@
     <h2>RTMify Live</h2>
     <p class="lobby-subtitle">Connect your compliance workspace</p>
     <div id="lobby-error" class="lobby-error" style="display:none"></div>
+    <div class="lobby-step"><span class="step-num">1</span><span class="step-label">Choose provider</span></div>
+    <div class="profile-radios" style="margin-bottom:16px">
+      <label class="profile-radio">
+        <input type="radio" name="provider" value="google" checked onchange="setProvider('google')">
+        <span>Google Sheets</span>
+      </label>
+      <label class="profile-radio">
+        <input type="radio" name="provider" value="excel" onchange="setProvider('excel')">
+        <span>Excel Online</span>
+      </label>
+    </div>
     <input type="file" id="sa-file-input" accept=".json,application/json" style="display:none">
     <div id="lobby-sa-section">
-      <div class="lobby-step"><span class="step-num">1</span><span class="step-label">Upload credentials</span></div>
-      <p class="drop-hint" style="margin-top:0">Drop service-account.json anywhere in this panel to update credentials</p>
-      <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Share with service account</span></div>
-      <p class="lobby-label">Share your sheet with:</p>
+      <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Upload credentials</span></div>
+      <p class="drop-hint" style="margin-top:0">
+        Drop `service-account.json` anywhere in this panel to update credentials.
+        <a href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer">How to create a Google service account JSON key</a>
+      </p>
+      <p class="lobby-label">Loaded Google service account:</p>
       <div class="lobby-email" id="lobby-email" onclick="copyEmail()" title="Click to copy"></div>
       <span class="copied-hint" id="copy-hint" style="display:none">Copied!</span>
+      <p class="drop-hint" id="lobby-share-hint" style="margin-top:8px;display:none">
+        Copy this email address by clicking it. Then you must <strong>share</strong> the RTM sheet with this email address.
+      </p>
     </div>
-    <div class="lobby-step"><span class="step-num">3</span><span class="step-label">Paste sheet URL</span></div>
+    <div id="lobby-excel-section" style="display:none">
+      <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Enter Excel app credentials</span></div>
+      <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" oninput="updateProvisionPreview()">
+      <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" oninput="updateProvisionPreview()">
+      <input id="excel-client-secret" class="lobby-input" type="password" placeholder="Azure client secret" oninput="updateProvisionPreview()">
+    </div>
+    <div class="lobby-step"><span class="step-num">3</span><span class="step-label">Paste workbook URL</span></div>
     <input id="lobby-url" class="lobby-input" type="text"
       oninput="updateProvisionPreview()"
       placeholder="https://docs.google.com/spreadsheets/d/…" />
@@ -531,7 +553,7 @@
 </div>
 
 <header onclick="showLobby()" style="cursor:pointer" title="Back to setup">
-  <h1>CALM</h1>
+  <h1>RTMify</h1>
   <span>Requirements Traceability</span>
   <span id="suspect-header-badge" style="display:none; margin-left:auto; font-size:12px; background:#f9a825; color:#fff; border-radius:10px; padding:3px 12px; cursor:pointer;"
     onclick="event.stopPropagation(); showTab('review')"></span>
@@ -965,7 +987,7 @@
       return;
     }
     tbody.innerHTML = rows.map(r => {
-      const rowClass = r.test_suspect ? ' class="suspect"' : '';
+      const rowClass = r.suspect ? ' class="suspect"' : '';
       const reqCell = r.req_id
         ? `<span class="req-id">${esc(r.req_id)}</span>`
         : '<span style="color:#aaa">—</span>';
@@ -1011,7 +1033,7 @@
       const testCell = r.test_id ? `<span class="test-id">${esc(r.test_id)}</span>` : '';
       const resultCell = r.test_group_id ? resultBadge(r.result, true) : '';
       const severity = rowSeverity(r);
-      const rowClass = r.req_suspect ? 'suspect' : (severity || '');
+      const rowClass = r.suspect ? 'suspect' : (severity || '');
       return `<tr${rowClass ? ` class="${rowClass}"` : ''}>
         <td><button class="expand-btn" onclick="toggleRow('${esc(r.req_id)}',this,8)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${parentCell}</td>
@@ -1098,6 +1120,14 @@
       .replace(/"/g, '&quot;');
   }
 
+  function propsObj(value) {
+    if (!value) return {};
+    if (typeof value === 'string') {
+      try { return JSON.parse(value); } catch { return {}; }
+    }
+    return value;
+  }
+
   async function showLobby() {
     document.getElementById('lobby').classList.add('visible');
     try {
@@ -1108,25 +1138,50 @@
     updateProvisionPreview();
   }
 
+  let lobbyGoogleCredentialJson = '';
+  let lobbyGoogleCredentialDisplay = '';
+  let lobbyStatus = null;
+
+  function selectedProvider() {
+    const selected = document.querySelector('input[name=provider]:checked');
+    return selected ? selected.value : 'google';
+  }
+
+  function setProvider(provider) {
+    document.getElementById('lobby-sa-section').style.display = provider === 'google' ? '' : 'none';
+    document.getElementById('lobby-excel-section').style.display = provider === 'excel' ? '' : 'none';
+    document.getElementById('lobby-url').placeholder = provider === 'excel'
+      ? 'https://tenant.sharepoint.com/:x:/r/sites/...'
+      : 'https://docs.google.com/spreadsheets/d/...';
+    updateProvisionPreview();
+  }
+
   function applyStatus(status) {
+    lobbyStatus = status;
     const emailEl = document.getElementById('lobby-email');
-    if (status.email) {
-      emailEl.textContent = status.email;
+    const shareHintEl = document.getElementById('lobby-share-hint');
+    if (status.platform) {
+      document.querySelector(`input[name=provider][value="${status.platform}"]`)?.click();
+    }
+    if (status.platform === 'google' && status.credential_display) {
+      emailEl.textContent = status.credential_display;
       emailEl.style.color = '';
       emailEl.style.cursor = 'pointer';
       emailEl.onclick = copyEmail;
       emailEl.title = 'Click to copy';
-      document.getElementById('lobby-url').disabled = false;
-      document.getElementById('lobby-btn').disabled = false;
+      lobbyGoogleCredentialDisplay = status.credential_display;
+      shareHintEl.style.display = 'block';
     } else {
       emailEl.textContent = 'Drop or click to upload service-account.json';
       emailEl.style.color = '#aaa';
       emailEl.style.cursor = 'pointer';
       emailEl.onclick = () => document.getElementById('sa-file-input').click();
       emailEl.title = 'Click to browse for service-account.json';
-      document.getElementById('lobby-url').disabled = true;
-      document.getElementById('lobby-btn').disabled = true;
+      if (!lobbyGoogleCredentialDisplay) lobbyGoogleCredentialDisplay = '';
+      shareHintEl.style.display = 'none';
     }
+    if (status.workbook_url) document.getElementById('lobby-url').value = status.workbook_url;
+    document.getElementById('lobby-btn').disabled = false;
   }
 
   // --- Service-account drag and drop ---
@@ -1146,7 +1201,7 @@
     e.preventDefault();
     document.getElementById('lobby-card').classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
-    if (file) await uploadSaFile(file);
+    if (selectedProvider() === 'google' && file) await uploadSaFile(file);
   }
 
   async function uploadSaFile(file) {
@@ -1163,32 +1218,24 @@
       return;
     }
 
-    let result;
     try {
-      const res = await fetch('/api/service-account', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({content: text}),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || `HTTP ${res.status}`);
-      }
-      result = await res.json();
-    } catch (err) {
-      errEl.textContent = 'Failed to save credentials: ' + err.message;
+      const parsed = JSON.parse(text);
+      lobbyGoogleCredentialDisplay = parsed.client_email || 'Loaded service account';
+      lobbyGoogleCredentialJson = text;
+    } catch {
+      errEl.textContent = 'Invalid Google service-account JSON.';
       errEl.style.display = 'block';
       return;
     }
 
     const emailEl = document.getElementById('lobby-email');
-    emailEl.textContent = result.email;
+    emailEl.textContent = lobbyGoogleCredentialDisplay;
     emailEl.style.color = '';
     emailEl.style.cursor = 'pointer';
     emailEl.onclick = copyEmail;
     emailEl.title = 'Click to copy';
+    document.getElementById('lobby-share-hint').style.display = 'block';
     document.getElementById('lobby-sa-section').style.display = '';
-    document.getElementById('lobby-url').disabled = false;
     document.getElementById('lobby-btn').disabled = false;
     updateProvisionPreview();
   }
@@ -1243,6 +1290,10 @@
     }
 
     const { node, edges_out, edges_in } = data;
+    if (!node || !Array.isArray(edges_out) || !Array.isArray(edges_in)) {
+      content.innerHTML = '<div class="empty-state">Error: invalid node payload</div>';
+      return;
+    }
 
     const props = Object.entries(node.properties)
       .filter(([, v]) => v !== '' && v != null)
@@ -1333,6 +1384,10 @@
     }
 
     const { node, edges_out, edges_in } = data;
+    if (!node || !Array.isArray(edges_out) || !Array.isArray(edges_in)) {
+      container.innerHTML = '<span style="color:#c0392b;font-size:13px">Error: invalid node payload</span>';
+      return;
+    }
 
     const props = Object.entries(node.properties)
       .filter(([, v]) => v !== '' && v != null)
@@ -1561,32 +1616,67 @@
     automotive: 'ISO 26262 / ASPICE',
   };
 
+  function currentProfile() {
+    const profileVal = document.querySelector('input[name=profile]:checked');
+    return profileVal ? profileVal.value : 'generic';
+  }
+
+  function buildDraftConnection() {
+    const platform = selectedProvider();
+    const workbookUrl = document.getElementById('lobby-url').value.trim();
+    const draft = {
+      platform,
+      profile: currentProfile(),
+      workbook_url: workbookUrl,
+      credentials: {},
+    };
+    if (platform === 'google') {
+      if (!lobbyGoogleCredentialJson) return null;
+      draft.credentials.service_account_json = lobbyGoogleCredentialJson;
+    } else {
+      const tenantId = document.getElementById('excel-tenant-id').value.trim();
+      const clientId = document.getElementById('excel-client-id').value.trim();
+      const clientSecret = document.getElementById('excel-client-secret').value.trim();
+      if (!tenantId || !clientId || !clientSecret) return null;
+      draft.credentials.tenant_id = tenantId;
+      draft.credentials.client_id = clientId;
+      draft.credentials.client_secret = clientSecret;
+    }
+    if (!workbookUrl) return null;
+    return draft;
+  }
+
   async function updateProvisionPreview() {
     const previewEl = document.getElementById('provision-preview');
-    const emailEl = document.getElementById('lobby-email');
-    const url = document.getElementById('lobby-url').value.trim();
-    if (!emailEl.textContent.trim()) {
+    const errEl = document.getElementById('lobby-error');
+    const draft = buildDraftConnection();
+    if (!draft) {
       previewEl.style.display = 'none';
       return;
     }
     try {
-      const profileVal = document.querySelector('input[name=profile]:checked');
-      const profile = profileVal ? profileVal.value : 'generic';
-      let endpoint = '/api/provision-preview?profile=' + encodeURIComponent(profile);
-      if (url.includes('/spreadsheets/d/')) {
-        endpoint += '&sheet_url=' + encodeURIComponent(url);
-      }
-      const res = await fetch(endpoint);
+      const res = await fetch('/api/connection/validate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(draft),
+      });
       if (!res.ok) return;
       const data = await res.json();
-      if (!data.ready) {
+      if (!data.ok) {
+        previewEl.textContent = 'Connection check failed: ' + formatDiagnosticsError(data);
+        previewEl.style.display = 'block';
+        return;
+      }
+      if (!data.preview || !data.preview.ready) {
         previewEl.style.display = 'none';
         return;
       }
-      previewEl.textContent = provisionPreviewText(data);
+      errEl.style.display = 'none';
+      previewEl.textContent = provisionPreviewText(data.preview);
       previewEl.style.display = 'block';
-    } catch (_) {
-      previewEl.style.display = 'none';
+    } catch (e) {
+      previewEl.textContent = 'Connection check failed: ' + e.message;
+      previewEl.style.display = 'block';
     }
   }
 
@@ -1594,10 +1684,9 @@
     const urlInput = document.getElementById('lobby-url');
     const errEl = document.getElementById('lobby-error');
     const btn = document.getElementById('lobby-btn');
-
-    const url = urlInput.value.trim();
-    if (!url.includes('/spreadsheets/d/')) {
-      errEl.textContent = 'Please paste a valid Google Sheets URL (must contain /spreadsheets/d/).';
+    const draft = buildDraftConnection();
+    if (!draft) {
+      errEl.textContent = 'Enter provider credentials and a workbook URL before connecting.';
       errEl.style.display = 'block';
       return;
     }
@@ -1606,22 +1695,14 @@
     btn.textContent = 'Connecting…';
 
     try {
-      const profileVal = document.querySelector('input[name=profile]:checked');
-      if (profileVal) {
-        await fetch('/api/profile', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({profile: profileVal.value}),
-        });
-      }
-      const res = await fetch('/api/config', {
+      const res = await fetch('/api/connection', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({sheet_url: url}),
+        body: JSON.stringify(draft),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || `HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(formatDiagnosticsError(data) || data.detail || `HTTP ${res.status}`);
       }
     } catch (e) {
       errEl.textContent = 'Failed to connect: ' + e.message;
@@ -1773,8 +1854,8 @@
     }
   }
 
-  async function deleteRepo(idx) {
-    await fetch('/api/repos/' + idx, { method: 'DELETE' });
+  async function deleteRepo(slot) {
+    await fetch('/api/repos/' + slot, { method: 'DELETE' });
     loadCodeTraceability();
   }
 
@@ -1790,14 +1871,14 @@
         el.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No repos yet</strong>Add a local Git repository path above.</td></tr>';
         return;
       }
-      el.innerHTML = repos.map((r, i) => `<tr>
+      el.innerHTML = repos.map((r) => `<tr>
         <td style="font-family:var(--font-mono);font-size:12px">${esc(r.path)}</td>
         <td>${esc(String(r.last_scan || '0'))}</td>
         <td>${esc(String(r.source_file_count || 0))}</td>
         <td>${esc(String(r.test_file_count || 0))}</td>
         <td>${esc(String(r.annotation_count || 0))}</td>
         <td>${esc(String(r.commit_count || 0))}</td>
-        <td><button class="btn-danger" onclick="deleteRepo(${i})" title="Remove repo">×</button></td>
+        <td><button class="btn-danger" onclick="deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})" title="Remove repo">×</button></td>
       </tr>`).join('');
     } catch (_) {}
   }
@@ -1846,7 +1927,7 @@
 
     const groups = new Map();
     combined.forEach(f => {
-      const props = (() => { try { return JSON.parse(f.properties || '{}'); } catch { return {}; } })();
+      const props = propsObj(f.properties);
       const repo = props.repo || 'Unknown Repo';
       if (!groups.has(repo)) groups.set(repo, []);
       groups.get(repo).push({ node: f, props });
@@ -1886,7 +1967,7 @@
     detail.className = 'file-annotation-row';
     const annHtml = anns.length
       ? anns.map(a => {
-          const p = (() => { try { return JSON.parse(a.properties || '{}'); } catch { return {}; } })();
+          const p = propsObj(a.properties);
           return `<div class="ann-row">
             <code>${esc(p.req_id || a.id)}</code>
             <span class="ann-line">line ${esc(String(p.line_number || ''))}</span>
@@ -1923,7 +2004,7 @@
         return;
       }
       el.innerHTML = commits.map(c => {
-        const p = (() => { try { return JSON.parse(c.properties || '{}'); } catch { return {}; } })();
+        const p = propsObj(c.properties);
         return `<div class="repo-row" style="display:block">
           <div><strong>${esc(p.short_hash || c.id)}</strong> ${esc(p.date || '')} ${esc(p.author || '')}</div>
           <div style="font-size:12px;color:#555">${esc(p.message || '')}</div>
@@ -1960,8 +2041,8 @@
   }
 
   function copyEmail() {
-    const email = document.getElementById('lobby-email').textContent;
-    navigator.clipboard.writeText(email).then(() => {
+    const value = document.getElementById('lobby-email').textContent;
+    navigator.clipboard.writeText(value).then(() => {
       const hint = document.getElementById('copy-hint');
       hint.style.display = 'inline';
       setTimeout(() => { hint.style.display = 'none'; }, 2000);

@@ -1,14 +1,16 @@
-/// provision.zig — Google Sheets tab provisioning for industry profiles.
+/// provision.zig — provider-neutral workbook tab provisioning for industry profiles.
 ///
 /// Creates missing tabs and writes header rows for a given profile.
 /// Idempotent: never deletes or overwrites existing tabs.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const sheets = @import("sheets.zig");
-const SheetTabId = sheets.SheetTabId;
 const profile_mod = @import("profile.zig");
+const online_provider = @import("online_provider.zig");
 const Profile = profile_mod.Profile;
+const TabRef = online_provider.TabRef;
+const ProviderRuntime = online_provider.ProviderRuntime;
+const ValueUpdate = online_provider.ValueUpdate;
 
 // ---------------------------------------------------------------------------
 // Header rows per tab
@@ -52,7 +54,7 @@ fn headersForTab(tab_name: []const u8) ?[]const []const u8 {
 // Fuzzy tab match (reuse similar logic as schema.resolveTab but simpler)
 // ---------------------------------------------------------------------------
 
-fn tabExists(existing: []const SheetTabId, want: []const u8) bool {
+fn tabExists(existing: []const TabRef, want: []const u8) bool {
     for (existing) |tab| {
         if (std.ascii.eqlIgnoreCase(tab.title, want)) return true;
         // Substring match
@@ -73,43 +75,47 @@ fn toLowerBuf(s: []const u8) [128]u8 {
     return buf;
 }
 
+fn collectMissingTabs(existing: []const TabRef, profile: Profile, alloc: Allocator) ![][]const u8 {
+    var missing: std.ArrayList([]const u8) = .empty;
+    for (profile.tabs) |tab_name| {
+        if (tabExists(existing, tab_name)) continue;
+        try missing.append(alloc, try alloc.dupe(u8, tab_name));
+    }
+    return missing.toOwnedSlice(alloc);
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Provision missing tabs for the given profile.
-/// Creates any tabs in profile.tabs that don't exist in existing_tabs,
+/// Creates any tabs in profile.tabs that don't exist in the provider runtime,
 /// then writes their header rows.
 /// Returns a list of tab names that were created (caller owns the slice and strings).
-pub fn provisionSheet(
-    client: *std.http.Client,
-    token: []const u8,
-    sheet_id: []const u8,
-    profile: Profile,
-    existing_tabs: []const SheetTabId,
-    alloc: Allocator,
-) ![][]const u8 {
+pub fn provisionWorkbook(runtime: *ProviderRuntime, profile: Profile, alloc: Allocator) ![][]const u8 {
+    const existing_tabs = try runtime.listTabs(alloc);
+    defer online_provider.freeTabRefs(existing_tabs, alloc);
+
     var created: std.ArrayList([]const u8) = .empty;
+    const missing_tabs = try collectMissingTabs(existing_tabs, profile, alloc);
+    defer {
+        for (missing_tabs) |tab_name| alloc.free(tab_name);
+        alloc.free(missing_tabs);
+    }
 
-    for (profile.tabs) |tab_name| {
-        if (tabExists(existing_tabs, tab_name)) continue;
-
-        // Build addSheet request
-        const add_req = try std.fmt.allocPrint(alloc,
-            \\[{{"addSheet":{{"properties":{{"title":"{s}"}}}}}}]
-        , .{tab_name});
-        defer alloc.free(add_req);
-
-        try sheets.batchUpdateFormat(client, token, sheet_id, add_req, alloc);
+    for (missing_tabs) |tab_name| {
+        try runtime.createTab(tab_name, alloc);
 
         // Write header row
         const headers = headersForTab(tab_name) orelse continue;
         const range = try std.fmt.allocPrint(alloc, "{s}!A1", .{tab_name});
-        defer alloc.free(range);
-
-        try sheets.batchUpdateValues(client, token, sheet_id, &.{
-            .{ .range = range, .values = headers },
+        const values = try alloc.alloc([]const u8, headers.len);
+        for (headers, 0..) |header, i| values[i] = header;
+        try runtime.batchWriteValues(&.{
+            .{ .a1_range = range, .values = values },
         }, alloc);
+        alloc.free(range);
+        alloc.free(values);
 
         try created.append(alloc, try alloc.dupe(u8, tab_name));
     }
@@ -124,9 +130,9 @@ pub fn provisionSheet(
 const testing = std.testing;
 
 test "tabExists exact match" {
-    const existing = &[_]SheetTabId{
-        .{ .title = @constCast("Requirements"), .id = 0 },
-        .{ .title = @constCast("Tests"), .id = 1 },
+    const existing = &[_]TabRef{
+        .{ .title = @constCast("Requirements"), .native_id = @constCast("0") },
+        .{ .title = @constCast("Tests"), .native_id = @constCast("1") },
     };
     try testing.expect(tabExists(existing, "Requirements"));
     try testing.expect(tabExists(existing, "Tests"));
@@ -134,15 +140,15 @@ test "tabExists exact match" {
 }
 
 test "tabExists case-insensitive" {
-    const existing = &[_]SheetTabId{
-        .{ .title = @constCast("requirements"), .id = 0 },
+    const existing = &[_]TabRef{
+        .{ .title = @constCast("requirements"), .native_id = @constCast("0") },
     };
     try testing.expect(tabExists(existing, "Requirements"));
 }
 
 test "tabExists substring match" {
-    const existing = &[_]SheetTabId{
-        .{ .title = @constCast("My Requirements List"), .id = 0 },
+    const existing = &[_]TabRef{
+        .{ .title = @constCast("My Requirements List"), .native_id = @constCast("0") },
     };
     try testing.expect(tabExists(existing, "Requirements"));
 }
@@ -156,4 +162,21 @@ test "headersForTab returns correct headers" {
 
 test "headersForTab returns null for unknown tab" {
     try testing.expect(headersForTab("Unknown Tab XYZ") == null);
+}
+
+test "collectMissingTabs excludes genuinely existing tabs with spaces" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const existing = &[_]TabRef{
+        .{ .title = @constCast("User Needs"), .native_id = @constCast("0") },
+        .{ .title = @constCast("Requirements"), .native_id = @constCast("1") },
+    };
+    const missing = try collectMissingTabs(existing, profile_mod.get(.aerospace), alloc);
+    defer {
+        for (missing) |tab| alloc.free(tab);
+        alloc.free(missing);
+    }
+    try testing.expectEqual(@as(usize, 3), missing.len);
+    try testing.expectEqualStrings("Tests", missing[0]);
 }

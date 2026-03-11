@@ -1,9 +1,9 @@
 /// sync_live.zig — background sync thread for rtmify-live.
 ///
-/// Polls Google Drive modifiedTime every 30s. On change: fetches 4 tabs,
+/// Polls the active online provider every 30s. On change: fetches core tabs,
 /// ingests rows via schema.zig into an ephemeral in-memory Graph, then
 /// upserts all nodes and edges into the SQLite GraphDb. Writes status
-/// columns and row colors back to the sheet.
+/// columns and row colors back to the workbook through the provider runtime.
 ///
 /// Exponential backoff on error: 30→60→120→300s cap.
 const std = @import("std");
@@ -14,16 +14,20 @@ const schema = @import("rtmify").schema;
 const xlsx = @import("rtmify").xlsx;
 
 const graph_live = @import("graph_live.zig");
-const sheets_mod = @import("sheets.zig");
 const repo_mod = @import("repo.zig");
 const annotations_mod = @import("annotations.zig");
 const git_mod = @import("git.zig");
 const profile_mod = @import("profile.zig");
 const provision_mod = @import("provision.zig");
+const online_provider = @import("online_provider.zig");
+const provider_common = @import("provider_common.zig");
+const json_util = @import("json_util.zig");
 
 const GraphDb = graph_live.GraphDb;
-const TokenCache = sheets_mod.TokenCache;
-const RsaKey = sheets_mod.RsaKey;
+const ProviderRuntime = online_provider.ProviderRuntime;
+const ActiveConnection = provider_common.ActiveConnection;
+const ValueUpdate = provider_common.ValueUpdate;
+const RowFormat = provider_common.RowFormat;
 
 // ---------------------------------------------------------------------------
 // SyncState — shared between sync thread and HTTP server
@@ -74,12 +78,7 @@ pub const SyncState = struct {
 // ---------------------------------------------------------------------------
 
 pub const SyncConfig = struct {
-    /// Service account email
-    email: []const u8,
-    /// RSA private key (parsed)
-    key: RsaKey,
-    /// Google Sheet ID (from URL)
-    sheet_id: []const u8,
+    active: ActiveConnection,
     /// Allocator for the sync thread
     alloc: Allocator,
     /// Database handle (shared)
@@ -98,43 +97,46 @@ pub fn syncThread(cfg: SyncConfig) void {
     const alloc = gpa_state.allocator();
     _ = cfg.alloc; // use GPA inside thread
 
-    var http_client = std.http.Client{ .allocator = alloc };
-    defer http_client.deinit();
+    var active = cfg.active.clone(alloc) catch {
+        cfg.state.setError("provider_setup_failed");
+        return;
+    };
+    defer active.deinit(alloc);
 
-    var token_cache: TokenCache = .{};
+    var runtime = ProviderRuntime.init(active, alloc) catch |e| {
+        cfg.state.setError(@errorName(e));
+        std.log.err("sync: provider init failed: {s}", .{@errorName(e)});
+        return;
+    };
+    defer runtime.deinit(alloc);
 
-    var last_modified: i64 = 0;
+    var last_change_token: ?[]u8 = null;
+    defer if (last_change_token) |tok| alloc.free(tok);
     var backoff: u64 = 30; // seconds
 
     while (true) {
-        const token = token_cache.getToken(cfg.email, cfg.key, &http_client, alloc) catch |e| {
+        const change_token = runtime.changeToken(alloc) catch |e| {
             const msg = @errorName(e);
             cfg.state.setError(msg);
-            std.log.err("sync: token refresh failed: {s}", .{msg});
+            std.log.err("sync: change token refresh failed: {s}", .{msg});
             std.Thread.sleep(backoff * std.time.ns_per_s);
             backoff = @min(backoff * 2, 300);
             continue;
         };
 
-        // Check Drive modifiedTime
-        const mt = sheets_mod.getModifiedTime(&http_client, token, cfg.sheet_id, alloc) catch |e| {
-            const msg = @errorName(e);
-            cfg.state.setError(msg);
-            std.log.err("sync: getModifiedTime failed: {s}", .{msg});
-            std.Thread.sleep(backoff * std.time.ns_per_s);
-            backoff = @min(backoff * 2, 300);
-            continue;
-        };
-
-        if (mt <= last_modified) {
-            // No change — sleep and try again
-            std.Thread.sleep(30 * std.time.ns_per_s);
-            continue;
+        if (last_change_token) |prev| {
+            if (std.mem.eql(u8, prev, change_token)) {
+                alloc.free(change_token);
+                std.Thread.sleep(30 * std.time.ns_per_s);
+                continue;
+            }
+            alloc.free(prev);
         }
+        last_change_token = @constCast(change_token);
 
-        std.log.info("sync: sheet changed (modifiedTime={d}), ingesting…", .{mt});
+        std.log.info("sync: workbook changed (token={s}), ingesting…", .{change_token});
 
-        // Provision missing tabs BEFORE sync so blank sheets are viable (non-fatal)
+        // Provision missing tabs BEFORE sync so blank workbooks are viable (non-fatal)
         {
             var prov_arena = std.heap.ArenaAllocator.init(alloc);
             defer prov_arena.deinit();
@@ -144,8 +146,7 @@ pub fn syncThread(cfg: SyncConfig) void {
                 const prof_name = (cfg.db.getConfig("profile", pa) catch null) orelse "generic";
                 const pid = profile_mod.fromString(prof_name) orelse .generic;
                 const prof = profile_mod.get(pid);
-                const tab_ids = sheets_mod.getSheetTabIds(&http_client, token, cfg.sheet_id, pa) catch &.{};
-                _ = provision_mod.provisionSheet(&http_client, token, cfg.sheet_id, prof, tab_ids, pa) catch |e| blk: {
+                _ = provision_mod.provisionWorkbook(&runtime, prof, pa) catch |e| blk: {
                     std.log.warn("provision failed: {s}", .{@errorName(e)});
                     break :blk @as([][]const u8, &.{});
                 };
@@ -153,8 +154,7 @@ pub fn syncThread(cfg: SyncConfig) void {
             }
         }
 
-        // Run a full sync cycle
-        runSyncCycle(cfg.db, &http_client, token, cfg.sheet_id, cfg.state, alloc) catch |e| {
+        runSyncCycle(cfg.db, &runtime, cfg.state, alloc) catch |e| {
             const msg = @errorName(e);
             cfg.state.setError(msg);
             std.log.err("sync: cycle failed: {s}", .{msg});
@@ -163,7 +163,6 @@ pub fn syncThread(cfg: SyncConfig) void {
             continue;
         };
 
-        last_modified = mt;
         cfg.state.last_sync_at.store(std.time.timestamp(), .seq_cst);
         _ = cfg.state.sync_count.fetchAdd(1, .seq_cst);
         cfg.state.clearError();
@@ -177,12 +176,11 @@ pub fn syncThread(cfg: SyncConfig) void {
 // Full sync cycle
 // ---------------------------------------------------------------------------
 
-/// Fetch all 4 tabs, ingest into graph, write back status + colors.
+/// Fetch all required tabs through the provider runtime, ingest into graph,
+/// then write back status + colors.
 fn runSyncCycle(
     db: *GraphDb,
-    client: *std.http.Client,
-    token: []const u8,
-    sheet_id: []const u8,
+    runtime: *ProviderRuntime,
     state: *SyncState,
     alloc: Allocator,
 ) anyerror!void {
@@ -192,14 +190,16 @@ fn runSyncCycle(
     const a = arena.allocator();
 
     // 1. Fetch core tabs (include header row: start from row 1)
-    const tests_rows = try sheets_mod.readRows(client, token, sheet_id, "Tests!A1:Z", a);
-    const un_rows = try sheets_mod.readRows(client, token, sheet_id, "User%20Needs!A1:Z", a);
-    const req_rows = try sheets_mod.readRows(client, token, sheet_id, "Requirements!A1:Z", a);
-    const risk_rows = try sheets_mod.readRows(client, token, sheet_id, "Risks!A1:Z", a);
-    // Extended tabs — non-fatal, may not exist for all profiles
-    const di_rows = sheets_mod.readRows(client, token, sheet_id, "Design%20Inputs!A1:Z", a) catch &.{};
-    const do_rows = sheets_mod.readRows(client, token, sheet_id, "Design%20Outputs!A1:Z", a) catch &.{};
-    const ci_rows = sheets_mod.readRows(client, token, sheet_id, "Configuration%20Items!A1:Z", a) catch &.{};
+    const tests_rows = try runtime.readRows("Tests", a);
+    const un_rows = try runtime.readRows("User Needs", a);
+    const req_rows = try runtime.readRows("Requirements", a);
+    const risk_rows = try runtime.readRows("Risks", a);
+    const existing_tabs = try runtime.listTabs(a);
+    defer online_provider.freeTabRefs(existing_tabs, a);
+    // Extended tabs — only fetch them if they actually exist to avoid noisy provider errors.
+    const di_rows = try readOptionalTab(runtime, existing_tabs, "Design Inputs", a);
+    const do_rows = try readOptionalTab(runtime, existing_tabs, "Design Outputs", a);
+    const ci_rows = try readOptionalTab(runtime, existing_tabs, "Configuration Items", a);
 
     // 2. Convert [][][]const u8 rows to xlsx.SheetData
     const sheet_data = [_]xlsx.SheetData{
@@ -221,22 +221,38 @@ fn runSyncCycle(
 
     _ = schema.ingestValidated(&g, &sheet_data, &diag) catch |e| {
         std.log.warn("sync: ingest errors (continuing): {s}", .{@errorName(e)});
-        // Non-fatal: partial ingest is OK; we'll upsert what we have
     };
 
     // 4. Port nodes from in-memory Graph to SQLite GraphDb
     try portGraphToDb(db, &g, alloc);
 
-    // 5. Fetch numeric tab IDs (needed for row color formatting)
-    const tab_ids = sheets_mod.getSheetTabIds(client, token, sheet_id, a) catch |e| blk: {
-        std.log.warn("sync: getSheetTabIds failed (colors skipped): {s}", .{@errorName(e)});
-        break :blk &[_]sheets_mod.SheetTabId{};
-    };
-
-    // 6. Write back status columns and row colors
-    try writeBackStatus(db, client, token, sheet_id, req_rows, risk_rows, un_rows, tab_ids, a);
+    // 5. Write back status columns and row colors
+    try writeBackStatus(db, runtime, req_rows, risk_rows, un_rows, a);
 
     std.log.info("sync: cycle complete — {d} nodes", .{g.nodes.count()});
+}
+
+fn readOptionalTab(runtime: *ProviderRuntime, existing_tabs: []const online_provider.TabRef, tab_name: []const u8, alloc: Allocator) ![][][]const u8 {
+    if (!tabExists(existing_tabs, tab_name)) return &.{};
+    return runtime.readRows(tab_name, alloc) catch &.{};
+}
+
+fn tabExists(existing_tabs: []const online_provider.TabRef, want: []const u8) bool {
+    for (existing_tabs) |tab| {
+        if (std.ascii.eqlIgnoreCase(tab.title, want)) return true;
+        if (containsIgnoreCase(tab.title, want) or containsIgnoreCase(want, tab.title)) return true;
+    }
+    return false;
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    var hay_buf: [128]u8 = undefined;
+    var needle_buf: [128]u8 = undefined;
+    const hay_len = @min(haystack.len, hay_buf.len);
+    const needle_len = @min(needle.len, needle_buf.len);
+    for (haystack[0..hay_len], 0..) |c, i| hay_buf[i] = std.ascii.toLower(c);
+    for (needle[0..needle_len], 0..) |c, i| needle_buf[i] = std.ascii.toLower(c);
+    return std.mem.indexOf(u8, hay_buf[0..hay_len], needle_buf[0..needle_len]) != null;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,16 +312,29 @@ fn serializeProperties(props: *const std.StringHashMapUnmanaged([]const u8), all
 }
 
 fn appendJsonEscaped(buf: *std.ArrayList(u8), s: []const u8, alloc: Allocator) !void {
-    for (s) |c| {
-        switch (c) {
-            '"' => try buf.appendSlice(alloc, "\\\""),
-            '\\' => try buf.appendSlice(alloc, "\\\\"),
-            '\n' => try buf.appendSlice(alloc, "\\n"),
-            '\r' => try buf.appendSlice(alloc, "\\r"),
-            '\t' => try buf.appendSlice(alloc, "\\t"),
-            else => try buf.append(alloc, c),
-        }
-    }
+    try json_util.appendJsonEscaped(buf, s, alloc);
+}
+
+fn buildFileNodePropsJson(path: []const u8, repo: []const u8, annotation_count: usize, alloc: Allocator) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"path\":");
+    try json_util.appendJsonQuoted(&buf, path, alloc);
+    try buf.appendSlice(alloc, ",\"repo\":");
+    try json_util.appendJsonQuoted(&buf, repo, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"annotation_count\":{d}", .{annotation_count});
+    try buf.append(alloc, '}');
+    return buf.toOwnedSlice(alloc);
+}
+
+fn buildUnknownAnnotationDetailsJson(ref_id: []const u8, line_number: usize, alloc: Allocator) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"ref_id\":");
+    try json_util.appendJsonQuoted(&buf, ref_id, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"line\":{d}", .{line_number});
+    try buf.append(alloc, '}');
+    return buf.toOwnedSlice(alloc);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,40 +375,35 @@ fn requirementStatus(db: *GraphDb, req_id: []const u8, alloc: Allocator) []const
     return "OK";
 }
 
-/// Look up the numeric sheetId for a tab title. Returns null if not found.
-fn findTabId(tab_ids: []const sheets_mod.SheetTabId, title: []const u8) ?i64 {
-    for (tab_ids) |t| {
-        if (std.mem.eql(u8, t.title, title)) return t.id;
-    }
-    return null;
-}
-
-/// Color constants (Google Sheets light palette: r,g,b as 0.0–1.0)
-const color_ok = [3]f32{ 0.714, 0.882, 0.804 }; // light green
-const color_warn = [3]f32{ 0.988, 0.910, 0.698 }; // light yellow
-const color_bad = [3]f32{ 0.957, 0.780, 0.765 }; // light red
-const color_none = [3]f32{ 1.0, 1.0, 1.0 }; // white (clear)
-
-fn statusColor(status: []const u8) [3]f32 {
-    if (std.mem.eql(u8, status, "OK")) return color_ok;
+fn statusColorHex(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "OK")) return "#B6E1CD";
     if (std.mem.eql(u8, status, "NO_TEST_LINKED") or
         std.mem.eql(u8, status, "NO_REQ_LINKED") or
-        std.mem.eql(u8, status, "MISSING")) return color_warn;
-    return color_bad;
+        std.mem.eql(u8, status, "MISSING")) return "#FCE8B2";
+    return "#F4C7C3";
 }
 
 /// Write status columns for Requirements, Risks, and User Needs tabs.
 fn writeBackStatus(
     db: *GraphDb,
-    client: *std.http.Client,
-    token: []const u8,
-    sheet_id: []const u8,
+    runtime: *ProviderRuntime,
     req_rows: [][][]const u8,
     risk_rows: [][][]const u8,
     un_rows: [][][]const u8,
-    tab_ids: []const sheets_mod.SheetTabId,
     alloc: Allocator,
 ) !void {
+    var value_updates: std.ArrayList(ValueUpdate) = .empty;
+    defer {
+        for (value_updates.items) |upd| {
+            alloc.free(upd.a1_range);
+            for (upd.values) |v| alloc.free(v);
+            alloc.free(upd.values);
+        }
+        value_updates.deinit(alloc);
+    }
+    var row_formats: std.ArrayList(RowFormat) = .empty;
+    defer row_formats.deinit(alloc);
+
     // --- Requirements ---
     if (req_rows.len > 1) {
         const header = req_rows[0];
@@ -387,50 +411,23 @@ fn writeBackStatus(
         const status_col = findCol(header, "Status");
         if (id_col != null and status_col != null) {
             const scol = status_col.?;
-            const numeric_id = findTabId(tab_ids, "Requirements");
-            var statuses: std.ArrayList(sheets_mod.ValueRange) = .empty;
-            defer statuses.deinit(alloc);
-            var color_reqs: std.ArrayList(u8) = .empty;
-            defer color_reqs.deinit(alloc);
-            try color_reqs.append(alloc, '[');
-            var color_count: usize = 0;
             for (req_rows[1..], 0..) |row, i| {
                 const row_num = i + 2; // 1-indexed sheet row
                 const req_id = if (id_col.? < row.len) row[id_col.?] else "";
                 if (req_id.len == 0) continue;
                 const status = requirementStatus(db, req_id, alloc);
-                const col_letter = colLetter(scol);
+                const col_letter = colLetterBuf(scol);
                 const range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ col_letter, row_num });
-                try statuses.append(alloc, .{
-                    .range = range,
-                    .values = &[_][]const u8{try alloc.dupe(u8, status)},
+                const values = try alloc.alloc([]const u8, 1);
+                values[0] = try alloc.dupe(u8, status);
+                try value_updates.append(alloc, .{ .a1_range = range, .values = values });
+                try row_formats.append(alloc, .{
+                    .tab_title = "Requirements",
+                    .row_1based = row_num,
+                    .col_start_1based = 1,
+                    .col_end_1based = header.len,
+                    .fill_hex = statusColorHex(status),
                 });
-                if (numeric_id) |nid| {
-                    const col = statusColor(status);
-                    const req = try sheets_mod.buildRepeatCellRequest(
-                        nid,
-                        @intCast(i + 1), // 0-based: header=0, first data row=1
-                        0,
-                        @intCast(header.len),
-                        col[0], col[1], col[2],
-                        alloc,
-                    );
-                    defer alloc.free(req);
-                    if (color_count > 0) try color_reqs.append(alloc, ',');
-                    try color_reqs.appendSlice(alloc, req);
-                    color_count += 1;
-                }
-            }
-            try color_reqs.append(alloc, ']');
-            if (statuses.items.len > 0) {
-                sheets_mod.batchUpdateValues(client, token, sheet_id, statuses.items, alloc) catch |e| {
-                    std.log.warn("sync: requirements status writeback failed: {s}", .{@errorName(e)});
-                };
-            }
-            if (color_count > 0) {
-                sheets_mod.batchUpdateFormat(client, token, sheet_id, color_reqs.items, alloc) catch |e| {
-                    std.log.warn("sync: requirements color writeback failed: {s}", .{@errorName(e)});
-                };
             }
         }
     }
@@ -441,13 +438,6 @@ fn writeBackStatus(
         const id_col = findCol(header, "ID");
         const status_col = findCol(header, "Status");
         if (id_col != null and status_col != null) {
-            const numeric_id = findTabId(tab_ids, "Risks");
-            var statuses: std.ArrayList(sheets_mod.ValueRange) = .empty;
-            defer statuses.deinit(alloc);
-            var color_reqs: std.ArrayList(u8) = .empty;
-            defer color_reqs.deinit(alloc);
-            try color_reqs.append(alloc, '[');
-            var color_count: usize = 0;
             for (risk_rows[1..], 0..) |row, i| {
                 const row_num = i + 2;
                 const risk_id = if (id_col.? < row.len) row[id_col.?] else "";
@@ -460,34 +450,18 @@ fn writeBackStatus(
                     alloc.free(n.properties);
                     if (n.suspect_reason) |r| alloc.free(r);
                 }
-                const col_letter = colLetter(status_col.?);
+                const col_letter = colLetterBuf(status_col.?);
                 const range = try std.fmt.allocPrint(alloc, "Risks!{s}{d}", .{ col_letter, row_num });
-                try statuses.append(alloc, .{
-                    .range = range,
-                    .values = &[_][]const u8{try alloc.dupe(u8, status)},
+                const values = try alloc.alloc([]const u8, 1);
+                values[0] = try alloc.dupe(u8, status);
+                try value_updates.append(alloc, .{ .a1_range = range, .values = values });
+                try row_formats.append(alloc, .{
+                    .tab_title = "Risks",
+                    .row_1based = row_num,
+                    .col_start_1based = 1,
+                    .col_end_1based = header.len,
+                    .fill_hex = statusColorHex(status),
                 });
-                if (numeric_id) |nid| {
-                    const col = statusColor(status);
-                    const req = try sheets_mod.buildRepeatCellRequest(
-                        nid, @intCast(i + 1), 0, @intCast(header.len),
-                        col[0], col[1], col[2], alloc,
-                    );
-                    defer alloc.free(req);
-                    if (color_count > 0) try color_reqs.append(alloc, ',');
-                    try color_reqs.appendSlice(alloc, req);
-                    color_count += 1;
-                }
-            }
-            try color_reqs.append(alloc, ']');
-            if (statuses.items.len > 0) {
-                sheets_mod.batchUpdateValues(client, token, sheet_id, statuses.items, alloc) catch |e| {
-                    std.log.warn("sync: risks status writeback failed: {s}", .{@errorName(e)});
-                };
-            }
-            if (color_count > 0) {
-                sheets_mod.batchUpdateFormat(client, token, sheet_id, color_reqs.items, alloc) catch |e| {
-                    std.log.warn("sync: risks color writeback failed: {s}", .{@errorName(e)});
-                };
             }
         }
     }
@@ -498,13 +472,6 @@ fn writeBackStatus(
         const id_col = findCol(header, "ID");
         const status_col = findCol(header, "Status");
         if (id_col != null and status_col != null) {
-            const numeric_id = findTabId(tab_ids, "User Needs");
-            var statuses: std.ArrayList(sheets_mod.ValueRange) = .empty;
-            defer statuses.deinit(alloc);
-            var color_reqs: std.ArrayList(u8) = .empty;
-            defer color_reqs.deinit(alloc);
-            try color_reqs.append(alloc, '[');
-            var color_count: usize = 0;
             for (un_rows[1..], 0..) |row, i| {
                 const row_num = i + 2;
                 const un_id = if (id_col.? < row.len) row[id_col.?] else "";
@@ -529,36 +496,31 @@ fn writeBackStatus(
                 }
                 edges.deinit(alloc);
                 const status: []const u8 = if (linked) "OK" else "NO_REQ_LINKED";
-                const col_letter = colLetter(status_col.?);
+                const col_letter = colLetterBuf(status_col.?);
                 const range = try std.fmt.allocPrint(alloc, "User Needs!{s}{d}", .{ col_letter, row_num });
-                try statuses.append(alloc, .{
-                    .range = range,
-                    .values = &[_][]const u8{try alloc.dupe(u8, status)},
+                const values = try alloc.alloc([]const u8, 1);
+                values[0] = try alloc.dupe(u8, status);
+                try value_updates.append(alloc, .{ .a1_range = range, .values = values });
+                try row_formats.append(alloc, .{
+                    .tab_title = "User Needs",
+                    .row_1based = row_num,
+                    .col_start_1based = 1,
+                    .col_end_1based = header.len,
+                    .fill_hex = statusColorHex(status),
                 });
-                if (numeric_id) |nid| {
-                    const col = statusColor(status);
-                    const req = try sheets_mod.buildRepeatCellRequest(
-                        nid, @intCast(i + 1), 0, @intCast(header.len),
-                        col[0], col[1], col[2], alloc,
-                    );
-                    defer alloc.free(req);
-                    if (color_count > 0) try color_reqs.append(alloc, ',');
-                    try color_reqs.appendSlice(alloc, req);
-                    color_count += 1;
-                }
-            }
-            try color_reqs.append(alloc, ']');
-            if (statuses.items.len > 0) {
-                sheets_mod.batchUpdateValues(client, token, sheet_id, statuses.items, alloc) catch |e| {
-                    std.log.warn("sync: user needs status writeback failed: {s}", .{@errorName(e)});
-                };
-            }
-            if (color_count > 0) {
-                sheets_mod.batchUpdateFormat(client, token, sheet_id, color_reqs.items, alloc) catch |e| {
-                    std.log.warn("sync: user needs color writeback failed: {s}", .{@errorName(e)});
-                };
             }
         }
+    }
+
+    if (value_updates.items.len > 0) {
+        runtime.batchWriteValues(value_updates.items, alloc) catch |e| {
+            std.log.warn("sync: status writeback failed: {s}", .{@errorName(e)});
+        };
+    }
+    if (row_formats.items.len > 0) {
+        runtime.applyRowFormats(row_formats.items, alloc) catch |e| {
+            std.log.warn("sync: color writeback failed: {s}", .{@errorName(e)});
+        };
     }
 }
 
@@ -574,7 +536,7 @@ fn findCol(header: [][]const u8, name: []const u8) ?usize {
 }
 
 /// Convert 0-based column index to spreadsheet letter (A, B, …, Z, AA, …).
-fn colLetter(idx: usize) [3]u8 {
+fn colLetterBuf(idx: usize) [3]u8 {
     var result: [3]u8 = .{ 'A', 0, 0 };
     if (idx < 26) {
         result[0] = 'A' + @as(u8, @intCast(idx));
@@ -587,6 +549,10 @@ fn colLetter(idx: usize) [3]u8 {
     result[1] = 'A' + @as(u8, @intCast(b));
     result[2] = 0;
     return result;
+}
+
+fn colLetter(idx: usize) [3]u8 {
+    return colLetterBuf(idx);
 }
 
 // ---------------------------------------------------------------------------
@@ -730,7 +696,7 @@ fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
             };
             const anns = scan.annotations;
             const annotation_count = anns.len;
-            const props = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"repo\":\"{s}\",\"annotation_count\":{d}}}", .{ file.path, repo_path, annotation_count });
+            const props = try buildFileNodePropsJson(file.path, repo_path, annotation_count, alloc);
             try ctx.db.upsertNode(file.path, node_type, props, null);
 
             if (hasDuplicateAnnotationLine(anns)) {
@@ -739,7 +705,7 @@ fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
 
             for (scan.unknown_refs) |unknown| {
                 const subject = try std.fmt.allocPrint(alloc, "{s}:{d}:{s}", .{ unknown.file_path, unknown.line_number, unknown.ref_id });
-                const details = try std.fmt.allocPrint(alloc, "{{\"ref_id\":\"{s}\",\"line\":{d}}}", .{ unknown.ref_id, unknown.line_number });
+                const details = try buildUnknownAnnotationDetailsJson(unknown.ref_id, unknown.line_number, alloc);
                 try upsertRuntimeDiag(ctx.db, "annotation", 1101, "warn", "Annotation references unknown requirement ID", try std.fmt.allocPrint(alloc, "Unknown annotation reference {s} at {s}:{d}", .{ unknown.ref_id, unknown.file_path, unknown.line_number }), subject, details);
             }
 
@@ -973,6 +939,47 @@ test "repoScanCycle with no repos is a no-op" {
     defer diags.deinit(alloc);
     try db.listRuntimeDiagnostics(null, alloc, &diags);
     try testing.expectEqual(@as(usize, 0), diags.items.len);
+}
+
+test "buildFileNodePropsJson escapes quote and backslash in file path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const json = try buildFileNodePropsJson("src/\"gps\"\\main.c", "/tmp/repo \"alpha\"", 2, alloc);
+    defer alloc.free(json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("src/\"gps\"\\main.c", json_util.getString(parsed.value, "path").?);
+    try testing.expectEqualStrings("/tmp/repo \"alpha\"", json_util.getString(parsed.value, "repo").?);
+}
+
+test "buildUnknownAnnotationDetailsJson escapes ref ids" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const json = try buildUnknownAnnotationDetailsJson("REQ-\"999\"", 42, alloc);
+    defer alloc.free(json);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("REQ-\"999\"", json_util.getString(parsed.value, "ref_id").?);
+    try testing.expectEqual(@as(i64, 42), json_util.getObjectField(parsed.value, "line").?.integer);
+}
+
+test "tabExists matches exact case-insensitive and fuzzy optional tab titles" {
+    const tabs = [_]online_provider.TabRef{
+        .{ .title = "User Needs", .native_id = "1" },
+        .{ .title = "Requirements", .native_id = "2" },
+        .{ .title = "Configuration Items (optional)", .native_id = "3" },
+    };
+
+    try testing.expect(tabExists(&tabs, "User Needs"));
+    try testing.expect(tabExists(&tabs, "user needs"));
+    try testing.expect(tabExists(&tabs, "Configuration Items"));
+    try testing.expect(!tabExists(&tabs, "Design Inputs"));
 }
 
 test "repoScanCycle emits E1101 for unknown refs and E1005 for hanging git" {

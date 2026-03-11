@@ -10,6 +10,8 @@
 /// No vendored crypto. Uses std.crypto.Certificate.rsa (Modulus, Fe, der) + std.http.Client.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
+const json_util = @import("json_util.zig");
 
 const der = std.crypto.Certificate.der;
 // Use std.crypto.ff.Modulus directly (Certificate.rsa.Modulus is not pub).
@@ -29,6 +31,60 @@ pub const SheetsError = error{
     ApiError,
     OutOfMemory,
 };
+
+pub const MockExchange = struct {
+    method: std.http.Method,
+    url: []const u8,
+    token: []const u8,
+    payload: ?[]const u8 = null,
+    content_type: ?[]const u8 = null,
+    status: std.http.Status = .ok,
+    body: []const u8,
+};
+
+pub const MockHttp = struct {
+    exchanges: []const MockExchange,
+    index: usize = 0,
+
+    fn handle(self: *MockHttp, method: std.http.Method, url: []const u8, token: []const u8, payload: ?[]const u8, content_type: ?[]const u8, alloc: Allocator) (SheetsError || Allocator.Error)![]u8 {
+        if (self.index >= self.exchanges.len) return error.ApiError;
+        const expected = self.exchanges[self.index];
+        self.index += 1;
+        if (expected.method != method) return error.ApiError;
+        if (!std.mem.eql(u8, expected.url, url)) return error.ApiError;
+        if (!std.mem.eql(u8, expected.token, token)) return error.ApiError;
+        if (expected.payload) |p| {
+            if (payload == null or !std.mem.eql(u8, p, payload.?)) return error.ApiError;
+        } else {
+            if (payload != null) return error.ApiError;
+        }
+        if (expected.content_type) |ct| {
+            if (content_type == null or !std.mem.eql(u8, ct, content_type.?)) return error.ApiError;
+        } else {
+            if (content_type != null) return error.ApiError;
+        }
+        switch (expected.status) {
+            .ok, .created, .accepted, .no_content => {},
+            .unauthorized => return error.AuthError,
+            else => return error.ApiError,
+        }
+        return alloc.dupe(u8, expected.body);
+    }
+
+    pub fn expectDone(self: *const MockHttp) !void {
+        try testing.expectEqual(self.exchanges.len, self.index);
+    }
+};
+
+var test_http_mock: ?*MockHttp = null;
+
+pub fn useMockHttp(mock: *MockHttp) void {
+    test_http_mock = mock;
+}
+
+pub fn clearMockHttp() void {
+    test_http_mock = null;
+}
 
 // ---------------------------------------------------------------------------
 // RSA private key (parsed from PKCS#8 PEM)
@@ -321,53 +377,28 @@ fn exchangeToken(client: *std.http.Client, jwt: []const u8, alloc: Allocator) (S
 /// Extract the string value for a given key from a simple flat JSON object.
 /// Returns null if not found. Allocates. Caller frees.
 fn extractJsonString(json: []const u8, key: []const u8, alloc: Allocator) ?[]u8 {
-    // Find `"key":`
-    var search_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    var pos = key_pos + needle.len;
-    // Skip whitespace
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-    if (pos >= json.len or json[pos] != '"') return null;
-    pos += 1; // skip opening quote
-    const start = pos;
-    while (pos < json.len and json[pos] != '"') {
-        if (json[pos] == '\\') pos += 1; // skip escaped char
-        pos += 1;
-    }
-    return alloc.dupe(u8, json[start..pos]) catch null;
+    const slice = json_util.extractJsonFieldStatic(json, key) orelse return null;
+    return alloc.dupe(u8, slice) catch null;
 }
 
 /// Extract a string value slice (no allocation) from a flat JSON object.
 /// The returned slice points into `json` — valid while `json` is alive.
 /// Does NOT handle escape sequences in the value.
 pub fn extractJsonFieldStatic(json: []const u8, key: []const u8) ?[]const u8 {
-    var search_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    var pos = key_pos + needle.len;
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-    if (pos >= json.len or json[pos] != '"') return null;
-    pos += 1;
-    const start = pos;
-    while (pos < json.len and json[pos] != '"') {
-        if (json[pos] == '\\') pos += 1;
-        pos += 1;
-    }
-    return json[start..pos];
+    return json_util.extractJsonFieldStatic(json, key);
 }
 
 /// Extract an integer value for a given key from a simple flat JSON object.
 fn extractJsonInt(json: []const u8, key: []const u8) ?i64 {
-    var search_buf: [128]u8 = undefined;
-    const needle = std.fmt.bufPrint(&search_buf, "\"{s}\":", .{key}) catch return null;
-    const key_pos = std.mem.indexOf(u8, json, needle) orelse return null;
-    var pos = key_pos + needle.len;
-    while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-    const start = pos;
-    while (pos < json.len and json[pos] >= '0' and json[pos] <= '9') pos += 1;
-    if (pos == start) return null;
-    return std.fmt.parseInt(i64, json[start..pos], 10) catch null;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    var parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), json, .{}) catch return null;
+    defer parsed.deinit();
+    const field = json_util.getObjectField(parsed.value, key) orelse return null;
+    return switch (field) {
+        .integer => |v| v,
+        else => null,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +415,12 @@ fn httpDo(
     content_type: ?[]const u8,
     alloc: Allocator,
 ) (SheetsError || Allocator.Error)![]u8 {
+    if (builtin.is_test) {
+        if (test_http_mock) |mock| {
+            return mock.handle(method, url, token, payload, content_type, alloc);
+        }
+    }
+
     const auth_header = try std.fmt.allocPrint(alloc, "Bearer {s}", .{token});
     defer alloc.free(auth_header);
 
@@ -457,12 +494,10 @@ pub fn freeRows(rows: [][][]const u8, alloc: Allocator) void {
 
 /// Parse the `values` array from a Sheets API response.
 fn parseValuesJson(json_body: []const u8, alloc: Allocator) (SheetsError || Allocator.Error)![][][]const u8 {
-    const values_key = "\"values\":";
-    const v_pos = std.mem.indexOf(u8, json_body, values_key) orelse return try alloc.alloc([][]const u8, 0);
-    var pos = v_pos + values_key.len;
-    while (pos < json_body.len and json_body[pos] != '[') pos += 1;
-    if (pos >= json_body.len) return try alloc.alloc([][]const u8, 0);
-    pos += 1; // skip outer '['
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, json_body, .{}) catch return error.ApiError;
+    defer parsed.deinit();
+    const values = json_util.getObjectField(parsed.value, "values") orelse return try alloc.alloc([][]const u8, 0);
+    if (values != .array) return try alloc.alloc([][]const u8, 0);
 
     var rows: std.ArrayList([][]const u8) = .empty;
     errdefer {
@@ -473,79 +508,31 @@ fn parseValuesJson(json_body: []const u8, alloc: Allocator) (SheetsError || Allo
         rows.deinit(alloc);
     }
 
-    outer: while (pos < json_body.len) {
-        skipWhitespaceComma(json_body, &pos);
-        if (pos >= json_body.len or json_body[pos] == ']') break :outer;
-        if (json_body[pos] != '[') return error.ApiError;
-        pos += 1;
-
+    for (values.array.items) |row_value| {
+        if (row_value != .array) continue;
         var cells: std.ArrayList([]const u8) = .empty;
         errdefer {
             for (cells.items) |c| alloc.free(c);
             cells.deinit(alloc);
         }
-
-        while (pos < json_body.len) {
-            skipWhitespaceComma(json_body, &pos);
-            if (pos >= json_body.len or json_body[pos] == ']') { pos += 1; break; }
-            const cell = try parseJsonValue(json_body, &pos, alloc);
-            try cells.append(alloc, cell);
+        for (row_value.array.items) |cell_value| {
+            try cells.append(alloc, try jsonValueToString(cell_value, alloc));
         }
-
         try rows.append(alloc, try cells.toOwnedSlice(alloc));
     }
 
     return rows.toOwnedSlice(alloc);
 }
 
-fn skipWhitespaceComma(s: []const u8, pos: *usize) void {
-    while (pos.* < s.len) {
-        const c = s[pos.*];
-        if (c == ' ' or c == '\n' or c == '\r' or c == '\t' or c == ',') {
-            pos.* += 1;
-        } else break;
-    }
-}
-
-fn parseJsonValue(s: []const u8, pos: *usize, alloc: Allocator) (SheetsError || Allocator.Error)![]const u8 {
-    if (pos.* >= s.len) return try alloc.dupe(u8, "");
-
-    if (s[pos.*] == '"') {
-        pos.* += 1;
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(alloc);
-        while (pos.* < s.len and s[pos.*] != '"') {
-            if (s[pos.*] == '\\' and pos.* + 1 < s.len) {
-                pos.* += 1;
-                const escaped: u8 = switch (s[pos.*]) {
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    '"' => '"',
-                    '\\' => '\\',
-                    '/' => '/',
-                    else => s[pos.*],
-                };
-                try buf.append(alloc, escaped);
-            } else {
-                try buf.append(alloc, s[pos.*]);
-            }
-            pos.* += 1;
-        }
-        if (pos.* < s.len) pos.* += 1; // closing '"'
-        return alloc.dupe(u8, buf.items);
-    }
-
-    if (pos.* + 3 < s.len and std.mem.eql(u8, s[pos.* .. pos.* + 4], "null")) {
-        pos.* += 4;
-        return alloc.dupe(u8, "");
-    }
-
-    // number / boolean: read until delimiter
-    const start = pos.*;
-    while (pos.* < s.len and s[pos.*] != ',' and s[pos.*] != ']' and
-        s[pos.*] != ' ' and s[pos.*] != '\n') pos.* += 1;
-    return alloc.dupe(u8, s[start..pos.*]);
+fn jsonValueToString(value: std.json.Value, alloc: Allocator) ![]const u8 {
+    return switch (value) {
+        .null => alloc.dupe(u8, ""),
+        .string => |s| alloc.dupe(u8, s),
+        .integer => |i| std.fmt.allocPrint(alloc, "{d}", .{i}),
+        .float => |f| std.fmt.allocPrint(alloc, "{d}", .{f}),
+        .bool => |b| alloc.dupe(u8, if (b) "true" else "false"),
+        else => alloc.dupe(u8, ""),
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -672,38 +659,26 @@ pub fn getSheetTabIds(
     const body = try httpDo(client, .GET, url, token, null, null, alloc);
     defer alloc.free(body);
 
-    // Parse the response: {"sheets":[{"properties":{"sheetId":N,"title":"..."}},…]}
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch return error.ApiError;
+    defer parsed.deinit();
+    const sheets = json_util.getObjectField(parsed.value, "sheets") orelse return try alloc.alloc(SheetTabId, 0);
+    if (sheets != .array) return try alloc.alloc(SheetTabId, 0);
+
     var result: std.ArrayList(SheetTabId) = .empty;
     errdefer {
         for (result.items) |item| alloc.free(item.title);
         result.deinit(alloc);
     }
 
-    var pos: usize = 0;
-    while (pos < body.len) {
-        // Find next "sheetId": occurrence
-        const sheet_id_marker = "\"sheetId\":";
-        const sid_pos = std.mem.indexOfPos(u8, body, pos, sheet_id_marker) orelse break;
-        pos = sid_pos + sheet_id_marker.len;
-        // Skip whitespace
-        while (pos < body.len and (body[pos] == ' ' or body[pos] == '\t')) pos += 1;
-        // Read integer
-        const num_start = pos;
-        while (pos < body.len and body[pos] >= '0' and body[pos] <= '9') pos += 1;
-        if (pos == num_start) continue;
-        const sheet_id = std.fmt.parseInt(i64, body[num_start..pos], 10) catch continue;
-
-        // Find the "title": that follows this sheetId in the same properties block
-        const title_marker = "\"title\":\"";
-        const title_pos = std.mem.indexOfPos(u8, body, sid_pos, title_marker) orelse continue;
-        const title_start = title_pos + title_marker.len;
-        var title_end = title_start;
-        while (title_end < body.len and body[title_end] != '"') {
-            if (body[title_end] == '\\') title_end += 1;
-            title_end += 1;
-        }
-        const title = try alloc.dupe(u8, body[title_start..title_end]);
-        try result.append(alloc, .{ .title = title, .id = sheet_id });
+    for (sheets.array.items) |sheet_value| {
+        const props = json_util.getObjectField(sheet_value, "properties") orelse continue;
+        const title = json_util.getString(props, "title") orelse continue;
+        const id_value = json_util.getObjectField(props, "sheetId") orelse continue;
+        const sheet_id = switch (id_value) {
+            .integer => |v| v,
+            else => continue,
+        };
+        try result.append(alloc, .{ .title = try alloc.dupe(u8, title), .id = sheet_id });
     }
 
     return result.toOwnedSlice(alloc);
@@ -823,6 +798,13 @@ test "extractJsonInt" {
     try testing.expectEqual(@as(i64, 3599), v.?);
 }
 
+test "extractJsonInt tolerates whitespace after colon" {
+    const json = "{\"expires_in\" : 3599,\"token_type\":\"Bearer\"}";
+    const v = extractJsonInt(json, "expires_in");
+    try testing.expect(v != null);
+    try testing.expectEqual(@as(i64, 3599), v.?);
+}
+
 test "stripLeadingZero" {
     const a = [_]u8{ 0x00, 0x01, 0x02 };
     try testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02 }, stripLeadingZero(&a));
@@ -837,44 +819,47 @@ test "sha256_digest_info_prefix length" {
     try testing.expectEqual(@as(usize, 51), t_len);
 }
 
-test "getSheetTabIds parsing" {
+test "getSheetTabIds parsing tolerates whitespace and reversed field order" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
-    // Simulate a Sheets API metadata response
-    const json =
-        \\{"sheets":[{"properties":{"sheetId":0,"title":"Requirements","index":0}},{"properties":{"sheetId":1234567,"title":"User Needs","index":1}},{"properties":{"sheetId":9999,"title":"Risks","index":2}}]}
-    ;
-    // Parse using the same logic as getSheetTabIds (minus HTTP)
-    var result: std.ArrayList(SheetTabId) = .empty;
-    var pos: usize = 0;
-    while (pos < json.len) {
-        const sheet_id_marker = "\"sheetId\":";
-        const sid_pos = std.mem.indexOfPos(u8, json, pos, sheet_id_marker) orelse break;
-        pos = sid_pos + sheet_id_marker.len;
-        while (pos < json.len and (json[pos] == ' ' or json[pos] == '\t')) pos += 1;
-        const num_start = pos;
-        while (pos < json.len and json[pos] >= '0' and json[pos] <= '9') pos += 1;
-        if (pos == num_start) continue;
-        const sheet_id = std.fmt.parseInt(i64, json[num_start..pos], 10) catch continue;
-        const title_marker = "\"title\":\"";
-        const title_pos = std.mem.indexOfPos(u8, json, sid_pos, title_marker) orelse continue;
-        const title_start = title_pos + title_marker.len;
-        var title_end = title_start;
-        while (title_end < json.len and json[title_end] != '"') {
-            if (json[title_end] == '\\') title_end += 1;
-            title_end += 1;
-        }
-        const title = try alloc.dupe(u8, json[title_start..title_end]);
-        try result.append(alloc, .{ .title = title, .id = sheet_id });
+    var client: std.http.Client = .{ .allocator = alloc };
+    defer client.deinit();
+    var mock = MockHttp{
+        .exchanges = &.{
+            .{
+                .method = .GET,
+                .url = "https://sheets.googleapis.com/v4/spreadsheets/sheet-123?fields=sheets.properties",
+                .token = "tok",
+                .body =
+                    \\{"sheets":[{"properties":{"title":"Requirements","sheetId":0,"index":0}},{"properties":{"sheetId" : 1234567,"title" : "User Needs","index":1}},{"properties":{"index":2,"title":"Risks","sheetId":9999}}]}
+                ,
+            },
+        },
+    };
+    useMockHttp(&mock);
+    defer clearMockHttp();
+
+    const result = try getSheetTabIds(&client, "tok", "sheet-123", alloc);
+    defer {
+        for (result) |item| alloc.free(item.title);
+        alloc.free(result);
     }
-    try testing.expectEqual(@as(usize, 3), result.items.len);
-    try testing.expectEqual(@as(i64, 0), result.items[0].id);
-    try testing.expectEqualStrings("Requirements", result.items[0].title);
-    try testing.expectEqual(@as(i64, 1234567), result.items[1].id);
-    try testing.expectEqualStrings("User Needs", result.items[1].title);
-    try testing.expectEqual(@as(i64, 9999), result.items[2].id);
-    try testing.expectEqualStrings("Risks", result.items[2].title);
+    try testing.expectEqual(@as(usize, 3), result.len);
+    try testing.expectEqual(@as(i64, 0), result[0].id);
+    try testing.expectEqualStrings("Requirements", result[0].title);
+    try testing.expectEqual(@as(i64, 1234567), result[1].id);
+    try testing.expectEqualStrings("User Needs", result[1].title);
+    try testing.expectEqual(@as(i64, 9999), result[2].id);
+    try testing.expectEqualStrings("Risks", result[2].title);
+    try mock.expectDone();
+}
+
+test "extractJsonFieldStatic tolerates whitespace after colon" {
+    const json = "{\"properties\":{\"title\": \"User Needs\",\"sheetId\":0}}";
+    const title = extractJsonFieldStatic(json, "title");
+    try testing.expect(title != null);
+    try testing.expectEqualStrings("User Needs", title.?);
 }
 
 test "parseValuesJson empty" {
@@ -900,6 +885,19 @@ test "parseValuesJson basic" {
     try testing.expectEqualStrings("Statement", rows[0][1]);
     try testing.expectEqualStrings("REQ-001", rows[1][0]);
     try testing.expectEqualStrings("approved", rows[1][2]);
+}
+
+test "parseValuesJson tolerates whitespace after values key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const json =
+        \\{"range":"Sheet1!A1:A1","values" : [["A"]]}
+    ;
+    const rows = try parseValuesJson(json, alloc);
+    defer freeRows(rows, alloc);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("A", rows[0][0]);
 }
 
 test "parseValuesJson escape" {

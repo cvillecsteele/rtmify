@@ -186,6 +186,15 @@ pub fn build(b: *std.Build) void {
     addSqlite(live_tests, b);
     const run_live_tests = b.addRunArtifact(live_tests);
 
+    const windows_lifecycle_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/lifecycle.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_windows_lifecycle_tests = b.addRunArtifact(windows_lifecycle_tests);
+
     const test_lib_step = b.step("test-lib", "Run librtmify unit tests");
     test_lib_step.dependOn(&run_lib_tests.step);
 
@@ -194,11 +203,13 @@ pub fn build(b: *std.Build) void {
 
     const test_live_step = b.step("test-live", "Run live module unit tests");
     test_live_step.dependOn(&run_live_tests.step);
+    test_live_step.dependOn(&run_windows_lifecycle_tests.step);
 
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_trace_tests.step);
     test_step.dependOn(&run_live_tests.step);
+    test_step.dependOn(&run_windows_lifecycle_tests.step);
 
     const win_gui_exe = b.addExecutable(.{
         .name = "rtmify-trace",
