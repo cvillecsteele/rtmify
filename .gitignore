@@ -12,6 +12,10 @@ live/tests/test-results/
 live/tests/playwright-report/
 live/tests/.cache/
 
+# Generated local cadcruncher test artifacts
+test/golden/*.cfb
+test/golden/*.bin
+
 # Legacy artifacts under sys
 trace/.zig-cache/
 trace/zig-out/

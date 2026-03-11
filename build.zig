@@ -71,6 +71,10 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("lib/src/lib.zig"),
         .target = target,
     });
+    const native_cadcruncher_mod = b.createModule(.{
+        .root_source_file = b.path("libcadcruncher/src/lib.zig"),
+        .target = target,
+    });
 
     const trace_exe = b.addExecutable(.{
         .name = "rtmify-trace",
@@ -99,6 +103,28 @@ pub fn build(b: *std.Build) void {
     });
     addSqlite(live_exe, b);
 
+    const cadinspect_exe = b.addExecutable(.{
+        .name = "rtmify-cadinspect",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libcadcruncher/src/inspector_cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cadcruncher", .module = native_cadcruncher_mod },
+            },
+        }),
+    });
+
+    const cadcruncher_lib = b.addLibrary(.{
+        .name = "cadcruncher",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libcadcruncher/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
     const shared_lib = b.addLibrary(.{
         .name = "rtmify",
         .linkage = .dynamic,
@@ -122,11 +148,15 @@ pub fn build(b: *std.Build) void {
 
     const install_trace = b.addInstallArtifact(trace_exe, .{});
     const install_live = b.addInstallArtifact(live_exe, .{});
+    const install_cadinspect = b.addInstallArtifact(cadinspect_exe, .{});
+    const install_cadcruncher_lib = b.addInstallArtifact(cadcruncher_lib, .{});
     const install_shared_lib = b.addInstallArtifact(shared_lib, .{});
     const install_static_lib = b.addInstallArtifact(static_lib, .{});
 
     b.getInstallStep().dependOn(&install_trace.step);
     b.getInstallStep().dependOn(&install_live.step);
+    b.getInstallStep().dependOn(&install_cadinspect.step);
+    b.getInstallStep().dependOn(&install_cadcruncher_lib.step);
     b.getInstallStep().dependOn(&install_shared_lib.step);
     b.getInstallStep().dependOn(&install_static_lib.step);
 
@@ -135,6 +165,10 @@ pub fn build(b: *std.Build) void {
 
     const live_step = b.step("live", "Build rtmify-live");
     live_step.dependOn(&install_live.step);
+
+    const cadcruncher_step = b.step("cadcruncher", "Build rtmify-cadinspect and libcadcruncher module");
+    cadcruncher_step.dependOn(&install_cadinspect.step);
+    cadcruncher_step.dependOn(&install_cadcruncher_lib.step);
 
     const lib_step = b.step("lib", "Build librtmify static and shared libraries");
     lib_step.dependOn(&install_shared_lib.step);
@@ -149,6 +183,11 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_live_cmd.addArgs(args);
     const run_live_step = b.step("run-live", "Run rtmify-live");
     run_live_step.dependOn(&run_live_cmd.step);
+
+    const run_cadinspect_cmd = b.addRunArtifact(cadinspect_exe);
+    if (b.args) |args| run_cadinspect_cmd.addArgs(args);
+    const run_cadinspect_step = b.step("run-cadcruncher", "Run rtmify-cadinspect");
+    run_cadinspect_step.dependOn(&run_cadinspect_cmd.step);
 
     const lib_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -186,6 +225,15 @@ pub fn build(b: *std.Build) void {
     addSqlite(live_tests, b);
     const run_live_tests = b.addRunArtifact(live_tests);
 
+    const cadcruncher_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libcadcruncher/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_cadcruncher_tests = b.addRunArtifact(cadcruncher_tests);
+
     const windows_lifecycle_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("live/windows/src/lifecycle.zig"),
@@ -205,11 +253,15 @@ pub fn build(b: *std.Build) void {
     test_live_step.dependOn(&run_live_tests.step);
     test_live_step.dependOn(&run_windows_lifecycle_tests.step);
 
+    const test_cadcruncher_step = b.step("test-cadcruncher", "Run libcadcruncher unit tests");
+    test_cadcruncher_step.dependOn(&run_cadcruncher_tests.step);
+
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_trace_tests.step);
     test_step.dependOn(&run_live_tests.step);
     test_step.dependOn(&run_windows_lifecycle_tests.step);
+    test_step.dependOn(&run_cadcruncher_tests.step);
 
     const win_gui_exe = b.addExecutable(.{
         .name = "rtmify-trace",
