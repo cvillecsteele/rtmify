@@ -1,0 +1,9 @@
+{
+  "expected_reportable_records": [
+    { "scope_kind": "component", "scope_identifier": "X1" },
+    { "scope_kind": "component", "scope_identifier": "U2" },
+    { "scope_kind": "component", "scope_identifier": "U3" }
+  ],
+  "expected_document_fields": [],
+  "minimum_reportable_count": 30
+}

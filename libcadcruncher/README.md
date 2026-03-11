@@ -12,6 +12,7 @@ It is not graph-aware. It does not know about RTMify Live, MCP, dashboard views,
 - OLE/CFB reader
 - Altium `.PcbDoc` extraction
 - first-pass Altium `.SchDoc` extraction
+- Altium usefulness evaluation harness
 - developer CLI: `rtmify-cadinspect`
 
 ## Out of scope
@@ -34,6 +35,20 @@ It does not yet extract:
 - ports
 - full schematic topology
 
+## Evaluation philosophy
+
+Viability is done. The next question is whether the extracted output is useful enough to become future RTMify evidence.
+
+`libcadcruncher` now classifies extracted records into:
+
+- `reportable`
+- `inspect_only`
+- `noise`
+
+The goal is not maximum coverage. The goal is a small, trustworthy set of object-local, human-explainable, provenance-preserving records.
+
+Only `reportable` evidence is a candidate for future Live integration.
+
 ## Fixtures and local sample workflow
 
 This repo now includes a minimal Altium fixture set under:
@@ -49,6 +64,10 @@ export RTMIFY_CAD_SAMPLES=/tmp/rtmify-cad-samples
 ```
 
 Keep the committed fixture set small and deliberate. Do not bulk-copy large or unclear-license public CAD corpora into the repo.
+
+Golden expectations for the committed Altium fixtures live under:
+
+- `/Users/colinsteele/Projects/rtmify/sys/libcadcruncher/test/golden/altium/`
 
 ## Example output
 
@@ -66,3 +85,33 @@ properties = {
 matched_requirement_ids = [REQ-893]
 provenance = PrimitiveParameters/Data
 ```
+
+## Corpus evaluation workflow
+
+Run the evaluator over one file:
+
+```sh
+zig build run-cadcruncher -- evaluate libcadcruncher/test/fixtures/altium/STM32_PCB_Design.PcbDoc
+```
+
+Run it over the full committed Altium corpus:
+
+```sh
+zig build run-cadcruncher -- evaluate libcadcruncher/test/fixtures/altium
+```
+
+Developer-readable Markdown output is also available:
+
+```sh
+zig build run-cadcruncher -- evaluate libcadcruncher/test/fixtures/altium --markdown
+```
+
+The evaluator measures:
+
+- total extracted records
+- reportable records
+- unknown records
+- counts by scope kind
+- counts by usefulness
+- missing expected exemplars from the golden files
+- unexpected reportable records

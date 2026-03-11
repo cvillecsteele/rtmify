@@ -1,0 +1,11 @@
+{
+  "expected_reportable_records": [
+    { "scope_kind": "component", "scope_identifier": "Stamp" }
+  ],
+  "expected_document_fields": [
+    "DocumentName",
+    "ProjectName",
+    "Revision"
+  ],
+  "minimum_reportable_count": 4
+}

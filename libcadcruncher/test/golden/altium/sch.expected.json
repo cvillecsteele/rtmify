@@ -1,0 +1,11 @@
+{
+  "expected_reportable_records": [],
+  "expected_document_fields": [
+    "Author",
+    "Title",
+    "DocumentName",
+    "ProjectName",
+    "Revision"
+  ],
+  "minimum_reportable_count": 5
+}

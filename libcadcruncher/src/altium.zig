@@ -2,6 +2,7 @@ const std = @import("std");
 const cfb = @import("cfb.zig");
 const detect = @import("detect.zig");
 const evidence = @import("evidence.zig");
+const eval = @import("eval.zig");
 const normalize = @import("normalize.zig");
 const sample_probe = @import("sample_probe.zig");
 
@@ -30,6 +31,27 @@ pub fn extractAuto(path: []const u8, options: ExtractOptions, allocator: std.mem
         .altium_schdoc => extractSchDoc(path, options, allocator),
         else => error.UnsupportedArtifact,
     };
+}
+
+pub fn extractReportable(path: []const u8, options: ExtractOptions, allocator: std.mem.Allocator) ![]evidence.EvidenceRecord {
+    const all_records = try extractAuto(path, options, allocator);
+    errdefer freeRecords(all_records, allocator);
+
+    var filtered: std.ArrayList(evidence.EvidenceRecord) = .empty;
+    errdefer {
+        for (filtered.items) |rec| freeEvidenceRecord(rec, allocator);
+        filtered.deinit(allocator);
+    }
+
+    for (all_records) |record| {
+        if (eval.classifyRecord(record) == .reportable) {
+            try filtered.append(allocator, record);
+        } else {
+            freeEvidenceRecord(record, allocator);
+        }
+    }
+    allocator.free(all_records);
+    return try filtered.toOwnedSlice(allocator);
 }
 
 pub fn extractPcbDoc(path: []const u8, options: ExtractOptions, allocator: std.mem.Allocator) ![]evidence.EvidenceRecord {
@@ -243,6 +265,11 @@ fn freeEvidenceRecord(rec: evidence.EvidenceRecord, allocator: std.mem.Allocator
     allocator.free(rec.matched_requirement_ids);
     allocator.free(rec.provenance.storage_name);
     allocator.free(rec.provenance.stream_name);
+}
+
+pub fn freeRecords(records: []const evidence.EvidenceRecord, allocator: std.mem.Allocator) void {
+    for (records) |rec| freeEvidenceRecord(rec, allocator);
+    allocator.free(records);
 }
 
 fn parseRecords(bytes: []const u8, allocator: std.mem.Allocator) ![][]evidence.Property {

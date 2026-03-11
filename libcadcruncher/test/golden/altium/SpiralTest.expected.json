@@ -1,0 +1,7 @@
+{
+  "expected_reportable_records": [
+    { "scope_kind": "document", "scope_identifier": "PCB 5.0 Binary File" }
+  ],
+  "expected_document_fields": [],
+  "minimum_reportable_count": 1
+}
