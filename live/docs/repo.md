@@ -10,7 +10,32 @@ An extension to RTMify Live that watches a local git repository and links source
 
 The engineer configures a repo path in the Live dashboard. Live scans the working tree for requirement ID annotations in source files and test files, reads git history for commits that reference requirement IDs, and runs git blame on annotated files to attribute lines to authors. The graph grows new node types (SourceFile, TestFile, Commit, CodeAnnotation) and new edges linking them to existing Requirement, Test, and DesignOutput nodes.
 
-The result: an auditor can start at a user need and walk the graph all the way to the commit hash that implemented it, the developer who wrote it, and the test file that verifies it. The DHR is no longer a document assembled by hand. It's a traversal.
+The result: an auditor can start at a user need and walk the graph to current code annotations, current implementation files, historical commits that explicitly referenced traced IDs, and file-level change history. The DHR is no longer a document assembled by hand. It's a traversal.
+
+### Evidence Semantics
+
+RTMify deliberately keeps three evidence classes separate:
+
+- **Current code annotation evidence**
+  - Derived from the current checked-out working tree.
+  - If a source or test file currently contains a traced ID in a comment, that is present-state evidence.
+  - This evidence creates `IMPLEMENTED_IN`, `VERIFIED_BY_CODE`, `ANNOTATED_AT`, and `CONTAINS` relationships.
+
+- **Historical explicit commit evidence**
+  - Derived from commit messages that explicitly mention traced IDs.
+  - This is historical traceability evidence, not present-state file implication.
+  - This evidence creates `COMMITTED_IN`.
+
+- **Historical file change evidence**
+  - Derived from git history showing that a source or test file changed in a commit.
+  - This means only "this file changed in this commit".
+  - It does **not** imply that the file is currently implicated in a requirement just because an old commit once referenced that requirement.
+  - This evidence creates file/commit relationships such as `CHANGED_IN` and `CHANGES`.
+
+Two explicit product rules follow from this:
+
+1. RTMify does **not** mine old blob contents or historical diffs for present-state code annotations. What matters for code-comment traceability is what the code says **right now** in the checked-out working tree.
+2. RTMify does **not** infer current requirement/file implication from old commit messages. Historical commit-message references remain valuable history, but they are not a substitute for current code annotations.
 
 ---
 
@@ -179,6 +204,8 @@ Default profiles shipped with the product:
 | `VERIFIED_BY_CODE` | Requirement | TestFile | Requirement verified by this test file |
 | `VERIFIED_BY_CODE` | SourceFile | TestFile | Source file tested by this test file |
 | `COMMITTED_IN` | Requirement | Commit | Requirement referenced in this commit |
+| `CHANGED_IN` | SourceFile/TestFile | Commit | This file changed in this commit |
+| `CHANGES` | Commit | SourceFile/TestFile | This commit changed this file |
 | `ANNOTATED_AT` | Requirement | CodeAnnotation | Requirement annotation found at this location |
 | `CONTAINS` | SourceFile | CodeAnnotation | Source file contains this annotation |
 | `CONTAINS` | TestFile | CodeAnnotation | Test file contains this annotation |
@@ -440,7 +467,12 @@ Parse the output. Portable, simple, no library dependency. The git CLI format is
 git log --format='%H|%h|%an|%ae|%aI|%s' --after=<last_scanned_timestamp>
 ```
 
-For each commit, parse the subject line for requirement IDs using the same pattern matcher as the annotation scanner. Create a Commit node and COMMITTED_IN edges.
+For each commit, parse the subject line for requirement IDs using the same pattern matcher as the annotation scanner. Create a Commit node and `COMMITTED_IN` edges for explicit requirement references. Separately, parse changed source/test file paths and create file/commit change edges.
+
+Important semantic boundary:
+- `COMMITTED_IN` means the commit message explicitly named a traced ID.
+- It does **not** mean every file touched by that commit is now permanently implicated in that requirement.
+- File/commit edges capture historical change evidence only.
 
 Store the most recent scanned commit hash in the SQLite config table. On next scan, only fetch commits after that hash.
 
@@ -756,6 +788,17 @@ When the scanner finds the file is in a test directory:
 
 1. Create TestFile node instead of SourceFile
 2. Create VERIFIED_BY_CODE edge instead of IMPLEMENTED_IN
+
+### 14.2.1 Current Code vs Historical Commits
+
+The scanner reads annotations from the **current** working tree only. If a line once contained `REQ-001` in an old commit but no longer does, RTMify does not treat that historical comment as current implementation evidence.
+
+Commit history is retained as a separate historical signal:
+
+- if a commit message explicitly references `REQ-001`, RTMify records that with `COMMITTED_IN`
+- if a commit changed `src/gps/timeout.c`, RTMify records that with file/commit change edges
+
+Those signals are intentionally not collapsed into one another. An old commit message referencing `REQ-001` does not, by itself, prove that `src/gps/timeout.c` is still currently implicated in `REQ-001`.
 
 ### 14.3 Suspect Propagation — Code Aware
 
