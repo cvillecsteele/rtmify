@@ -455,6 +455,36 @@
     .gap-badge-sev.error { background: #fde8e8; color: #c0392b; }
     .gap-badge-sev.warn  { background: #fff8e1; color: #7a5900; }
     .gap-badge-sev.info  { background: #e8f4e8; color: #2d5a2d; }
+    .gap-help-btn {
+      border: 1px solid #d7dde5;
+      background: #fff;
+      color: #2d4b6a;
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .gap-help-btn:hover { background: #f3f7fb; }
+    .gap-help-row td { background: #fafbfd; padding: 0; }
+    .gap-help-box {
+      padding: 14px 16px;
+      border-top: 1px solid #e8edf2;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .gap-help-title {
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #1f2e3b;
+    }
+    .gap-help-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .gap-help-block strong { display: block; margin-bottom: 4px; color: #44505b; }
+    .gap-help-block { color: #33414f; }
 
     /* Code tab */
     .code-add-row { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -1567,12 +1597,36 @@
 
     let data;
     try {
-      const res = await fetch('/query/impact/' + encodeURIComponent(id));
+      const url = new URL('/query/impact/' + encodeURIComponent(id), window.location.origin).toString();
+      console.info('runImpact request', {
+        id,
+        url,
+        href: window.location.href,
+        origin: window.location.origin,
+        online: navigator.onLine,
+      });
+      window.__rtmify_lastImpactDebug = {
+        id,
+        url,
+        href: window.location.href,
+        origin: window.location.origin,
+        online: navigator.onLine,
+      };
+      const res = await fetch(url, { cache: 'no-store' });
+      console.info('runImpact response', { id, status: res.status, ok: res.ok, type: res.type, redirected: res.redirected, url: res.url });
       if (res.status === 404) throw new Error(`Node "${id}" not found`);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       data = await res.json();
+      console.info('runImpact payload', { id, count: Array.isArray(data) ? data.length : null });
     } catch (e) {
-      errEl.textContent = e.message;
+      console.error('runImpact failed', {
+        id,
+        message: e?.message || String(e),
+        name: e?.name || 'Error',
+        stack: e?.stack || null,
+      });
+      const debug = window.__rtmify_lastImpactDebug || {};
+      errEl.textContent = `${e.message} (url=${debug.url || 'unknown'}, origin=${debug.origin || 'unknown'})`;
       errEl.style.display = 'block';
       result.innerHTML = '';
       return;
@@ -1897,17 +1951,168 @@
       return;
     }
 
-    tbody.innerHTML = gaps.map(g => {
+    tbody.innerHTML = gaps.map((g, idx) => {
       const sev = (g.severity || 'info').toLowerCase();
+      const helpId = `gap-help-${idx}`;
       return `<tr>
         <td>${esc(String(g.code || ''))}</td>
         <td>${esc(g.title || '')}</td>
         <td>${esc(g.gap_type || '')}</td>
         <td>${esc(g.node_id || '')}</td>
         <td><span class="gap-badge-sev ${sev}">${esc(sev)}</span></td>
-        <td>${esc(g.message || '')}</td>
+        <td>
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+            <span>${esc(g.message || '')}</span>
+            <button class="gap-help-btn" onclick="toggleGapHelp('${helpId}', this)">Explain</button>
+          </div>
+        </td>
+      </tr>
+      <tr id="${helpId}" class="gap-help-row" style="display:none">
+        <td colspan="6">${renderGapHelp(g)}</td>
       </tr>`;
     }).join('');
+  }
+
+  function toggleGapHelp(id, btn) {
+    const row = document.getElementById(id);
+    if (!row) return;
+    const open = row.style.display !== 'none';
+    row.style.display = open ? 'none' : '';
+    if (btn) btn.textContent = open ? 'Explain' : 'Hide';
+  }
+
+  function renderGapHelp(gap) {
+    const info = explainGap(gap);
+    return `<div class="gap-help-box">
+      <div class="gap-help-title">${esc(info.headline)}</div>
+      <div class="gap-help-grid">
+        <div class="gap-help-block">
+          <strong>What RTMify Checked</strong>
+          <div>${esc(info.check)}</div>
+        </div>
+        <div class="gap-help-block">
+          <strong>Why You’re Seeing It</strong>
+          <div>${esc(info.why)}</div>
+        </div>
+        <div class="gap-help-block">
+          <strong>What To Inspect</strong>
+          <div>${esc(info.inspect)}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function explainGap(gap) {
+    const profile = document.getElementById('profile-select')?.value || 'generic';
+    const id = gap.node_id || 'this node';
+    switch (gap.gap_type) {
+      case 'orphan_requirement':
+        if (String(id).startsWith('UN-')) {
+          return {
+            headline: `No requirement currently derives from ${id}.`,
+            check: 'RTMify looked for an incoming DERIVES_FROM edge from a Requirement to this User Need.',
+            why: `In the ${profile} profile, a user need is expected to have at least one derived requirement. None is present in the current graph.`,
+            inspect: 'Check the Requirements tab for a row whose User Need ID cell contains this exact user-need ID. Look for typos, missing links, or references skipped during ingest.'
+          };
+        }
+        return {
+          headline: `${id} is missing a required traceability step.`,
+          check: 'RTMify checked for the next required edge in the active profile chain.',
+          why: 'That edge is absent in the current graph, so this node is orphaned at that stage of the chain.',
+          inspect: 'Open the source tab for this artifact and verify the expected upstream or downstream ID link is present and valid.'
+        };
+      case 'hlr_without_llr':
+        return {
+          headline: `${id} is acting like a high-level requirement without decomposition.`,
+          check: 'RTMify identified this requirement as derived from a User Need, then looked for an outgoing REFINED_BY edge to a lower-level requirement.',
+          why: `Under the ${profile} profile, high-level requirements are expected to decompose into lower-level requirements. No REFINED_BY link exists.`,
+          inspect: 'If this is truly a high-level requirement, add one or more lower-level requirements and link them. If you intentionally use one requirement level, this profile is stricter than your current data model.'
+        };
+      case 'llr_without_source':
+        return {
+          headline: `${id} looks like a low-level requirement with no implementation link.`,
+          check: 'RTMify found this requirement as the child of a REFINED_BY chain and then looked for IMPLEMENTED_IN to source code.',
+          why: 'The decomposition exists, but the implementation step is missing.',
+          inspect: 'Check whether code traceability has been captured yet. If implementation exists, confirm repo scanning and code annotations are creating IMPLEMENTED_IN edges.'
+        };
+      case 'source_without_structural_coverage':
+        return {
+          headline: `${id} has implementation evidence but no verification-by-code link.`,
+          check: 'RTMify found a source file that is implemented or annotated, then looked for VERIFIED_BY_CODE to a test file.',
+          why: 'The code exists in the traceability graph, but no code-level verification link is present.',
+          inspect: 'Check test-file annotations, repo scan coverage, and whether the matching verification artifact is represented as a TestFile in the graph.'
+        };
+      case 'unimplemented_requirement':
+        return {
+          headline: `${id} has no source implementation link.`,
+          check: 'RTMify looked for an IMPLEMENTED_IN edge from this Requirement to a SourceFile.',
+          why: 'No implementation link exists in the current graph.',
+          inspect: 'If implementation exists, check repo scanning, code annotations, and whether the requirement ID is referenced exactly in code or commit history.'
+        };
+      case 'uncommitted_requirement':
+        return {
+          headline: `${id} has implementation evidence but no commit evidence.`,
+          check: 'RTMify found IMPLEMENTED_IN for this requirement and then looked for COMMITTED_IN.',
+          why: 'The graph knows about implementation, but no linked commit was found.',
+          inspect: 'Check whether commit messages reference the requirement ID and whether git log scanning is working for the configured repositories.'
+        };
+      case 'unattributed_annotation':
+        return {
+          headline: `${id} is linked to code without blame attribution.`,
+          check: 'RTMify found a CodeAnnotation node and expected blame_author and author_time metadata.',
+          why: 'The annotation exists, but git blame data was not attached.',
+          inspect: 'Check repo scan diagnostics for git blame failures, untracked files, or path mismatches.'
+        };
+      case 'req_without_design_input':
+        return {
+          headline: `${id} has no linked design input.`,
+          check: 'RTMify looked for an ALLOCATED_TO edge from this Requirement to a DesignInput.',
+          why: 'The requirement is present, but the design-input allocation step is absent.',
+          inspect: 'Check the Design Inputs tab and the Source Requirement column for this requirement ID.'
+        };
+      case 'design_input_without_design_output':
+        return {
+          headline: `${id} has no linked design output.`,
+          check: 'RTMify looked for a SATISFIED_BY edge from this DesignInput to a DesignOutput.',
+          why: 'The design input exists, but no downstream design output is linked to it.',
+          inspect: 'Check the Design Outputs tab and the Design Input ID column for this design-input ID.'
+        };
+      case 'design_output_without_source':
+        return {
+          headline: `${id} has no implementation link.`,
+          check: 'RTMify looked for an IMPLEMENTED_IN edge from this DesignOutput to a SourceFile.',
+          why: 'The design output exists in the graph, but no source implementation is linked.',
+          inspect: 'Check repo/code traceability or add the implementation mapping if this design output is already realized in code.'
+        };
+      case 'design_output_without_config_control':
+        return {
+          headline: `${id} has no configuration-control link.`,
+          check: 'RTMify looked for a CONTROLLED_BY edge from this DesignOutput to a ConfigurationItem.',
+          why: 'The design output exists, but no controlled configuration item is linked to it.',
+          inspect: 'Check the Configuration Items tab and the Design Output ID column for this design output ID.'
+        };
+      case 'missing_asil':
+        return {
+          headline: `${id} is missing ASIL classification.`,
+          check: 'RTMify looked for an asil property on this Requirement under the automotive profile.',
+          why: 'No ASIL value is stored for this requirement.',
+          inspect: 'Add the ASIL value in the requirement data or adjust the model if this requirement is intentionally non-safety-relevant.'
+        };
+      case 'asil_inheritance':
+        return {
+          headline: `${id} violates ASIL inheritance expectations.`,
+          check: 'RTMify compared parent and child requirement ASIL values across a REFINED_BY relationship.',
+          why: 'A child requirement has a lower ASIL than its parent, which breaks the configured inheritance rule.',
+          inspect: 'Review the parent and child ASIL values and confirm whether the decomposition was entered correctly.'
+        };
+      default:
+        return {
+          headline: `${gap.title || 'Gap'} detected for ${id}.`,
+          check: 'RTMify evaluated the active profile rules against the current graph and found a missing or inconsistent traceability condition.',
+          why: gap.message || 'The graph does not satisfy one of the active profile checks.',
+          inspect: 'Inspect the linked node, its expected upstream and downstream relationships, and the source sheet cells that should create those edges.'
+        };
+    }
   }
 
   // --- Code Traceability tab ---

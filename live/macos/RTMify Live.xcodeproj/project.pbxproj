@@ -12,6 +12,8 @@
 		84CCBA221B601CBA00E9B192 /* LicenseGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA121B601CBA00E9B192 /* LicenseGateView.swift */; };
 		84CCBA231B601CBA00E9B192 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA131B601CBA00E9B192 /* MenuBarView.swift */; };
 		84CCBA321B601CBA00E9B192 /* PortSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA311B601CBA00E9B192 /* PortSelection.swift */; };
+		84CCBA341B601CBA00E9B192 /* CrashSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA331B601CBA00E9B192 /* CrashSupervisor.swift */; };
+		84CCBA361B601CBA00E9B192 /* OutputRingBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84CCBA351B601CBA00E9B192 /* OutputRingBuffer.swift */; };
 		84CCBA281B601CBA00E9B192 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 84CCBA191B601CBA00E9B192 /* Assets.xcassets */; };
 		84CCBA301B601CBA00E9B192 /* rtmify-live in Resources */ = {isa = PBXBuildFile; fileRef = 84CCBA2F1B601CBA00E9B192 /* rtmify-live */; };
 /* End PBXBuildFile section */
@@ -22,6 +24,8 @@
 		84CCBA121B601CBA00E9B192 /* LicenseGateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LicenseGateView.swift"; sourceTree = "<group>"; };
 		84CCBA131B601CBA00E9B192 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "MenuBarView.swift"; sourceTree = "<group>"; };
 		84CCBA311B601CBA00E9B192 /* PortSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PortSelection.swift"; sourceTree = "<group>"; };
+		84CCBA331B601CBA00E9B192 /* CrashSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CrashSupervisor.swift"; sourceTree = "<group>"; };
+		84CCBA351B601CBA00E9B192 /* OutputRingBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "OutputRingBuffer.swift"; sourceTree = "<group>"; };
 		84CCBA181B601CBA00E9B192 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info.plist"; sourceTree = "<group>"; };
 		84CCBA191B601CBA00E9B192 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Assets.xcassets"; sourceTree = "<group>"; };
 		84CCBA2F1B601CBA00E9B192 /* rtmify-live */ = {isa = PBXFileReference; lastKnownFileType = compiled.mach-o.executable; path = "Resources/rtmify-live"; sourceTree = "<group>"; };
@@ -63,6 +67,8 @@
 				84CCBA121B601CBA00E9B192 /* LicenseGateView.swift */,
 				84CCBA131B601CBA00E9B192 /* MenuBarView.swift */,
 				84CCBA311B601CBA00E9B192 /* PortSelection.swift */,
+				84CCBA331B601CBA00E9B192 /* CrashSupervisor.swift */,
+				84CCBA351B601CBA00E9B192 /* OutputRingBuffer.swift */,
 				84CCBA191B601CBA00E9B192 /* Assets.xcassets */,
 				84CCBA2F1B601CBA00E9B192 /* rtmify-live */,
 				84CCBA181B601CBA00E9B192 /* Info.plist */,
@@ -145,6 +151,8 @@
 				84CCBA221B601CBA00E9B192 /* LicenseGateView.swift in Sources */,
 				84CCBA231B601CBA00E9B192 /* MenuBarView.swift in Sources */,
 				84CCBA321B601CBA00E9B192 /* PortSelection.swift in Sources */,
+				84CCBA341B601CBA00E9B192 /* CrashSupervisor.swift in Sources */,
+				84CCBA361B601CBA00E9B192 /* OutputRingBuffer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -497,6 +497,11 @@ fn normalizeId(raw: []const u8, alloc: Allocator, diag: *Diagnostics, tab: []con
     // Uppercase all characters
     const upper = try alloc.alloc(u8, result.len);
     for (result, 0..) |c, i| upper[i] = std.ascii.toUpper(c);
+    if (!looksLikeId(upper)) {
+        try diag.warn(diagnostic.E.id_invalid, .row_parsing, tab, row_num,
+            "ID '{s}' does not match expected RTM pattern (e.g. REQ-001) — skipping", .{upper});
+        return "";
+    }
     return upper;
 }
 
@@ -1785,6 +1790,69 @@ test "normalizeId strips leading/trailing hyphens" {
     const result = try normalizeId("-REQ-001-", a, &d, "Test", 1);
     try testing.expectEqualStrings("REQ-001", result);
     try testing.expect(d.warning_count >= 1);
+}
+
+test "normalizeId rejects URL-like IDs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const result = try normalizeId("foo/bar/baz?blow=up", a, &d, "Requirements", 2);
+    try testing.expectEqual(@as(usize, 0), result.len);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
+}
+
+test "invalid requirement ID row is skipped during ingest" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement" },
+            &.{ "foo/bar/baz?blow=up", "The system shall work" },
+            &.{ "REQ-002", "The system shall also work" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 1), stats.requirement_count);
+    try testing.expect(g.getNode("FOO/BAR/BAZ?BLOW=UP") == null);
+    try testing.expect(g.getNode("REQ-002") != null);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
+}
+
+test "invalid reference token is skipped during ingest" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "User Needs", .rows = &.{
+            &.{ "ID", "Statement" },
+            &.{ "UN-001", "Need one" },
+        }},
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement", "User Need ID" },
+            &.{ "REQ-001", "The system shall work", "foo?bar" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    _ = try ingestValidated(&g, sheets, &d);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-001", testing.allocator, &edges);
+    var found_derives = false;
+    for (edges.items) |e| {
+        if (e.label == .derives_from) found_derives = true;
+    }
+    try testing.expect(!found_derives);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
 }
 
 test "parseNumericField text mappings" {

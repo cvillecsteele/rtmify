@@ -22,7 +22,11 @@ let package = Package(
                 "Info.plist",
                 "Resources",
             ],
-            sources: ["PortSelection.swift"]
+            sources: [
+                "PortSelection.swift",
+                "CrashSupervisor.swift",
+                "OutputRingBuffer.swift",
+            ]
         ),
         .testTarget(
             name: "RTMifyLiveMacOSSupportTests",

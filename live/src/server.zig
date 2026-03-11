@@ -77,7 +77,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
 
     if (req.head.method == .GET) {
         if (std.mem.eql(u8, path, "/nodes")) {
-            const type_filter = queryParam(target, "type");
+            const type_filter = try queryParamDecoded(target, "type", alloc);
             const body = try routes.handleNodes(ctx.db, type_filter, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/nodes/types")) {
@@ -87,7 +87,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body = try routes.handleEdgeLabels(ctx.db, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/search")) {
-            const q = queryParam(target, "q") orelse "";
+            const q = (try queryParamDecoded(target, "q", alloc)) orelse "";
             const body = try routes.handleSearch(ctx.db, q, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/schema")) {
@@ -112,18 +112,24 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body = try routes.handleRisks(ctx.db, alloc);
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/impact/")) {
-            const node_id = path["/query/impact/".len..];
+            const node_id = try decodePathParam(path["/query/impact/".len..], alloc);
+            std.log.info("impact request start id={s}", .{node_id});
             const body = routes.handleImpact(ctx.db, node_id, alloc) catch |e| switch (e) {
                 error.NotFound => {
+                    std.log.warn("impact request not found id={s}", .{node_id});
                     const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
                     try sendJsonWithStatus(req, err_body, .not_found);
                     return;
                 },
-                else => return e,
+                else => {
+                    std.log.err("impact request failed id={s}: {s}", .{ node_id, @errorName(e) });
+                    return e;
+                },
             };
+            std.log.info("impact request ok id={s} bytes={d}", .{ node_id, body.len });
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/node/")) {
-            const node_id = path["/query/node/".len..];
+            const node_id = try decodePathParam(path["/query/node/".len..], alloc);
             const body = routes.handleNode(ctx.db, node_id, alloc) catch |e| switch (e) {
                 error.NotFound => {
                     const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
@@ -137,11 +143,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body = try routes.handleStatus(ctx.db, ctx.state, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
-            const qprofile = queryParam(target, "profile");
+            const qprofile = try queryParamDecoded(target, "profile", alloc);
             const body = try routes.handleProvisionPreview(ctx.db, qprofile, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/diagnostics")) {
-            const qsource = queryParam(target, "source");
+            const qsource = try queryParamDecoded(target, "source", alloc);
             const body = try routes.handleDiagnostics(ctx.db, qsource, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/coverage.md")) {
@@ -178,11 +184,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body = try routes.handleUntestedSourceFiles(ctx.db, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/file-annotations")) {
-            const file_path = queryParam(target, "file_path") orelse "";
+            const file_path = (try queryParamDecoded(target, "file_path", alloc)) orelse "";
             const body = try routes.handleFileAnnotations(ctx.db, file_path, alloc);
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/commit-history/")) {
-            const req_id = path["/query/commit-history/".len..];
+            const req_id = try decodePathParam(path["/query/commit-history/".len..], alloc);
             const body = try routes.handleCommitHistory(ctx.db, req_id, alloc);
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/dhr/md")) {
@@ -226,7 +232,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.startsWith(u8, path, "/suspect/") and
             std.mem.endsWith(u8, path, "/clear"))
         {
-            const node_id = path["/suspect/".len .. path.len - "/clear".len];
+            const node_id = try decodePathParam(path["/suspect/".len .. path.len - "/clear".len], alloc);
             const resp = try routes.handleClearSuspect(ctx.db, node_id, alloc);
             try sendJson(req, resp);
         } else if (std.mem.eql(u8, path, "/ingest")) {
@@ -360,7 +366,7 @@ fn readBody(req: *std.http.Server.Request, alloc: Allocator) ![]u8 {
 // Query string parsing
 // ---------------------------------------------------------------------------
 
-fn queryParam(target: []const u8, key: []const u8) ?[]const u8 {
+fn queryParamRaw(target: []const u8, key: []const u8) ?[]const u8 {
     const q_pos = std.mem.indexOfScalar(u8, target, '?') orelse return null;
     const query = target[q_pos + 1 ..];
     var it = std.mem.splitScalar(u8, query, '&');
@@ -371,8 +377,19 @@ fn queryParam(target: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
+fn queryParamDecoded(target: []const u8, key: []const u8, alloc: Allocator) !?[]const u8 {
+    const raw = queryParamRaw(target, key) orelse return null;
+    const buf = try alloc.dupe(u8, raw);
+    return std.Uri.percentDecodeInPlace(buf);
+}
+
 fn stripQuery(target: []const u8) []const u8 {
     return if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
+}
+
+fn decodePathParam(raw: []const u8, alloc: Allocator) ![]const u8 {
+    const buf = try alloc.dupe(u8, raw);
+    return std.Uri.percentDecodeInPlace(buf);
 }
 
 const testing = std.testing;
@@ -383,9 +400,45 @@ test "stripQuery removes query string and preserves bare path" {
 }
 
 test "queryParam extracts expected values" {
-    try testing.expectEqualStrings("medical", queryParam("/api/provision-preview?profile=medical", "profile").?);
-    try testing.expect(queryParam("/api/provision-preview?profile=medical", "sheet_url") == null);
-    try testing.expect(queryParam("/api/provision-preview?profile=medical", "missing") == null);
+    try testing.expectEqualStrings("medical", queryParamRaw("/api/provision-preview?profile=medical", "profile").?);
+    try testing.expect(queryParamRaw("/api/provision-preview?profile=medical", "sheet_url") == null);
+    try testing.expect(queryParamRaw("/api/provision-preview?profile=medical", "missing") == null);
+}
+
+test "queryParamDecoded decodes percent-encoded values" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const decoded = (try queryParamDecoded("/query/file-annotations?file_path=src%2Ffoo%20bar.c", "file_path", alloc)).?;
+    try testing.expectEqualStrings("src/foo bar.c", decoded);
+}
+
+test "queryParamDecoded leaves simple values unchanged" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const decoded = (try queryParamDecoded("/api/provision-preview?profile=medical", "profile", alloc)).?;
+    try testing.expectEqualStrings("medical", decoded);
+}
+
+test "decodePathParam decodes percent-encoded route IDs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const decoded = try decodePathParam("FOO%2FBAR%2FBAZ%3FBLOW%3DUP", alloc);
+    try testing.expectEqualStrings("FOO/BAR/BAZ?BLOW=UP", decoded);
+}
+
+test "decodePathParam leaves simple IDs unchanged" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const decoded = try decodePathParam("REQ-014", alloc);
+    try testing.expectEqualStrings("REQ-014", decoded);
 }
 
 test "successful connection response should start sync" {

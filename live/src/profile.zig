@@ -21,11 +21,17 @@ pub const ChainStep = struct {
     from_type: NodeType,
     edge_label: EdgeLabel,
     to_type: NodeType,
+    direction: Direction = .outgoing,
     required: bool,
     severity: GapSeverity,
     code: u16,
     title: []const u8,
     gap_type: []const u8,
+};
+
+pub const Direction = enum {
+    outgoing,
+    incoming,
 };
 
 pub const SpecialGapKind = enum {
@@ -60,18 +66,18 @@ pub const Profile = struct {
 };
 
 const medical_chain = &[_]ChainStep{
-    .{ .from_type = .user_need, .edge_label = .derives_from, .to_type = .requirement, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "orphan_requirement" },
+    .{ .from_type = .user_need, .edge_label = .derives_from, .to_type = .requirement, .direction = .incoming, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "orphan_requirement" },
     .{ .from_type = .requirement, .edge_label = .tested_by, .to_type = .test_group, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "untested_requirement" },
     .{ .from_type = .risk, .edge_label = .mitigated_by, .to_type = .requirement, .required = true, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "unmitigated_risk" },
 };
 
 const aerospace_chain = &[_]ChainStep{
-    .{ .from_type = .user_need, .edge_label = .derives_from, .to_type = .requirement, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "orphan_requirement" },
+    .{ .from_type = .user_need, .edge_label = .derives_from, .to_type = .requirement, .direction = .incoming, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "orphan_requirement" },
     .{ .from_type = .requirement, .edge_label = .tested_by, .to_type = .test_group, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "untested_requirement" },
 };
 
 const automotive_chain = &[_]ChainStep{
-    .{ .from_type = .user_need, .edge_label = .derives_from, .to_type = .requirement, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "orphan_requirement" },
+    .{ .from_type = .user_need, .edge_label = .derives_from, .to_type = .requirement, .direction = .incoming, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "orphan_requirement" },
     .{ .from_type = .requirement, .edge_label = .tested_by, .to_type = .test_group, .required = true, .severity = .err, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "untested_requirement" },
     .{ .from_type = .risk, .edge_label = .mitigated_by, .to_type = .requirement, .required = true, .severity = .err, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "unmitigated_risk" },
 };

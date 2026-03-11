@@ -194,7 +194,6 @@ pub fn handleImpact(db: *graph_live.GraphDb, node_id: []const u8, alloc: Allocat
             alloc.free(imp.type);
             alloc.free(imp.properties);
             alloc.free(imp.via);
-            alloc.free(imp.dir);
         }
         impacts.deinit(alloc);
     }
@@ -2079,6 +2078,56 @@ test "handleImpact missing node returns not found" {
     try testing.expectError(error.NotFound, handleImpact(&db, "REQ-404", alloc));
 }
 
+test "handleImpact returns downstream nodes without crashing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-002", "Requirement", "{\"statement\":\"Example req\"}", null);
+    try db.addNode("TG-002", "TestGroup", "{\"name\":\"Example group\"}", null);
+    try db.addEdge("REQ-002", "TG-002", "TESTED_BY");
+
+    const resp = try handleImpact(&db, "REQ-002", alloc);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
+    defer parsed.deinit();
+
+    const rows = parsed.value.array.items;
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    const row = rows[0].object;
+    try testing.expectEqualStrings("TG-002", row.get("id").?.string);
+    try testing.expectEqualStrings("TestGroup", row.get("type").?.string);
+    try testing.expectEqualStrings("TESTED_BY", row.get("via").?.string);
+    try testing.expectEqualStrings("→", row.get("dir").?.string);
+}
+
+test "handleImpact on user need returns derived downstream chain" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need\"}", null);
+    try db.addNode("REQ-002", "Requirement", "{\"statement\":\"Req\"}", null);
+    try db.addNode("TG-002", "TestGroup", "{\"name\":\"Group\"}", null);
+    try db.addNode("TEST-002", "Test", "{\"name\":\"Test\"}", null);
+    try db.addEdge("REQ-002", "UN-001", "DERIVES_FROM");
+    try db.addEdge("REQ-002", "TG-002", "TESTED_BY");
+    try db.addEdge("TG-002", "TEST-002", "HAS_TEST");
+
+    const resp = try handleImpact(&db, "UN-001", alloc);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
+    defer parsed.deinit();
+
+    const rows = parsed.value.array.items;
+    try testing.expectEqual(@as(usize, 3), rows.len);
+    try testing.expectEqualStrings("REQ-002", rows[0].object.get("id").?.string);
+    try testing.expectEqualStrings("TG-002", rows[1].object.get("id").?.string);
+    try testing.expectEqualStrings("TEST-002", rows[2].object.get("id").?.string);
+}
+
 test "handleRisks includes score fields used by dashboard" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2169,6 +2218,9 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "const { node, edges_out, edges_in } = data;") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "function humanEdgeLabel(") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "function explainGap(") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "toggleGapHelp(") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "What RTMify Checked") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(f.properties") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(a.properties") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(c.properties") == null);

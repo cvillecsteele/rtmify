@@ -26,6 +26,17 @@ struct MenuBarView: View {
         case .starting:
             Label("Starting…", systemImage: "arrow.clockwise.circle")
                 .foregroundStyle(.secondary)
+        case .restarting(_, let attempt, let maxAttempts, let nextDelaySeconds, let reason):
+            VStack(alignment: .leading) {
+                Label("Restarting server (attempt \(attempt)/\(maxAttempts))…", systemImage: "arrow.triangle.2.circlepath.circle")
+                    .foregroundStyle(.orange)
+                Text("Retrying in \(nextDelaySeconds)s")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("Reason: \(reason)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         case .running(let port):
             VStack(alignment: .leading) {
                 Label("Running on :\(String(port))", systemImage: "checkmark.circle")
@@ -58,6 +69,8 @@ struct MenuBarView: View {
             Button("Start Server") { vm.start() }
         case .starting:
             Button("Starting…") {}.disabled(true)
+        case .restarting:
+            Button("Stop Server") { vm.stop() }
         case .running:
             Button("Open Dashboard") { vm.openDashboard() }
             Button("Stop Server") { vm.stop() }

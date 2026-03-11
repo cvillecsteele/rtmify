@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const GraphDb = @import("graph_live.zig").GraphDb;
 const profile_mod = @import("profile.zig");
 const Profile = profile_mod.Profile;
+const Direction = profile_mod.Direction;
 const GapSeverity = profile_mod.GapSeverity;
 const SpecialGapKind = profile_mod.SpecialGapKind;
 const SpecialGapCheck = profile_mod.SpecialGapCheck;
@@ -24,16 +25,30 @@ pub fn walkChain(db: *GraphDb, profile: Profile, alloc: Allocator) ![]Gap {
     for (profile.chain_steps) |step| {
         if (!step.required) continue;
 
-        var st = try db.db.prepare(
-            \\SELECT n.id FROM nodes n
-            \\WHERE n.type=?
-            \\  AND NOT EXISTS (
-            \\      SELECT 1 FROM edges e
-            \\      JOIN nodes dst ON dst.id = e.to_id
-            \\      WHERE e.from_id = n.id AND e.label = ? AND dst.type = ?
-            \\  )
-            \\ORDER BY n.id
-        );
+        const sql: [:0]const u8 = switch (step.direction) {
+            .outgoing =>
+                \\SELECT n.id FROM nodes n
+                \\WHERE n.type=?
+                \\  AND NOT EXISTS (
+                \\      SELECT 1 FROM edges e
+                \\      JOIN nodes dst ON dst.id = e.to_id
+                \\      WHERE e.from_id = n.id AND e.label = ? AND dst.type = ?
+                \\  )
+                \\ORDER BY n.id
+            ,
+            .incoming =>
+                \\SELECT n.id FROM nodes n
+                \\WHERE n.type=?
+                \\  AND NOT EXISTS (
+                \\      SELECT 1 FROM edges e
+                \\      JOIN nodes src ON src.id = e.from_id
+                \\      WHERE e.to_id = n.id AND e.label = ? AND src.type = ?
+                \\  )
+                \\ORDER BY n.id
+            ,
+        };
+
+        var st = try db.db.prepare(sql);
         defer st.finalize();
         try st.bindText(1, step.from_type.toString());
         try st.bindText(2, step.edge_label.toString());
@@ -41,11 +56,18 @@ pub fn walkChain(db: *GraphDb, profile: Profile, alloc: Allocator) ![]Gap {
 
         while (try st.step()) {
             const node_id = st.columnText(0);
-            const message = try std.fmt.allocPrint(
-                alloc,
-                "{s} '{s}' has no {s} edge to a {s}",
-                .{ step.from_type.toString(), node_id, step.edge_label.toString(), step.to_type.toString() },
-            );
+            const message = switch (step.direction) {
+                .outgoing => try std.fmt.allocPrint(
+                    alloc,
+                    "{s} '{s}' has no {s} edge to a {s}",
+                    .{ step.from_type.toString(), node_id, step.edge_label.toString(), step.to_type.toString() },
+                ),
+                .incoming => try std.fmt.allocPrint(
+                    alloc,
+                    "{s} '{s}' has no incoming {s} edge from a {s}",
+                    .{ step.from_type.toString(), node_id, step.edge_label.toString(), step.to_type.toString() },
+                ),
+            };
             try gaps.append(alloc, .{
                 .code = step.code,
                 .title = try alloc.dupe(u8, step.title),
@@ -427,4 +449,33 @@ test "generic profile has no special code-traceability gaps" {
     defer db.deinit();
     const gaps = try walkSpecialGaps(&db, profile_mod.get(.generic), alloc);
     try testing.expectEqual(@as(usize, 0), gaps.len);
+}
+
+test "walkChain handles incoming derives_from for user needs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("UN-001", "UserNeed", "{}", null);
+    try db.addNode("UN-002", "UserNeed", "{}", null);
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+
+    const gaps = try walkChain(&db, profile_mod.get(.aerospace), alloc);
+
+    var found_un1 = false;
+    var found_un2 = false;
+    for (gaps) |gap| {
+        if (std.mem.eql(u8, gap.gap_type, "orphan_requirement") and std.mem.eql(u8, gap.node_id, "UN-001")) {
+            found_un1 = true;
+        }
+        if (std.mem.eql(u8, gap.gap_type, "orphan_requirement") and std.mem.eql(u8, gap.node_id, "UN-002")) {
+            found_un2 = true;
+            try testing.expect(std.mem.indexOf(u8, gap.message, "incoming DERIVES_FROM") != null);
+        }
+    }
+    try testing.expect(!found_un1);
+    try testing.expect(found_un2);
 }

@@ -61,6 +61,7 @@ pub const E = struct {
     pub const numeric_text_mapped:      Code = 606;
     pub const numeric_fractional:       Code = 607;
     pub const numeric_unrecognized:     Code = 608;
+    pub const id_invalid:               Code = 609;
     // Layer 6: Semantic validation
     pub const req_empty:                Code = 701;
     pub const req_short:                Code = 702;
@@ -151,6 +152,7 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 606, .title = "Text severity/likelihood value mapped to number" },
     .{ .code = 607, .title = "Fractional severity/likelihood value — ignored" },
     .{ .code = 608, .title = "Unrecognized severity/likelihood value — ignored" },
+    .{ .code = 609, .title = "ID does not match expected RTM pattern — skipped" },
     .{ .code = 701, .title = "Requirement has no statement text" },
     .{ .code = 702, .title = "Requirement statement is very short (< 10 characters)" },
     .{ .code = 703, .title = "Requirement has no 'shall'" },
@@ -490,6 +492,7 @@ test "catalog covers all E constants" {
         E.column_synonym_match, E.column_ambiguous, E.id_column_guessed, E.id_column_missing,
         E.id_paren_stripped, E.id_hyphen_stripped, E.row_no_id, E.duplicate_id,
         E.duplicate_test_id, E.numeric_text_mapped, E.numeric_fractional, E.numeric_unrecognized,
+        E.id_invalid,
         E.req_empty, E.req_short, E.req_no_shall, E.req_compound, E.req_vague,
         E.req_obsolete_traced, E.risk_score_mismatch, E.risk_unmitigated,
         E.risk_residual_no_init, E.risk_residual_exceeds, E.test_group_empty,

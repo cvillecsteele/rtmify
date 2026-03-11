@@ -7,6 +7,7 @@ enum AppState {
     case licenseGate
     case stopped
     case starting
+    case restarting(port: Int, attempt: Int, maxAttempts: Int, nextDelaySeconds: Int, reason: String)
     case running(port: Int)
     case error(message: String)
 }
@@ -23,7 +24,12 @@ final class ViewModel: ObservableObject {
     private var serverProcess: Process? = nil
     private var statusTimer: Timer? = nil
     private var port: Int = 8000
-    private var restartCount = 0
+    private var restartPolicy = RestartPolicy(maxRetries: 3, delaysSeconds: [2, 4, 8])
+    private var restartAttempt = 0
+    private var intentionalStopInProgress = false
+    private var outputBuffer = OutputRingBuffer()
+    private var lastKnownDashboardURL: String? = nil
+    private var scheduledRestartTask: Task<Void, Never>? = nil
 
     init() {
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -81,6 +87,15 @@ final class ViewModel: ObservableObject {
 
     func start(openDashboardOnLaunch: Bool = true) {
         guard case .stopped = state else { return }
+        restartAttempt = 0
+        intentionalStopInProgress = false
+        outputBuffer.reset()
+        scheduledRestartTask?.cancel()
+        scheduledRestartTask = nil
+        launchServer(openDashboardOnLaunch: openDashboardOnLaunch, isRestart: false)
+    }
+
+    private func launchServer(openDashboardOnLaunch: Bool, isRestart: Bool) {
         guard let binary = binaryPath() else {
             state = .error(message: "rtmify-live binary not found in Resources.")
             return
@@ -88,6 +103,7 @@ final class ViewModel: ObservableObject {
 
         state = .starting
         port = findAvailablePort()
+        intentionalStopInProgress = false
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
@@ -102,20 +118,68 @@ final class ViewModel: ObservableObject {
         process.standardError = pipe
         let logURL = serverLogURL()
         writeLogHeader(logURL, port: port, binary: binary)
+        let pidPlaceholder = Int32(process.processIdentifier)
 
         process.terminationHandler = { [weak self] proc in
             appendLogLine("server terminated with code \(proc.terminationStatus)", to: logURL)
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                let priorState = self.lifecycleStateForCurrentAppState()
+                let disposition = CrashSupervisor.classifyTermination(
+                    priorState: priorState,
+                    wasIntentionalStop: self.intentionalStopInProgress,
+                    terminationStatus: proc.terminationStatus
+                )
+                let snapshot = CrashSnapshot(
+                    port: self.port,
+                    pid: proc.processIdentifier == 0 ? pidPlaceholder : proc.processIdentifier,
+                    priorState: priorState,
+                    terminationStatus: proc.terminationStatus,
+                    attempt: self.restartAttempt,
+                    maxAttempts: self.restartPolicy.maxRetries,
+                    recentOutput: self.outputBuffer.snapshot(),
+                    lastSyncAt: self.lastSyncAt,
+                    lastScanAt: self.lastScanAt,
+                    lastKnownURL: self.lastKnownDashboardURL
+                )
+                appendCrashSnapshot(snapshot, to: logURL)
                 self.stopStatusPolling()
-                if case .running = self.state {
-                    if self.restartCount < 3 {
-                        self.restartCount += 1
+                self.serverProcess = nil
+                self.scheduledRestartTask?.cancel()
+                self.scheduledRestartTask = nil
+
+                let decision = CrashSupervisor.decideRestart(
+                    priorState: priorState,
+                    disposition: disposition,
+                    currentAttempt: self.restartAttempt,
+                    policy: self.restartPolicy
+                )
+
+                switch decision {
+                case .noRestart(let finalMessage):
+                    self.intentionalStopInProgress = false
+                    self.outputBuffer.reset()
+                    if case .intentionalStop = disposition {
+                        self.restartAttempt = 0
                         self.state = .stopped
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        self.start(openDashboardOnLaunch: false)
                     } else {
-                        self.state = .error(message: "Server crashed repeatedly (code \(proc.terminationStatus))")
+                        self.state = .error(message: finalMessage)
+                    }
+                case .restart(let delay, let nextAttempt, let message):
+                    self.restartAttempt = nextAttempt
+                    self.state = .restarting(
+                        port: self.port,
+                        attempt: nextAttempt,
+                        maxAttempts: self.restartPolicy.maxRetries,
+                        nextDelaySeconds: delay,
+                        reason: "exited with code \(proc.terminationStatus)"
+                    )
+                    self.scheduledRestartTask = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                        guard !Task.isCancelled else { return }
+                        appendLogLine(message, to: logURL)
+                        self.launchServer(openDashboardOnLaunch: false, isRestart: true)
                     }
                 }
             }
@@ -131,6 +195,9 @@ final class ViewModel: ObservableObject {
         }
 
         serverProcess = process
+        if !isRestart {
+            outputBuffer.reset()
+        }
 
         // Watch combined output for the server listen log to confirm startup.
         let handle = pipe.fileHandleForReading
@@ -138,7 +205,11 @@ final class ViewModel: ObservableObject {
             var buf = Data()
             for try await chunk in handle.bytes {
                 buf.append(chunk)
-                appendLogData(Data([chunk]), to: logURL)
+                let data = Data([chunk])
+                appendLogData(data, to: logURL)
+                await MainActor.run { [weak self] in
+                    self?.outputBuffer.append(data)
+                }
                 if let str = String(data: buf, encoding: .utf8),
                    str.localizedCaseInsensitiveContains("listening")
                 {
@@ -159,7 +230,6 @@ final class ViewModel: ObservableObject {
                 guard case .starting = self.state else { return }
                 guard let process, process.isRunning else {
                     appendLogLine("server exited before startup completed", to: logURL)
-                    self.state = .error(message: "Server exited during startup.")
                     return
                 }
                 self.serverDidStart(openDashboardOnLaunch: openDashboardOnLaunch)
@@ -168,15 +238,20 @@ final class ViewModel: ObservableObject {
     }
 
     func stop() {
-        restartCount = 0
+        intentionalStopInProgress = true
+        restartAttempt = 0
+        scheduledRestartTask?.cancel()
+        scheduledRestartTask = nil
         if let process = serverProcess {
             appendLogLine("stopping server pid=\(process.processIdentifier)", to: serverLogURL())
             terminateProcessTree(process)
         }
         serverProcess = nil
         stopStatusPolling()
+        outputBuffer.reset()
         if case .running = state { state = .stopped }
         if case .starting = state { state = .stopped }
+        if case .restarting = state { state = .stopped }
     }
 
     func quitApp() {
@@ -186,7 +261,9 @@ final class ViewModel: ObservableObject {
 
     func openDashboard() {
         if case .running(let p) = state {
-            NSWorkspace.shared.open(URL(string: "http://localhost:\(p)")!)
+            let url = "http://localhost:\(p)"
+            lastKnownDashboardURL = url
+            NSWorkspace.shared.open(URL(string: url)!)
         }
     }
 
@@ -249,7 +326,9 @@ final class ViewModel: ObservableObject {
     }
 
     private func serverDidStart(openDashboardOnLaunch: Bool) {
+        intentionalStopInProgress = false
         state = .running(port: port)
+        lastKnownDashboardURL = "http://localhost:\(port)"
         startStatusPolling()
         if openDashboardOnLaunch {
             openDashboard()
@@ -316,6 +395,21 @@ final class ViewModel: ObservableObject {
             }
         }
     }
+
+    private func lifecycleStateForCurrentAppState() -> ServerLifecycleState {
+        switch state {
+        case .licenseGate, .stopped:
+            return .stopped
+        case .starting:
+            return .starting
+        case .restarting(let port, let attempt, let maxAttempts, let nextDelaySeconds, let reason):
+            return .restarting(port: port, attempt: attempt, maxAttempts: maxAttempts, nextDelaySeconds: nextDelaySeconds, reason: reason)
+        case .running(let port):
+            return .running(port: port)
+        case .error(let message):
+            return .error(message: message)
+        }
+    }
 }
 
 private func serverLogURL() -> URL {
@@ -349,4 +443,20 @@ private func appendLogData(_ data: Data, to url: URL) {
     defer { try? handle.close() }
     _ = try? handle.seekToEnd()
     try? handle.write(contentsOf: data)
+}
+
+private func appendCrashSnapshot(_ snapshot: CrashSnapshot, to url: URL) {
+    var lines: [String] = []
+    lines.append("[shim] crash detected")
+    lines.append("[shim] prior_state=\(snapshot.priorState)")
+    lines.append("[shim] pid=\(snapshot.pid.map(String.init) ?? "unknown") termination_status=\(snapshot.terminationStatus)")
+    lines.append("[shim] restart_attempt=\(snapshot.attempt)/\(snapshot.maxAttempts)")
+    lines.append("[shim] last_sync_at=\(snapshot.lastSyncAt ?? "unknown")")
+    lines.append("[shim] last_scan_at=\(snapshot.lastScanAt ?? "unknown")")
+    lines.append("[shim] last_dashboard_url=\(snapshot.lastKnownURL ?? "unknown")")
+    lines.append("[shim] recent_output_begin")
+    let output = snapshot.recentOutput.isEmpty ? "<empty>" : snapshot.recentOutput
+    lines.append(output)
+    lines.append("[shim] recent_output_end")
+    appendLogString(lines.joined(separator: "\n") + "\n", to: url)
 }

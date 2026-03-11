@@ -84,6 +84,22 @@ fn collectMissingTabs(existing: []const TabRef, profile: Profile, alloc: Allocat
     return missing.toOwnedSlice(alloc);
 }
 
+fn columnLetters(idx_1based: usize, alloc: Allocator) ![]u8 {
+    var n = idx_1based;
+    var reversed: std.ArrayList(u8) = .empty;
+    defer reversed.deinit(alloc);
+    while (n > 0) {
+        const rem = (n - 1) % 26;
+        try reversed.append(alloc, @as(u8, @intCast('A' + rem)));
+        n = (n - 1) / 26;
+    }
+    const out = try alloc.alloc(u8, reversed.items.len);
+    for (reversed.items, 0..) |_, i| {
+        out[i] = reversed.items[reversed.items.len - 1 - i];
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -108,14 +124,26 @@ pub fn provisionWorkbook(runtime: *ProviderRuntime, profile: Profile, alloc: All
 
         // Write header row
         const headers = headersForTab(tab_name) orelse continue;
-        const range = try std.fmt.allocPrint(alloc, "{s}!A1", .{tab_name});
-        const values = try alloc.alloc([]const u8, headers.len);
-        for (headers, 0..) |header, i| values[i] = header;
-        try runtime.batchWriteValues(&.{
-            .{ .a1_range = range, .values = values },
-        }, alloc);
-        alloc.free(range);
-        alloc.free(values);
+        var updates: std.ArrayList(ValueUpdate) = .empty;
+        defer {
+            for (updates.items) |u| {
+                alloc.free(u.a1_range);
+                alloc.free(u.values);
+            }
+            updates.deinit(alloc);
+        }
+        for (headers, 0..) |header, i| {
+            const col = try columnLetters(i + 1, alloc);
+            defer alloc.free(col);
+            const range = try std.fmt.allocPrint(alloc, "{s}!{s}1", .{ tab_name, col });
+            const values = try alloc.alloc([]const u8, 1);
+            values[0] = header;
+            try updates.append(alloc, .{
+                .a1_range = range,
+                .values = values,
+            });
+        }
+        try runtime.batchWriteValues(updates.items, alloc);
 
         try created.append(alloc, try alloc.dupe(u8, tab_name));
     }
@@ -179,4 +207,22 @@ test "collectMissingTabs excludes genuinely existing tabs with spaces" {
     }
     try testing.expectEqual(@as(usize, 3), missing.len);
     try testing.expectEqualStrings("Tests", missing[0]);
+}
+
+test "columnLetters maps spreadsheet columns" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const a = try columnLetters(1, alloc);
+    defer alloc.free(a);
+    const z = try columnLetters(26, alloc);
+    defer alloc.free(z);
+    const aa = try columnLetters(27, alloc);
+    defer alloc.free(aa);
+    const af = try columnLetters(32, alloc);
+    defer alloc.free(af);
+    try testing.expectEqualStrings("A", a);
+    try testing.expectEqualStrings("Z", z);
+    try testing.expectEqualStrings("AA", aa);
+    try testing.expectEqualStrings("AF", af);
 }

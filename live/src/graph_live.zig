@@ -92,6 +92,23 @@ const SUSPECT_FORWARD = [_][]const u8{ "TESTED_BY", "HAS_TEST", "MITIGATED_BY", 
 /// Backward: to_id changes → from_id becomes suspect
 const SUSPECT_BACKWARD = [_][]const u8{"MITIGATED_BY"};
 
+/// Impact traversal is broader than suspect propagation: it should reflect all
+/// downstream traceability dependents, not only nodes that become suspect.
+const IMPACT_FORWARD = [_][]const u8{
+    "TESTED_BY",
+    "HAS_TEST",
+    "ALLOCATED_TO",
+    "SATISFIED_BY",
+    "CONTROLLED_BY",
+    "IMPLEMENTED_IN",
+    "VERIFIED_BY_CODE",
+    "REFINED_BY",
+};
+const IMPACT_BACKWARD = [_][]const u8{
+    "DERIVES_FROM",
+    "MITIGATED_BY",
+};
+
 fn isSuspectForward(label: []const u8) bool {
     for (SUSPECT_FORWARD) |l| if (std.mem.eql(u8, l, label)) return true;
     return false;
@@ -99,6 +116,16 @@ fn isSuspectForward(label: []const u8) bool {
 
 fn isSuspectBackward(label: []const u8) bool {
     for (SUSPECT_BACKWARD) |l| if (std.mem.eql(u8, l, label)) return true;
+    return false;
+}
+
+fn isImpactForward(label: []const u8) bool {
+    for (IMPACT_FORWARD) |l| if (std.mem.eql(u8, l, label)) return true;
+    return false;
+}
+
+fn isImpactBackward(label: []const u8) bool {
+    for (IMPACT_BACKWARD) |l| if (std.mem.eql(u8, l, label)) return true;
     return false;
 }
 
@@ -462,7 +489,7 @@ pub const GraphDb = struct {
             while (try fwd_st.step()) {
                 const label = try alloc.dupe(u8, fwd_st.columnText(0));
                 const to_id = try alloc.dupe(u8, fwd_st.columnText(1));
-                if (isSuspectForward(label) and !visited.contains(to_id)) {
+                if (isImpactForward(label) and !visited.contains(to_id)) {
                     try visited.put(alloc, to_id, {});
                     if (try g.getNode(to_id, alloc)) |n| {
                         try result.append(alloc, .{
@@ -486,7 +513,7 @@ pub const GraphDb = struct {
             while (try bwd_st.step()) {
                 const label = try alloc.dupe(u8, bwd_st.columnText(0));
                 const from_id = try alloc.dupe(u8, bwd_st.columnText(1));
-                if (isSuspectBackward(label) and !visited.contains(from_id)) {
+                if (isImpactBackward(label) and !visited.contains(from_id)) {
                     try visited.put(alloc, from_id, {});
                     if (try g.getNode(from_id, alloc)) |n| {
                         try result.append(alloc, .{
@@ -1250,4 +1277,47 @@ test "impact forward propagation" {
     try testing.expectEqual(@as(usize, 1), result.items.len);
     try testing.expectEqualStrings("TG-001", result.items[0].id);
     try testing.expectEqualStrings("→", result.items[0].dir);
+}
+
+test "impact from user need includes derived requirements and downstream tests" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("UN-001", "UserNeed", "{}", null);
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addNode("TEST-001", "Test", "{}", null);
+    try g.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try g.addEdge("TG-001", "TEST-001", "HAS_TEST");
+
+    var result: std.ArrayList(ImpactNode) = .empty;
+    try g.impact("UN-001", alloc, &result);
+    try testing.expectEqual(@as(usize, 3), result.items.len);
+    try testing.expectEqualStrings("REQ-001", result.items[0].id);
+    try testing.expectEqualStrings("←", result.items[0].dir);
+    try testing.expectEqualStrings("TG-001", result.items[1].id);
+    try testing.expectEqualStrings("→", result.items[1].dir);
+    try testing.expectEqualStrings("TEST-001", result.items[2].id);
+}
+
+test "impact from requirement includes backward mitigations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("RSK-001", "Risk", "{}", null);
+    try g.addEdge("RSK-001", "REQ-001", "MITIGATED_BY");
+
+    var result: std.ArrayList(ImpactNode) = .empty;
+    try g.impact("REQ-001", alloc, &result);
+    try testing.expectEqual(@as(usize, 1), result.items.len);
+    try testing.expectEqualStrings("RSK-001", result.items[0].id);
+    try testing.expectEqualStrings("←", result.items[0].dir);
 }
