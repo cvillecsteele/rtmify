@@ -424,6 +424,34 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc:
 }
 
 // ---------------------------------------------------------------------------
+// GET /api/info
+// ---------------------------------------------------------------------------
+
+pub fn handleInfo(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
+    const tray_version = (try db.getConfig("tray_app_version", alloc)) orelse try alloc.dupe(u8, "not available");
+    defer alloc.free(tray_version);
+    const live_version = (try db.getConfig("live_version", alloc)) orelse try alloc.dupe(u8, "unknown");
+    defer alloc.free(live_version);
+    const db_path = (try db.getConfig("db_path", alloc)) orelse try alloc.dupe(u8, "unknown");
+    defer alloc.free(db_path);
+    const log_path = (try db.getConfig("log_path", alloc)) orelse try alloc.dupe(u8, "unknown");
+    defer alloc.free(log_path);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"tray_app_version\":");
+    try appendJsonStr(&buf, tray_version, alloc);
+    try buf.appendSlice(alloc, ",\"live_version\":");
+    try appendJsonStr(&buf, live_version, alloc);
+    try buf.appendSlice(alloc, ",\"db_path\":");
+    try appendJsonStr(&buf, db_path, alloc);
+    try buf.appendSlice(alloc, ",\"log_path\":");
+    try appendJsonStr(&buf, log_path, alloc);
+    try buf.append(alloc, '}');
+    return alloc.dupe(u8, buf.items);
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/connection/validate
 // ---------------------------------------------------------------------------
 
@@ -947,8 +975,8 @@ pub fn handleCodeTraceability(db: *graph_live.GraphDb, alloc: Allocator) ![]cons
         for (tst_nodes.items) |n| freeNode(n, alloc);
         tst_nodes.deinit(alloc);
     }
-    try db.nodesByType("SourceFile", alloc, &src_nodes);
-    try db.nodesByType("TestFile", alloc, &tst_nodes);
+    try db.nodesByTypePresent("SourceFile", alloc, &src_nodes);
+    try db.nodesByTypePresent("TestFile", alloc, &tst_nodes);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -958,6 +986,191 @@ pub fn handleCodeTraceability(db: *graph_live.GraphDb, alloc: Allocator) ![]cons
     try buf.appendSlice(alloc, try jsonNodeArray(tst_nodes.items, alloc));
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+const ImplementationChangesGroup = struct {
+    node_id: []const u8,
+    node_type: []const u8,
+    changed_requirements: std.ArrayList([]const u8),
+    changed_files: std.ArrayList([]const u8),
+    commits: std.ArrayList(graph_live.ImplementationChangeEvidence),
+    seen_requirements: std.StringHashMapUnmanaged(void) = .{},
+    seen_files: std.StringHashMapUnmanaged(void) = .{},
+    seen_commits: std.StringHashMapUnmanaged(void) = .{},
+
+    fn init(node_id: []const u8, node_type: []const u8) ImplementationChangesGroup {
+        return .{
+            .node_id = node_id,
+            .node_type = node_type,
+            .changed_requirements = .empty,
+            .changed_files = .empty,
+            .commits = .empty,
+        };
+    }
+
+    fn deinit(self: *ImplementationChangesGroup, alloc: Allocator) void {
+        self.changed_requirements.deinit(alloc);
+        self.changed_files.deinit(alloc);
+        self.commits.deinit(alloc);
+        self.seen_requirements.deinit(alloc);
+        self.seen_files.deinit(alloc);
+        self.seen_commits.deinit(alloc);
+    }
+};
+
+fn isLikelyIso8601Timestamp(s: []const u8) bool {
+    if (s.len < 20) return false;
+    return std.ascii.isDigit(s[0]) and
+        std.ascii.isDigit(s[1]) and
+        std.ascii.isDigit(s[2]) and
+        std.ascii.isDigit(s[3]) and
+        s[4] == '-' and
+        s[7] == '-' and
+        s[10] == 'T' and
+        s[13] == ':' and
+        s[16] == ':';
+}
+
+pub fn handleImplementationChangesResponse(
+    db: *graph_live.GraphDb,
+    since: ?[]const u8,
+    node_type: ?[]const u8,
+    repo: ?[]const u8,
+    limit: ?[]const u8,
+    offset: ?[]const u8,
+    alloc: Allocator,
+) !JsonRouteResponse {
+    const since_value = since orelse
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing since\"}"), false);
+    if (!isLikelyIso8601Timestamp(since_value)) {
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid since\"}"), false);
+    }
+    const node_type_value = node_type orelse
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing node_type\"}"), false);
+    if (!std.mem.eql(u8, node_type_value, "Requirement") and !std.mem.eql(u8, node_type_value, "UserNeed")) {
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid node_type\"}"), false);
+    }
+
+    const limit_value: usize = blk: {
+        if (limit) |v| {
+            const parsed = std.fmt.parseInt(usize, v, 10) catch
+                return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid limit\"}"), false);
+            break :blk parsed;
+        }
+        break :blk 50;
+    };
+    const offset_value: usize = blk: {
+        if (offset) |v| {
+            const parsed = std.fmt.parseInt(usize, v, 10) catch
+                return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid offset\"}"), false);
+            break :blk parsed;
+        }
+        break :blk 0;
+    };
+
+    var evidence: std.ArrayList(graph_live.ImplementationChangeEvidence) = .empty;
+    defer {
+        for (evidence.items) |row| {
+            alloc.free(row.node_id);
+            alloc.free(row.node_type);
+            alloc.free(row.requirement_id);
+            alloc.free(row.file_id);
+            alloc.free(row.commit_id);
+            if (row.commit_short_hash) |v| alloc.free(v);
+            if (row.commit_date) |v| alloc.free(v);
+            if (row.commit_message) |v| alloc.free(v);
+        }
+        evidence.deinit(alloc);
+    }
+
+    if (std.mem.eql(u8, node_type_value, "Requirement")) {
+        try db.requirementsWithImplementationChangesSince(since_value, repo, alloc, &evidence);
+    } else {
+        try db.userNeedsWithImplementationChangesSince(since_value, repo, alloc, &evidence);
+    }
+
+    var groups: std.ArrayList(ImplementationChangesGroup) = .empty;
+    defer {
+        for (groups.items) |*g| g.deinit(alloc);
+        groups.deinit(alloc);
+    }
+
+    for (evidence.items) |row| {
+        var found_index: ?usize = null;
+        for (groups.items, 0..) |g, i| {
+            if (std.mem.eql(u8, g.node_id, row.node_id)) {
+                found_index = i;
+                break;
+            }
+        }
+        const gi = if (found_index) |i| i else blk: {
+            try groups.append(alloc, ImplementationChangesGroup.init(row.node_id, row.node_type));
+            break :blk groups.items.len - 1;
+        };
+        var group = &groups.items[gi];
+        if (!group.seen_requirements.contains(row.requirement_id)) {
+            try group.seen_requirements.put(alloc, row.requirement_id, {});
+            try group.changed_requirements.append(alloc, row.requirement_id);
+        }
+        if (!group.seen_files.contains(row.file_id)) {
+            try group.seen_files.put(alloc, row.file_id, {});
+            try group.changed_files.append(alloc, row.file_id);
+        }
+        if (!group.seen_commits.contains(row.commit_id)) {
+            try group.seen_commits.put(alloc, row.commit_id, {});
+            try group.commits.append(alloc, row);
+        }
+    }
+
+    const start = @min(offset_value, groups.items.len);
+    const end = @min(start + limit_value, groups.items.len);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.append(alloc, '[');
+    for (groups.items[start..end], 0..) |g, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"node_id\":");
+        try appendJsonStr(&buf, g.node_id, alloc);
+        try buf.appendSlice(alloc, ",\"node_type\":");
+        try appendJsonStr(&buf, g.node_type, alloc);
+        try buf.appendSlice(alloc, ",\"changed_requirements\":");
+        const reqs_json = try jsonStringArray(g.changed_requirements.items, alloc);
+        defer alloc.free(reqs_json);
+        try buf.appendSlice(alloc, reqs_json);
+        try buf.appendSlice(alloc, ",\"changed_files\":");
+        const files_json = try jsonStringArray(g.changed_files.items, alloc);
+        defer alloc.free(files_json);
+        try buf.appendSlice(alloc, files_json);
+        try buf.appendSlice(alloc, ",\"commits\":[");
+        for (g.commits.items, 0..) |commit, ci| {
+            if (ci > 0) try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"id\":");
+            try appendJsonStr(&buf, commit.commit_id, alloc);
+            try buf.appendSlice(alloc, ",\"short_hash\":");
+            try appendJsonStr(&buf, commit.commit_short_hash orelse "", alloc);
+            try buf.appendSlice(alloc, ",\"date\":");
+            try appendJsonStr(&buf, commit.commit_date orelse "", alloc);
+            try buf.appendSlice(alloc, ",\"message\":");
+            try appendJsonStr(&buf, commit.commit_message orelse "", alloc);
+            try buf.append(alloc, '}');
+        }
+        try buf.appendSlice(alloc, "]}");
+    }
+    try buf.append(alloc, ']');
+    return jsonRouteResponse(.ok, try alloc.dupe(u8, buf.items), true);
+}
+
+pub fn handleImplementationChanges(
+    db: *graph_live.GraphDb,
+    since: ?[]const u8,
+    node_type: ?[]const u8,
+    repo: ?[]const u8,
+    limit: ?[]const u8,
+    offset: ?[]const u8,
+    alloc: Allocator,
+) ![]const u8 {
+    const resp = try handleImplementationChangesResponse(db, since, node_type, repo, limit, offset, alloc);
+    return resp.body;
 }
 
 // ---------------------------------------------------------------------------
@@ -1652,6 +1865,7 @@ fn countNodesForRepo(db: *graph_live.GraphDb, node_type: []const u8, repo_path: 
     var st = try db.db.prepare(
         \\SELECT COUNT(*) FROM nodes
         \\WHERE type=? AND json_extract(properties,'$.repo')=?
+        \\  AND COALESCE(json_extract(properties,'$.present'), 1) != 0
     );
     defer st.finalize();
     try st.bindText(1, node_type);
@@ -1678,16 +1892,10 @@ fn countCommitsForRepo(db: *graph_live.GraphDb, repo_path: []const u8) !i64 {
     var st = try db.db.prepare(
         \\SELECT COUNT(DISTINCT c.id)
         \\FROM nodes c
-        \\JOIN edges ec ON ec.to_id = c.id AND ec.label='COMMITTED_IN'
+        \\JOIN edges ec ON ec.to_id = c.id AND ec.label='CHANGED_IN'
+        \\JOIN nodes f ON f.id = ec.from_id
         \\WHERE c.type='Commit'
-        \\  AND EXISTS (
-        \\      SELECT 1
-        \\      FROM edges ei
-        \\      JOIN nodes f ON f.id = ei.to_id
-        \\      WHERE ei.from_id = ec.from_id
-        \\        AND ei.label='IMPLEMENTED_IN'
-        \\        AND json_extract(f.properties,'$.repo')=?
-        \\  )
+        \\  AND json_extract(f.properties,'$.repo')=?
     );
     defer st.finalize();
     try st.bindText(1, repo_path);
@@ -1857,6 +2065,28 @@ test "gitless mode status is configured and repos list is empty" {
 
     const repos = try handleGetRepos(&db, alloc);
     try testing.expectEqualStrings("{\"repos\":[]}", repos);
+}
+
+test "handleInfo returns version and path details" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.storeConfig("tray_app_version", "0.1 (1)");
+    try db.storeConfig("live_version", "20260308-a");
+    try db.storeConfig("db_path", "/tmp/graph.db");
+    try db.storeConfig("log_path", "/tmp/server.log");
+
+    const resp = try handleInfo(&db, alloc);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("0.1 (1)", obj.get("tray_app_version").?.string);
+    try testing.expectEqualStrings("20260308-a", obj.get("live_version").?.string);
+    try testing.expectEqualStrings("/tmp/graph.db", obj.get("db_path").?.string);
+    try testing.expectEqualStrings("/tmp/server.log", obj.get("log_path").?.string);
 }
 
 test "handlePostRepo returns E902 for file path" {
@@ -2128,6 +2358,106 @@ test "handleImpact on user need returns derived downstream chain" {
     try testing.expectEqualStrings("TEST-002", rows[2].object.get("id").?.string);
 }
 
+test "handleImplementationChanges returns requirement and user need rows" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try db.addNode("UN-001", "UserNeed", "{}", null);
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("src/foo.c", "SourceFile", "{\"repo\":\"/repo\",\"present\":true}", null);
+    try db.addNode("commit-1", "Commit", "{\"short_hash\":\"abc1234\",\"date\":\"2026-03-06T12:30:00Z\",\"message\":\"refactor\"}", null);
+    try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+    try db.addEdge("REQ-001", "src/foo.c", "IMPLEMENTED_IN");
+    try db.addEdge("src/foo.c", "commit-1", "CHANGED_IN");
+    try db.addEdge("commit-1", "src/foo.c", "CHANGES");
+
+    const req_resp = try handleImplementationChangesResponse(&db, "2026-03-05T00:00:00Z", "Requirement", null, null, null, alloc);
+    defer alloc.free(req_resp.body);
+    try testing.expectEqual(std.http.Status.ok, req_resp.status);
+    try testing.expect(std.mem.indexOf(u8, req_resp.body, "\"node_id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, req_resp.body, "\"changed_files\":[\"src/foo.c\"]") != null);
+
+    const need_resp = try handleImplementationChangesResponse(&db, "2026-03-05T00:00:00Z", "UserNeed", null, null, null, alloc);
+    defer alloc.free(need_resp.body);
+    try testing.expectEqual(std.http.Status.ok, need_resp.status);
+    try testing.expect(std.mem.indexOf(u8, need_resp.body, "\"node_id\":\"UN-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, need_resp.body, "\"changed_requirements\":[\"REQ-001\"]") != null);
+}
+
+test "handleImplementationChanges validates since and node_type" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    const bad_since = try handleImplementationChangesResponse(&db, "yesterday", "Requirement", null, null, null, testing.allocator);
+    defer testing.allocator.free(bad_since.body);
+    try testing.expectEqual(std.http.Status.bad_request, bad_since.status);
+    try testing.expect(std.mem.indexOf(u8, bad_since.body, "invalid since") != null);
+
+    const bad_type = try handleImplementationChangesResponse(&db, "2026-03-05T00:00:00Z", "Commit", null, null, null, testing.allocator);
+    defer testing.allocator.free(bad_type.body);
+    try testing.expectEqual(std.http.Status.bad_request, bad_type.status);
+    try testing.expect(std.mem.indexOf(u8, bad_type.body, "invalid node_type") != null);
+}
+
+test "handleImplementationChanges honors repo limit and offset" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("REQ-002", "Requirement", "{}", null);
+    try db.addNode("repoA/src/a.c", "SourceFile", "{\"repo\":\"/repoA\",\"present\":true}", null);
+    try db.addNode("repoB/src/b.c", "SourceFile", "{\"repo\":\"/repoB\",\"present\":true}", null);
+    try db.addNode("commit-a", "Commit", "{\"short_hash\":\"aaaaaaa\",\"date\":\"2026-03-06T12:30:00Z\",\"message\":\"A\"}", null);
+    try db.addNode("commit-b", "Commit", "{\"short_hash\":\"bbbbbbb\",\"date\":\"2026-03-07T12:30:00Z\",\"message\":\"B\"}", null);
+    try db.addEdge("REQ-001", "repoA/src/a.c", "IMPLEMENTED_IN");
+    try db.addEdge("REQ-002", "repoB/src/b.c", "IMPLEMENTED_IN");
+    try db.addEdge("repoA/src/a.c", "commit-a", "CHANGED_IN");
+    try db.addEdge("repoB/src/b.c", "commit-b", "CHANGED_IN");
+    try db.addEdge("commit-a", "repoA/src/a.c", "CHANGES");
+    try db.addEdge("commit-b", "repoB/src/b.c", "CHANGES");
+
+    const repo_filtered = try handleImplementationChangesResponse(&db, "2026-03-05T00:00:00Z", "Requirement", "/repoA", null, null, alloc);
+    defer alloc.free(repo_filtered.body);
+    try testing.expect(std.mem.indexOf(u8, repo_filtered.body, "\"node_id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, repo_filtered.body, "\"node_id\":\"REQ-002\"") == null);
+
+    const limited = try handleImplementationChangesResponse(&db, "2026-03-05T00:00:00Z", "Requirement", null, "1", "1", alloc);
+    defer alloc.free(limited.body);
+    try testing.expect(std.mem.indexOf(u8, limited.body, "\"node_id\":\"REQ-001\"") != null or std.mem.indexOf(u8, limited.body, "\"node_id\":\"REQ-002\"") != null);
+    const has_req_1: usize = if (std.mem.indexOf(u8, limited.body, "\"node_id\":\"REQ-001\"") != null) 1 else 0;
+    const has_req_2: usize = if (std.mem.indexOf(u8, limited.body, "\"node_id\":\"REQ-002\"") != null) 1 else 0;
+    const count = has_req_1 + has_req_2;
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "handleCodeTraceability excludes historical only files" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("src/current.c", "SourceFile", "{\"repo\":\"/repo\",\"present\":true}", null);
+    try db.addNode("src/old_deleted.c", "SourceFile", "{\"repo\":\"/repo\",\"present\":false}", null);
+    try db.addNode("tests/current_test.c", "TestFile", "{\"repo\":\"/repo\",\"present\":true}", null);
+    try db.addNode("tests/old_test.c", "TestFile", "{\"repo\":\"/repo\",\"present\":false}", null);
+
+    const resp = try handleCodeTraceability(&db, alloc);
+    defer alloc.free(resp);
+    try testing.expect(std.mem.indexOf(u8, resp, "src/current.c") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "tests/current_test.c") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "src/old_deleted.c") == null);
+    try testing.expect(std.mem.indexOf(u8, resp, "tests/old_test.c") == null);
+}
+
 test "handleRisks includes score fields used by dashboard" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2214,6 +2544,12 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "/api/diagnostics") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/query/recent-commits") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "MCP &amp; AI") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, ">Info<") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "/api/info") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "Tray App Version") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "rtmify-live Version") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "Database Path") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "Log File Path") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "claude mcp add --transport http rtmify-live") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "codex mcp add rtmify-live --url") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "\"httpUrl\":") != null);

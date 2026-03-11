@@ -124,6 +124,25 @@ pub fn main() !void {
     var g = try graph_live.GraphDb.init(db_path);
     defer g.deinit();
 
+    const resolved_db_path = try resolveDbPath(gpa, db_path);
+    defer gpa.free(resolved_db_path);
+    try g.storeConfig("db_path", resolved_db_path);
+    try g.storeConfig("live_version", build_options.version);
+    if (std.process.getEnvVarOwned(gpa, "RTMIFY_TRAY_APP_VERSION")) |tray_version| {
+        defer gpa.free(tray_version);
+        try g.storeConfig("tray_app_version", tray_version);
+    } else |_| {
+        try g.storeConfig("tray_app_version", "not available");
+    }
+    if (std.process.getEnvVarOwned(gpa, "RTMIFY_LOG_PATH")) |log_path| {
+        defer gpa.free(log_path);
+        try g.storeConfig("log_path", log_path);
+    } else |_| {
+        const default_log_path = try log_sink.defaultLogPath(gpa);
+        defer gpa.free(default_log_path);
+        try g.storeConfig("log_path", default_log_path);
+    }
+
     try connection_mod.migrateLegacyGoogleConfig(&g, gpa);
 
     var state: sync_live.SyncState = .{};
@@ -227,6 +246,13 @@ pub fn main() !void {
         .startSyncFn = startSyncCallback,
     };
     server.listen(actual_port, ctx) catch |e| return e;
+}
+
+fn resolveDbPath(alloc: std.mem.Allocator, db_path: []const u8) ![]u8 {
+    if (std.fs.path.isAbsolute(db_path)) return alloc.dupe(u8, db_path);
+    const cwd_real = try std.fs.cwd().realpathAlloc(alloc, ".");
+    defer alloc.free(cwd_real);
+    return std.fs.path.resolve(alloc, &.{ cwd_real, db_path });
 }
 
 /// Callback passed to ServerCtx so that POST /api/connection can trigger sync start.

@@ -632,6 +632,7 @@
   <button onclick="showTab('chain-gaps')">Chain Gaps</button>
   <button onclick="showTab('code')">Code</button>
   <button onclick="showTab('mcp-ai')">MCP &amp; AI</button>
+  <button onclick="showTab('info')">Info</button>
   <button onclick="showTab('reports')">Reports</button>
 </nav>
 
@@ -950,6 +951,27 @@ audit_readiness_summary(profile="aerospace")</div>
     </div>
   </section>
 
+  <!-- Info tab -->
+  <section id="tab-info">
+    <div class="toolbar">
+      <h2>Info</h2>
+      <button class="btn" onclick="loadInfo()">Refresh</button>
+    </div>
+    <div id="info-error" class="error-banner" style="display:none"></div>
+    <div class="card" style="padding:16px">
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:12px 16px;align-items:start">
+        <div style="font-weight:600;color:#666">Tray App Version</div>
+        <div id="info-tray-version" class="req-id">Loading…</div>
+        <div style="font-weight:600;color:#666">rtmify-live Version</div>
+        <div id="info-live-version" class="req-id">Loading…</div>
+        <div style="font-weight:600;color:#666">Database Path</div>
+        <div id="info-db-path" class="req-id">Loading…</div>
+        <div style="font-weight:600;color:#666">Log File Path</div>
+        <div id="info-log-path" class="req-id">Loading…</div>
+      </div>
+    </div>
+  </section>
+
   <!-- Reports tab -->
   <section id="tab-reports">
     <div class="toolbar"><h2>Reports</h2></div>
@@ -1003,6 +1025,7 @@ audit_readiness_summary(profile="aerospace")</div>
     if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
     if (name === 'code') loadCodeTraceability();
     if (name === 'mcp-ai') loadMcpHelp();
+    if (name === 'info') loadInfo();
   }
 
   // --- Data loading ---
@@ -1012,6 +1035,7 @@ audit_readiness_summary(profile="aerospace")</div>
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
     await loadProfileState();
     loadMcpHelp();
+    loadInfo();
   }
 
   function loadMcpHelp() {
@@ -1032,6 +1056,33 @@ audit_readiness_summary(profile="aerospace")</div>
     }
   }
 }`;
+  }
+
+  async function loadInfo() {
+    const errEl = document.getElementById('info-error');
+    const trayEl = document.getElementById('info-tray-version');
+    const liveEl = document.getElementById('info-live-version');
+    const dbEl = document.getElementById('info-db-path');
+    const logEl = document.getElementById('info-log-path');
+    if (!errEl || !trayEl || !liveEl || !dbEl || !logEl) return;
+
+    errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/info', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const info = await res.json();
+      trayEl.textContent = info.tray_app_version || 'not available';
+      liveEl.textContent = info.live_version || 'unknown';
+      dbEl.textContent = info.db_path || 'unknown';
+      logEl.textContent = info.log_path || 'unknown';
+    } catch (e) {
+      errEl.textContent = 'Failed to load info: ' + e.message;
+      errEl.style.display = 'block';
+      trayEl.textContent = '—';
+      liveEl.textContent = '—';
+      dbEl.textContent = '—';
+      logEl.textContent = '—';
+    }
   }
 
   async function renderRequirements() {

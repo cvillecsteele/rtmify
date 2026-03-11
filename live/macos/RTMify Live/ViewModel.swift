@@ -112,6 +112,10 @@ final class ViewModel: ObservableObject {
         let dataDir = appSupport.appendingPathComponent("RTMify Live")
         try? FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
         process.currentDirectoryURL = dataDir
+        var environment = ProcessInfo.processInfo.environment
+        environment["RTMIFY_TRAY_APP_VERSION"] = trayAppVersionString()
+        environment["RTMIFY_LOG_PATH"] = serverLogURL().path
+        process.environment = environment
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -409,6 +413,21 @@ final class ViewModel: ObservableObject {
         case .error(let message):
             return .error(message: message)
         }
+    }
+}
+
+private func trayAppVersionString() -> String {
+    let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+    switch (short, build) {
+    case let (s?, b?) where !s.isEmpty && !b.isEmpty:
+        return "\(s) (\(b))"
+    case let (s?, _):
+        return s
+    case let (_, b?):
+        return b
+    default:
+        return "not available"
     }
 }
 

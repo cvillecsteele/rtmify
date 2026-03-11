@@ -4,6 +4,13 @@ var log_file: ?std.fs.File = null;
 var init_attempted = false;
 var mutex: std.Thread.Mutex = .{};
 
+pub fn defaultLogPath(alloc: std.mem.Allocator) ![]u8 {
+    const home = try std.process.getEnvVarOwned(alloc, "HOME");
+    errdefer alloc.free(home);
+    defer alloc.free(home);
+    return std.fmt.allocPrint(alloc, "{s}/.rtmify/log/server.log", .{home});
+}
+
 pub fn logFn(
     comptime level: std.log.Level,
     comptime scope: @Type(.enum_literal),

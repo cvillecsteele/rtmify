@@ -142,6 +142,9 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.eql(u8, path, "/api/status")) {
             const body = try routes.handleStatus(ctx.db, ctx.state, alloc);
             try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/info")) {
+            const body = try routes.handleInfo(ctx.db, alloc);
+            try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = try queryParamDecoded(target, "profile", alloc);
             const body = try routes.handleProvisionPreview(ctx.db, qprofile, alloc);
@@ -177,6 +180,14 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.eql(u8, path, "/query/recent-commits")) {
             const body = try routes.handleRecentCommits(ctx.db, alloc);
             try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/query/implementation-changes")) {
+            const since = try queryParamDecoded(target, "since", alloc);
+            const node_type = try queryParamDecoded(target, "node_type", alloc);
+            const repo = try queryParamDecoded(target, "repo", alloc);
+            const limit = try queryParamDecoded(target, "limit", alloc);
+            const offset = try queryParamDecoded(target, "offset", alloc);
+            const resp = try routes.handleImplementationChangesResponse(ctx.db, since, node_type, repo, limit, offset, alloc);
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/query/unimplemented-requirements")) {
             const body = try routes.handleUnimplementedRequirements(ctx.db, alloc);
             try sendJson(req, body);
