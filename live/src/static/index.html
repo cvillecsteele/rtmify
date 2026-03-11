@@ -485,6 +485,37 @@
     }
     .gap-help-block strong { display: block; margin-bottom: 4px; color: #44505b; }
     .gap-help-block { color: #33414f; }
+    .mcp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .mcp-endpoint {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      background: #f7f7fb;
+      border: 1px solid #e2e6ec;
+      border-radius: 6px;
+      padding: 10px 12px;
+      word-break: break-all;
+    }
+    .mcp-code {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: #f7f7fb;
+      border: 1px solid #e2e6ec;
+      border-radius: 6px;
+      padding: 12px;
+      white-space: pre-wrap;
+      line-height: 1.5;
+      color: #243447;
+    }
+    .mcp-help-list {
+      padding-left: 18px;
+      color: #4b5563;
+      line-height: 1.6;
+    }
+    .mcp-help-list li { margin-bottom: 4px; }
 
     /* Code tab */
     .code-add-row { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -600,6 +631,7 @@
   <button id="nav-review" onclick="showTab('review')">Review <span id="suspect-nav-badge" class="badge" style="display:none"></span></button>
   <button onclick="showTab('chain-gaps')">Chain Gaps</button>
   <button onclick="showTab('code')">Code</button>
+  <button onclick="showTab('mcp-ai')">MCP &amp; AI</button>
   <button onclick="showTab('reports')">Reports</button>
 </nav>
 
@@ -851,6 +883,73 @@
     </div>
   </section>
 
+  <!-- MCP & AI tab -->
+  <section id="tab-mcp-ai">
+    <div class="toolbar"><h2>MCP &amp; AI</h2></div>
+    <div class="card" style="margin-bottom:16px;padding:16px">
+      <div style="font-weight:600;margin-bottom:8px">Local MCP Endpoint</div>
+      <div id="mcp-endpoint" class="mcp-endpoint">Loading…</div>
+      <div style="font-size:12px;color:#666;margin-top:8px">
+        RTMify Live serves MCP over Streamable HTTP at <code>/mcp</code>. Keep the local server running while your AI client is connected.
+      </div>
+    </div>
+    <div class="mcp-grid">
+      <div class="card" style="padding:16px">
+        <h3 style="margin-bottom:10px">Claude Code / Cowork</h3>
+        <p style="margin-bottom:10px;color:#555;line-height:1.5">
+          Add RTMify Live as an HTTP MCP server. For Cowork or any Claude-compatible MCP client, use the same MCP URL.
+        </p>
+        <div id="mcp-claude-cmd" class="mcp-code"></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <h3 style="margin-bottom:10px">Codex</h3>
+        <p style="margin-bottom:10px;color:#555;line-height:1.5">
+          Add the current RTMify dashboard as a streamable HTTP MCP server.
+        </p>
+        <div id="mcp-codex-cmd" class="mcp-code"></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <h3 style="margin-bottom:10px">Gemini</h3>
+        <p style="margin-bottom:10px;color:#555;line-height:1.5">
+          Add this server to your Gemini CLI MCP settings.
+        </p>
+        <div id="mcp-gemini-json" class="mcp-code"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;padding:16px">
+      <h3 style="margin-bottom:10px">What RTMify Exposes</h3>
+      <p style="margin-bottom:10px;color:#555;line-height:1.5">
+        RTMify now exposes MCP <strong>tools</strong>, <strong>resources</strong>, and <strong>prompts</strong>.
+        Tools are best for filtered queries. Resources are stable read models. Prompts are curated workflows.
+      </p>
+      <div class="mcp-grid" style="margin-bottom:12px">
+        <div>
+          <div style="font-weight:600;margin-bottom:6px">Example Resources</div>
+          <div class="mcp-code">requirement://REQ-001
+gap://1203/REQ-001
+design-history://REQ-001
+impact://UN-001
+report://status</div>
+        </div>
+        <div>
+          <div style="font-weight:600;margin-bottom:6px">Example Prompts</div>
+          <div class="mcp-code">trace_requirement(id="REQ-001")
+impact_of_change(id="UN-001")
+explain_gap(code=1203,node_id="REQ-001")
+audit_readiness_summary(profile="aerospace")</div>
+        </div>
+      </div>
+      <h3 style="margin-bottom:10px">What You Can Ask</h3>
+      <ul class="mcp-help-list">
+        <li>Which requirements have no verification coverage?</li>
+        <li>Show the full traceability chain for <code>REQ-014</code>.</li>
+        <li>What breaks if I change <code>UN-003</code>?</li>
+        <li>Read <code>requirement://REQ-001</code> and summarize the open gaps.</li>
+        <li>Use <code>trace_requirement</code> to prepare an audit-ready requirement summary.</li>
+      </ul>
+    </div>
+  </section>
+
   <!-- Reports tab -->
   <section id="tab-reports">
     <div class="toolbar"><h2>Reports</h2></div>
@@ -903,6 +1002,7 @@
     if (name === 'review') loadSuspects();
     if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
     if (name === 'code') loadCodeTraceability();
+    if (name === 'mcp-ai') loadMcpHelp();
   }
 
   // --- Data loading ---
@@ -911,6 +1011,27 @@
     _closeAllExpanded();
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
     await loadProfileState();
+    loadMcpHelp();
+  }
+
+  function loadMcpHelp() {
+    const endpoint = window.location.origin + '/mcp';
+    const endpointEl = document.getElementById('mcp-endpoint');
+    const claudeEl = document.getElementById('mcp-claude-cmd');
+    const codexEl = document.getElementById('mcp-codex-cmd');
+    const geminiEl = document.getElementById('mcp-gemini-json');
+    if (!endpointEl || !claudeEl || !codexEl || !geminiEl) return;
+
+    endpointEl.textContent = endpoint;
+    claudeEl.textContent = `claude mcp add --transport http rtmify-live ${endpoint}`;
+    codexEl.textContent = `codex mcp add rtmify-live --url ${endpoint}`;
+    geminiEl.textContent = `{
+  "mcpServers": {
+    "rtmify-live": {
+      "httpUrl": "${endpoint}"
+    }
+  }
+}`;
   }
 
   async function renderRequirements() {

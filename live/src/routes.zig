@@ -2213,6 +2213,16 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "/api/repos") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/api/diagnostics") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/query/recent-commits") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "MCP &amp; AI") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "claude mcp add --transport http rtmify-live") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "codex mcp add rtmify-live --url") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "\"httpUrl\":") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "window.location.origin + '/mcp'") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "What RTMify Exposes") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "requirement://REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "gap://1203/REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "trace_requirement(id=\"REQ-001\")") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "audit_readiness_summary(profile=\"aerospace\")") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Create Missing Tabs") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Code Traceability") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
