@@ -1,8 +1,4 @@
 // main.zig — wWinMain entry point for RTMify Live Windows tray shell.
-//
-// Creates a message-only window, installs a Shell_NotifyIcon tray icon,
-// and runs the message loop. The rtmify-live.exe server is spawned as a
-// child process.
 
 const std = @import("std");
 const state_mod = @import("state.zig");
@@ -10,19 +6,14 @@ const process_mod = @import("process.zig");
 const lifecycle_mod = @import("lifecycle.zig");
 const license_mod = @import("license_gate.zig");
 const tray_mod = @import("tray_menu.zig");
-
-// ---------------------------------------------------------------------------
-// Win32 types
-// ---------------------------------------------------------------------------
+const status_probe = @import("status_probe.zig");
 
 const HWND = *anyopaque;
 const HINSTANCE = *anyopaque;
 const HICON = *anyopaque;
-const HANDLE = *anyopaque;
 const BOOL = c_int;
 const UINT = c_uint;
 const DWORD = u32;
-const WORD = u16;
 const LPARAM = isize;
 const WPARAM = usize;
 const LRESULT = isize;
@@ -54,7 +45,6 @@ const WNDCLASSEXW = extern struct {
     hIconSm: ?*anyopaque,
 };
 
-// NOTIFYICONDATAW (simplified for our use)
 const NOTIFYICONDATAW = extern struct {
     cbSize: DWORD,
     hWnd: ?HWND,
@@ -66,16 +56,12 @@ const NOTIFYICONDATAW = extern struct {
     dwState: DWORD,
     dwStateMask: DWORD,
     szInfo: [256]u16,
-    uTimeout: UINT, // union field, also uVersion
+    uTimeout: UINT,
     szInfoTitle: [64]u16,
     dwInfoFlags: DWORD,
     guidItem: [16]u8,
     hBalloonIcon: ?*anyopaque,
 };
-
-// ---------------------------------------------------------------------------
-// Win32 imports
-// ---------------------------------------------------------------------------
 
 extern "user32" fn RegisterClassExW(lpwcx: *const WNDCLASSEXW) callconv(.winapi) ATOM;
 extern "user32" fn CreateWindowExW(
@@ -92,7 +78,6 @@ extern "user32" fn SetTimer(hWnd: ?HWND, nIDEvent: usize, uElapse: UINT, lpTimer
 extern "user32" fn KillTimer(hWnd: ?HWND, uIDEvent: usize) callconv(.winapi) BOOL;
 extern "user32" fn LoadIconW(hInstance: ?*anyopaque, lpIconName: [*:0]const u16) callconv(.winapi) ?HICON;
 extern "shell32" fn Shell_NotifyIconW(dwMessage: DWORD, lpdata: *NOTIFYICONDATAW) callconv(.winapi) BOOL;
-extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const u16) callconv(.winapi) ?HINSTANCE;
 extern "shell32" fn ShellExecuteW(
     hwnd: ?HWND, lpOperation: ?[*:0]const u16, lpFile: [*:0]const u16,
     lpParameters: ?[*:0]const u16, lpDirectory: ?[*:0]const u16, nShowCmd: c_int,
@@ -111,13 +96,7 @@ extern "advapi32" fn RegQueryValueExW(
 ) callconv(.winapi) c_long;
 extern "advapi32" fn RegCloseKey(hKey: usize) callconv(.winapi) c_long;
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const HWND_MESSAGE: isize = -3;
 const NIM_ADD: DWORD = 0;
-const NIM_MODIFY: DWORD = 1;
 const NIM_DELETE: DWORD = 2;
 const NIF_MESSAGE: UINT = 0x01;
 const NIF_ICON: UINT = 0x02;
@@ -125,12 +104,14 @@ const NIF_TIP: UINT = 0x04;
 const IDI_APPLICATION: usize = 32512;
 const WM_APP: UINT = 0x8000;
 const WM_TRAYICON: UINT = WM_APP + 1;
-const WM_ACTIVATED: UINT = WM_APP + 2; // license activated
+const WM_ACTIVATED: UINT = WM_APP + 2;
 const WM_DESTROY: UINT = 0x0002;
 const WM_TIMER: UINT = 0x0113;
 const WM_COMMAND: UINT = 0x0111;
 const TIMER_STATUS: usize = 1;
-const TIMER_INTERVAL_MS: UINT = 30_000;
+const TIMER_INTERVAL_MS: UINT = 5_000;
+const STARTUP_TIMEOUT_MS: u64 = 10_000;
+const STARTUP_INTERVAL_MS: u64 = 250;
 
 const HKEY_CURRENT_USER: usize = 0x80000001;
 const KEY_SET_VALUE: DWORD = 0x0002;
@@ -142,22 +123,25 @@ fn W(comptime s: []const u8) [:0]const u16 {
     return std.unicode.utf8ToUtf16LeStringLiteral(s);
 }
 
-// ---------------------------------------------------------------------------
-// Global state
-// ---------------------------------------------------------------------------
-
 var g_hinstance: HINSTANCE = undefined;
 var g_hwnd: HWND = undefined;
 var g_srv_state: state_mod.ServerState = .stopped;
 var g_launch_at_login: bool = false;
 var g_port: u16 = 8000;
-
-// ---------------------------------------------------------------------------
-// Registry helpers for "Launch at Login"
-// ---------------------------------------------------------------------------
+var g_cfg: state_mod.Config = .{};
 
 const RUN_KEY = W("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
 const APP_NAME = W("RTMify Live");
+
+fn setServerError(msg: []const u8) void {
+    @memset(&g_cfg.server_error, 0);
+    const len = @min(msg.len, g_cfg.server_error.len - 1);
+    @memcpy(g_cfg.server_error[0..len], msg[0..len]);
+}
+
+fn clearServerError() void {
+    @memset(&g_cfg.server_error, 0);
+}
 
 fn setLaunchAtLogin(enable: bool) void {
     var hkey: usize = 0;
@@ -187,10 +171,6 @@ fn checkLaunchAtLogin() bool {
     return RegQueryValueExW(hkey, APP_NAME, null, null, null, &cb) == ERROR_SUCCESS;
 }
 
-// ---------------------------------------------------------------------------
-// Tray icon management
-// ---------------------------------------------------------------------------
-
 fn trayIcon(hwnd: HWND, msg: DWORD) void {
     var nid: NOTIFYICONDATAW = std.mem.zeroes(NOTIFYICONDATAW);
     nid.cbSize = @sizeOf(NOTIFYICONDATAW);
@@ -204,9 +184,55 @@ fn trayIcon(hwnd: HWND, msg: DWORD) void {
     _ = Shell_NotifyIconW(msg, &nid);
 }
 
-// ---------------------------------------------------------------------------
-// WndProc
-// ---------------------------------------------------------------------------
+fn openDashboard(hwnd: HWND) void {
+    var url_buf: [64]u8 = undefined;
+    const url_utf8 = std.fmt.bufPrintZ(&url_buf, "http://localhost:{d}", .{g_port}) catch return;
+    var url_wide: [64:0]u16 = std.mem.zeroes([64:0]u16);
+    _ = std.unicode.utf8ToUtf16Le(&url_wide, url_utf8) catch return;
+    _ = ShellExecuteW(hwnd, W("open"), &url_wide, null, null, 1);
+}
+
+fn startupErrorMessage(err: process_mod.SpawnServerError) []const u8 {
+    return switch (err) {
+        .already_running => "Server already running",
+        .server_binary_missing => "Server binary not found beside RTMify Live.exe",
+        .localappdata_missing => "LOCALAPPDATA is not available",
+        .data_dir_create_failed => "Failed to create RTMify Live data directory",
+        .log_open_failed => "Failed to open Windows server log file",
+        .command_line_too_long => "Failed to build server command line",
+        .env_setup_failed => "Failed to prepare child environment",
+        .spawn_failed => "Failed to spawn rtmify-live.exe",
+    };
+}
+
+fn startServer(hwnd: HWND, user_initiated: bool) void {
+    if (g_srv_state == .running or g_srv_state == .starting) return;
+
+    clearServerError();
+    lifecycle_mod.handleStart(&g_srv_state);
+
+    switch (process_mod.spawnServer(std.heap.page_allocator, g_port)) {
+        .ok => {
+            if (!status_probe.waitUntilReady(std.heap.page_allocator, g_port, STARTUP_TIMEOUT_MS, STARTUP_INTERVAL_MS)) {
+                if (process_mod.serverRunning()) {
+                    process_mod.stopServer();
+                    setServerError("Server did not become ready within 10s");
+                } else {
+                    setServerError("Server exited during startup");
+                }
+                lifecycle_mod.handleStartupFailed(&g_srv_state);
+                return;
+            }
+            lifecycle_mod.handleStarted(&g_srv_state);
+            _ = SetTimer(hwnd, TIMER_STATUS, TIMER_INTERVAL_MS, null);
+            if (user_initiated) openDashboard(hwnd);
+        },
+        .err => |err| {
+            setServerError(startupErrorMessage(err));
+            lifecycle_mod.handleStartupFailed(&g_srv_state);
+        },
+    }
+}
 
 fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.winapi) LRESULT {
     const h = hwnd orelse return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -214,29 +240,23 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
     switch (msg) {
         WM_TRAYICON => {
             const lword: UINT = @intCast(lparam & 0xFFFF);
-            // WM_RBUTTONUP = 0x0205
             if (lword == 0x0205 or lword == 0x0204) {
-                const cmd = tray_mod.showMenu(h, g_srv_state, g_launch_at_login);
+                const cmd = tray_mod.showMenu(h, g_srv_state, g_launch_at_login, std.mem.sliceTo(&g_cfg.server_error, 0));
                 handleMenuCmd(h, cmd);
             }
         },
         WM_ACTIVATED => {
-            // License activated — start server and open dashboard
-            if (g_srv_state != .running) {
-                lifecycle_mod.handleStart(&g_srv_state, process_mod.spawnServer(g_port));
-            }
-            if (g_srv_state == .running) {
-                var url_buf: [64]u8 = undefined;
-                const url_utf8 = std.fmt.bufPrintZ(&url_buf, "http://localhost:{d}", .{g_port}) catch return 0;
-                var url_wide: [64:0]u16 = std.mem.zeroes([64:0]u16);
-                _ = std.unicode.utf8ToUtf16Le(&url_wide, url_utf8) catch {};
-                _ = ShellExecuteW(hwnd, W("open"), &url_wide, null, null, 1);
-            }
+            startServer(h, true);
         },
         WM_TIMER => {
             if (wparam == TIMER_STATUS) {
-                // Check if server process died
+                const was_running = g_srv_state == .running;
                 lifecycle_mod.handleTimer(&g_srv_state, process_mod.serverRunning());
+                if (was_running and g_srv_state == .@"error") {
+                    setServerError("Server process terminated unexpectedly");
+                    _ = KillTimer(h, TIMER_STATUS);
+                    process_mod.stopServer();
+                }
             }
         },
         WM_COMMAND => {
@@ -247,6 +267,7 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
         },
         WM_DESTROY => {
             trayIcon(h, NIM_DELETE);
+            _ = KillTimer(h, TIMER_STATUS);
             lifecycle_mod.handleDestroy(process_mod.stopServer);
             PostQuitMessage(0);
         },
@@ -257,17 +278,11 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
 
 fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
     switch (cmd) {
-        tray_mod.CMD_OPEN_DASHBOARD => {
-            var url_buf: [64]u8 = undefined;
-            const url_utf8 = std.fmt.bufPrintZ(&url_buf, "http://localhost:{d}", .{g_port}) catch return;
-            var url_wide: [64:0]u16 = std.mem.zeroes([64:0]u16);
-            _ = std.unicode.utf8ToUtf16Le(&url_wide, url_utf8) catch return;
-            _ = ShellExecuteW(hwnd, W("open"), &url_wide, null, null, 1);
-        },
-        tray_mod.CMD_START => {
-            lifecycle_mod.handleStart(&g_srv_state, process_mod.spawnServer(g_port));
-        },
+        tray_mod.CMD_OPEN_DASHBOARD => openDashboard(hwnd),
+        tray_mod.CMD_START => startServer(hwnd, true),
         tray_mod.CMD_STOP => {
+            _ = KillTimer(hwnd, TIMER_STATUS);
+            clearServerError();
             lifecycle_mod.handleStop(&g_srv_state, process_mod.stopServer);
         },
         tray_mod.CMD_LICENSE => {
@@ -278,6 +293,7 @@ fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
             setLaunchAtLogin(g_launch_at_login);
         },
         tray_mod.CMD_QUIT => {
+            _ = KillTimer(hwnd, TIMER_STATUS);
             lifecycle_mod.handleQuit(process_mod.stopServer);
             trayIcon(hwnd, NIM_DELETE);
             PostQuitMessage(0);
@@ -285,10 +301,6 @@ fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
         else => {},
     }
 }
-
-// ---------------------------------------------------------------------------
-// wWinMain
-// ---------------------------------------------------------------------------
 
 pub export fn wWinMain(
     hinstance: HINSTANCE,
@@ -298,14 +310,8 @@ pub export fn wWinMain(
 ) callconv(.winapi) c_int {
     g_hinstance = hinstance;
     g_launch_at_login = checkLaunchAtLogin();
+    g_cfg.port = g_port;
 
-    // Check license by running --version (quick exit code check)
-    const lic_ok = (process_mod.spawnActivate("") == 1); // --activate "" should fail fast
-    _ = lic_ok;
-    // We optimistically start — the server itself enforces the license check.
-    // The tray will show .license_gate only if the server fails to start.
-
-    // Register window class
     const class_name = W("RTMifyLiveTray");
     var wc: WNDCLASSEXW = std.mem.zeroes(WNDCLASSEXW);
     wc.cbSize = @sizeOf(WNDCLASSEXW);
@@ -314,34 +320,28 @@ pub export fn wWinMain(
     wc.lpszClassName = class_name;
     _ = RegisterClassExW(&wc);
 
-    // Create message-only window
     const hwnd = CreateWindowExW(
-        0, class_name, W("RTMify Live"),
-        0, 0, 0, 0, 0,
-        @ptrFromInt(@as(usize, @bitCast(@as(isize, HWND_MESSAGE)))),
-        null, hinstance, null,
+        0,
+        class_name,
+        W("RTMify Live"),
+        0,
+        0,
+        0,
+        0,
+        0,
+        @ptrFromInt(@as(usize, @bitCast(@as(isize, -3)))),
+        null,
+        hinstance,
+        null,
     ) orelse return 1;
     g_hwnd = hwnd;
 
-    // Install tray icon
     trayIcon(hwnd, NIM_ADD);
 
-    // Start status check timer
-    _ = SetTimer(hwnd, TIMER_STATUS, TIMER_INTERVAL_MS, null);
-
-    // Auto-start server
-    if (process_mod.spawnServer(g_port)) {
-        g_srv_state = .running;
-    } else {
-        g_srv_state = .license_gate;
+    var msg_struct: MSG = undefined;
+    while (GetMessageW(&msg_struct, null, 0, 0) > 0) {
+        _ = TranslateMessage(&msg_struct);
+        _ = DispatchMessageW(&msg_struct);
     }
-
-    // Message loop
-    var msg: MSG = undefined;
-    while (GetMessageW(&msg, null, 0, 0) > 0) {
-        _ = TranslateMessage(&msg);
-        _ = DispatchMessageW(&msg);
-    }
-
     return 0;
 }

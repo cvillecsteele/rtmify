@@ -1,0 +1,49 @@
+name: Windows Live
+
+on:
+  pull_request:
+    paths:
+      - "build.zig"
+      - "live/**"
+      - "lib/**"
+  push:
+    branches: [ main ]
+    paths:
+      - "build.zig"
+      - "live/**"
+      - "lib/**"
+
+jobs:
+  windows-live:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build Windows server
+        run: zig build live -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+      - name: Run native tests
+        run: zig build test-live
+
+      - name: Build Windows tray app
+        run: zig build win-gui-live -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+      - name: Smoke test server
+        run: ./live/windows/smoke.ps1
+
+      - name: Upload Windows binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-live-binaries
+          path: |
+            zig-out/bin/rtmify-live.exe
+            zig-out/bin/RTMify Live.exe

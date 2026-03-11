@@ -1,8 +1,15 @@
 const state_mod = @import("state.zig");
 
-pub fn handleStart(state: *state_mod.ServerState, spawn_ok: bool) void {
+pub fn handleStart(state: *state_mod.ServerState) void {
     state.* = .starting;
-    state.* = if (spawn_ok) .running else .@"error";
+}
+
+pub fn handleStarted(state: *state_mod.ServerState) void {
+    state.* = .running;
+}
+
+pub fn handleStartupFailed(state: *state_mod.ServerState) void {
+    state.* = .@"error";
 }
 
 pub fn handleStop(state: *state_mod.ServerState, stop_fn: anytype) void {
@@ -19,7 +26,7 @@ pub fn handleDestroy(stop_fn: anytype) void {
 }
 
 pub fn handleTimer(state: *state_mod.ServerState, is_running: bool) void {
-    if (state.* == .running and !is_running) {
+    if ((state.* == .running or state.* == .starting) and !is_running) {
         state.* = .@"error";
     }
 }
@@ -50,20 +57,32 @@ test "destroy always stops the server" {
     try @import("std").testing.expectEqual(@as(usize, 1), Ctx.stopped);
 }
 
-test "start transitions to running on successful spawn" {
+test "start transitions to starting" {
     var state: state_mod.ServerState = .stopped;
-    handleStart(&state, true);
+    handleStart(&state);
+    try @import("std").testing.expectEqual(state_mod.ServerState.starting, state);
+}
+
+test "started transitions to running" {
+    var state: state_mod.ServerState = .starting;
+    handleStarted(&state);
     try @import("std").testing.expectEqual(state_mod.ServerState.running, state);
 }
 
-test "start transitions to error on failed spawn" {
-    var state: state_mod.ServerState = .stopped;
-    handleStart(&state, false);
+test "startup failed transitions to error" {
+    var state: state_mod.ServerState = .starting;
+    handleStartupFailed(&state);
     try @import("std").testing.expectEqual(state_mod.ServerState.@"error", state);
 }
 
 test "timer marks crashed running server as error" {
     var state: state_mod.ServerState = .running;
+    handleTimer(&state, false);
+    try @import("std").testing.expectEqual(state_mod.ServerState.@"error", state);
+}
+
+test "timer marks crashed starting server as error" {
+    var state: state_mod.ServerState = .starting;
     handleTimer(&state, false);
     try @import("std").testing.expectEqual(state_mod.ServerState.@"error", state);
 }

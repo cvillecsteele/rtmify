@@ -5,9 +5,6 @@ const state = @import("state.zig");
 const HWND = *anyopaque;
 const BOOL = c_int;
 const UINT = c_uint;
-const DWORD = u32;
-const LPARAM = isize;
-const WPARAM = usize;
 
 const HMENU = *anyopaque;
 const POINT = extern struct { x: i32, y: i32 };
@@ -23,7 +20,6 @@ const MF_STRING: UINT = 0x00000000;
 const MF_GRAYED: UINT = 0x00000001;
 const MF_SEPARATOR: UINT = 0x00000800;
 const MF_CHECKED: UINT = 0x00000008;
-const MFT_SEPARATOR: UINT = MF_SEPARATOR;
 const TPM_RIGHTBUTTON: UINT = 0x0002;
 const TPM_NONOTIFY: UINT = 0x0080;
 const TPM_RETURNCMD: UINT = 0x0100;
@@ -39,31 +35,38 @@ fn W(comptime s: []const u8) [:0]const u16 {
     return std.unicode.utf8ToUtf16LeStringLiteral(s);
 }
 
-/// Show the tray popup menu and return the selected command ID, or 0 if dismissed.
-pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool) usize {
+pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool, server_error: []const u8) usize {
     const menu = CreatePopupMenu() orelse return 0;
     defer _ = DestroyMenu(menu);
 
-    // Status label (grayed, non-clickable)
+    var dynamic_status: [256:0]u16 = std.mem.zeroes([256:0]u16);
     const status_label: [*:0]const u16 = switch (srv_state) {
         .license_gate => W("License required"),
         .stopped => W("Server stopped"),
-        .starting => W("Starting…"),
+        .starting => W("Starting..."),
         .running => W("Running"),
-        .@"error" => W("Error"),
+        .@"error" => blk: {
+            if (server_error.len == 0) break :blk W("Error");
+            const prefix = "Error: ";
+            var utf8_buf: [256]u8 = undefined;
+            const len = std.fmt.bufPrint(&utf8_buf, "{s}{s}", .{ prefix, server_error }) catch break :blk W("Error");
+            const wide_len = std.unicode.utf8ToUtf16Le(dynamic_status[0 .. dynamic_status.len - 1], len) catch break :blk W("Error");
+            dynamic_status[wide_len] = 0;
+            break :blk &dynamic_status;
+        },
     };
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, status_label);
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, null);
 
     switch (srv_state) {
         .license_gate => {
-            _ = AppendMenuW(menu, MF_STRING, CMD_LICENSE, W("Enter License Key…"));
+            _ = AppendMenuW(menu, MF_STRING, CMD_LICENSE, W("Enter License Key..."));
         },
         .stopped, .@"error" => {
             _ = AppendMenuW(menu, MF_STRING, CMD_START, W("Start Server"));
         },
         .starting => {
-            _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, W("Starting…"));
+            _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, W("Starting..."));
         },
         .running => {
             _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_DASHBOARD, W("Open Dashboard"));

@@ -243,6 +243,24 @@ pub fn build(b: *std.Build) void {
     });
     const run_windows_lifecycle_tests = b.addRunArtifact(windows_lifecycle_tests);
 
+    const windows_process_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/process.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_windows_process_tests = b.addRunArtifact(windows_process_tests);
+
+    const windows_status_probe_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/status_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_windows_status_probe_tests = b.addRunArtifact(windows_status_probe_tests);
+
     const test_lib_step = b.step("test-lib", "Run librtmify unit tests");
     test_lib_step.dependOn(&run_lib_tests.step);
 
@@ -252,6 +270,8 @@ pub fn build(b: *std.Build) void {
     const test_live_step = b.step("test-live", "Run live module unit tests");
     test_live_step.dependOn(&run_live_tests.step);
     test_live_step.dependOn(&run_windows_lifecycle_tests.step);
+    test_live_step.dependOn(&run_windows_process_tests.step);
+    test_live_step.dependOn(&run_windows_status_probe_tests.step);
 
     const test_cadcruncher_step = b.step("test-cadcruncher", "Run libcadcruncher unit tests");
     test_cadcruncher_step.dependOn(&run_cadcruncher_tests.step);
@@ -261,6 +281,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_trace_tests.step);
     test_step.dependOn(&run_live_tests.step);
     test_step.dependOn(&run_windows_lifecycle_tests.step);
+    test_step.dependOn(&run_windows_process_tests.step);
+    test_step.dependOn(&run_windows_status_probe_tests.step);
     test_step.dependOn(&run_cadcruncher_tests.step);
 
     const win_gui_exe = b.addExecutable(.{
@@ -294,11 +316,50 @@ pub fn build(b: *std.Build) void {
     win_gui_live_exe.linkSystemLibrary("user32");
     win_gui_live_exe.linkSystemLibrary("shell32");
     win_gui_live_exe.linkSystemLibrary("advapi32");
+    win_gui_live_exe.linkSystemLibrary("ws2_32");
     win_gui_live_exe.addWin32ResourceFile(.{ .file = b.path("live/windows/res/rtmify_live.rc") });
 
     const install_win_gui_live = b.addInstallArtifact(win_gui_live_exe, .{});
     const win_gui_live_step = b.step("win-gui-live", "Build RTMify Live.exe (use -Dtarget=x86_64-windows)");
     win_gui_live_step.dependOn(&install_win_gui_live.step);
+
+    const windows_check_target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = "x86_64-windows" }) catch
+        @panic("invalid windows check target triple"));
+    const check_live_windows_server = b.addExecutable(.{
+        .name = "rtmify-live-check-windows",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/src/main_live.zig"),
+            .target = windows_check_target,
+            .optimize = .ReleaseSafe,
+            .imports = &.{
+                .{ .name = "rtmify", .module = b.createModule(.{
+                    .root_source_file = b.path("lib/src/lib.zig"),
+                    .target = windows_check_target,
+                }) },
+                .{ .name = "build_options", .module = opts_mod },
+            },
+        }),
+    });
+    addSqlite(check_live_windows_server, b);
+
+    const check_live_windows_shell = b.addExecutable(.{
+        .name = "rtmify-live-shell-check-windows",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/main.zig"),
+            .target = windows_check_target,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    check_live_windows_shell.subsystem = .Windows;
+    check_live_windows_shell.linkSystemLibrary("user32");
+    check_live_windows_shell.linkSystemLibrary("shell32");
+    check_live_windows_shell.linkSystemLibrary("advapi32");
+    check_live_windows_shell.linkSystemLibrary("ws2_32");
+    check_live_windows_shell.addWin32ResourceFile(.{ .file = b.path("live/windows/res/rtmify_live.rc") });
+
+    const check_live_windows_step = b.step("check-live-windows", "Compile Windows live binaries without executing them");
+    check_live_windows_step.dependOn(&check_live_windows_server.step);
+    check_live_windows_step.dependOn(&check_live_windows_shell.step);
 
     const release_step = b.step("release", "Build trace, live, and static librtmify for all release targets");
 
