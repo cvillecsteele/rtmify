@@ -30,6 +30,13 @@ pub const Commit = struct {
     date_iso: []const u8,   // ISO 8601
     message: []const u8,
     req_ids: [][]const u8,  // matched from known_req_ids
+    file_changes: []CommitFileChange,
+};
+
+pub const CommitFileChange = struct {
+    status: []const u8, // e.g. M, A, D, R100
+    path: []const u8,
+    old_path: ?[]const u8,
 };
 
 pub const BlameEntry = struct {
@@ -78,7 +85,8 @@ pub fn gitLogWithOptions(
 
     try argv.append(alloc, options.exe orelse "git");
     try argv.append(alloc, "log");
-    try argv.append(alloc, "--format=%H|%h|%an|%ae|%aI|%s");
+    try argv.append(alloc, "--name-status");
+    try argv.append(alloc, "--format=%x1e%H|%h|%an|%ae|%aI|%s");
     if (since_hash) |h| {
         const range = try std.fmt.allocPrint(alloc, "{s}..HEAD", .{h});
         try argv.append(alloc, range);
@@ -103,16 +111,19 @@ pub fn gitLogWithOptions(
 
 fn parseGitLog(output: []const u8, known_req_ids: []const []const u8, alloc: Allocator) (GitError || Allocator.Error)![]Commit {
     var commits: std.ArrayList(Commit) = .empty;
+    var record_it = std.mem.splitScalar(u8, output, 0x1e);
+    while (record_it.next()) |record_raw| {
+        const record = std.mem.trim(u8, record_raw, "\r\n \t");
+        if (record.len == 0) continue;
 
-    var line_it = std.mem.splitScalar(u8, output, '\n');
-    while (line_it.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, "\r \t");
-        if (trimmed.len == 0) continue;
+        var line_it = std.mem.splitScalar(u8, record, '\n');
+        const header = line_it.next() orelse return error.CommitParseErr;
+        const header_trimmed = std.mem.trim(u8, header, "\r \t");
+        if (header_trimmed.len == 0) return error.CommitParseErr;
 
-        // Format: hash|short_hash|author|email|date|message
         var fields: [6][]const u8 = undefined;
         var fi: usize = 0;
-        var field_it = std.mem.splitScalar(u8, trimmed, '|');
+        var field_it = std.mem.splitScalar(u8, header_trimmed, '|');
         while (field_it.next()) |f| {
             if (fi >= 6) break;
             fields[fi] = f;
@@ -121,13 +132,19 @@ fn parseGitLog(output: []const u8, known_req_ids: []const []const u8, alloc: All
         if (fi < 6) return error.CommitParseErr;
 
         const message = fields[5];
-
-        // Scan message for req IDs
         var matched: std.ArrayList([]const u8) = .empty;
         for (known_req_ids) |req_id| {
             if (std.mem.indexOf(u8, message, req_id) != null) {
                 try matched.append(alloc, try alloc.dupe(u8, req_id));
             }
+        }
+
+        var file_changes: std.ArrayList(CommitFileChange) = .empty;
+        while (line_it.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, "\r \t");
+            if (line.len == 0) continue;
+            const change = try parseCommitFileChange(line, alloc);
+            try file_changes.append(alloc, change);
         }
 
         try commits.append(alloc, .{
@@ -138,10 +155,33 @@ fn parseGitLog(output: []const u8, known_req_ids: []const []const u8, alloc: All
             .date_iso = try alloc.dupe(u8, fields[4]),
             .message = try alloc.dupe(u8, message),
             .req_ids = try matched.toOwnedSlice(alloc),
+            .file_changes = try file_changes.toOwnedSlice(alloc),
         });
     }
 
     return commits.toOwnedSlice(alloc);
+}
+
+fn parseCommitFileChange(line: []const u8, alloc: Allocator) (GitError || Allocator.Error)!CommitFileChange {
+    var parts = std.mem.splitScalar(u8, line, '\t');
+    const status = parts.next() orelse return error.CommitParseErr;
+    const first_path = parts.next() orelse return error.CommitParseErr;
+    const second_path = parts.next();
+
+    if (status.len > 0 and (status[0] == 'R' or status[0] == 'C')) {
+        const new_path = second_path orelse return error.CommitParseErr;
+        return .{
+            .status = try alloc.dupe(u8, status),
+            .path = try alloc.dupe(u8, new_path),
+            .old_path = try alloc.dupe(u8, first_path),
+        };
+    }
+
+    return .{
+        .status = try alloc.dupe(u8, status),
+        .path = try alloc.dupe(u8, first_path),
+        .old_path = null,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -368,12 +408,15 @@ fn parseBlame(output: []const u8, alloc: Allocator) (GitError || Allocator.Error
 
 const testing = std.testing;
 
-test "parseGitLog parses pipe-delimited lines" {
+test "parseGitLog parses commits and changed files" {
     const output =
-        \\abc1234567890123456789012345678901234567890|abc1234|Alice Smith|alice@example.com|2026-03-01T12:00:00+00:00|REQ-001: implement GPS timeout
-        \\def1234567890123456789012345678901234567890|def1234|Bob Jones|bob@example.com|2026-03-02T09:00:00+00:00|refactor: clean up code
-        \\
-    ;
+        "\x1eabc1234567890123456789012345678901234567890|abc1234|Alice Smith|alice@example.com|2026-03-01T12:00:00+00:00|REQ-001: implement GPS timeout\n" ++
+        "M\tsrc/gps/timeout.c\n" ++
+        "R100\tsrc/old.c\tsrc/new.c\n" ++
+        "\n" ++
+        "\x1edef1234567890123456789012345678901234567890|def1234|Bob Jones|bob@example.com|2026-03-02T09:00:00+00:00|refactor: clean up code\n" ++
+        "A\ttests/test_main.py\n" ++
+        "\n";
     const known = &[_][]const u8{ "REQ-001", "REQ-002" };
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -385,9 +428,18 @@ test "parseGitLog parses pipe-delimited lines" {
     try testing.expectEqualStrings("REQ-001: implement GPS timeout", commits[0].message);
     try testing.expectEqual(@as(usize, 1), commits[0].req_ids.len);
     try testing.expectEqualStrings("REQ-001", commits[0].req_ids[0]);
+    try testing.expectEqual(@as(usize, 2), commits[0].file_changes.len);
+    try testing.expectEqualStrings("M", commits[0].file_changes[0].status);
+    try testing.expectEqualStrings("src/gps/timeout.c", commits[0].file_changes[0].path);
+    try testing.expect(commits[0].file_changes[0].old_path == null);
+    try testing.expectEqualStrings("R100", commits[0].file_changes[1].status);
+    try testing.expectEqualStrings("src/new.c", commits[0].file_changes[1].path);
+    try testing.expectEqualStrings("src/old.c", commits[0].file_changes[1].old_path.?);
 
     // Second commit has no matching req ID
     try testing.expectEqual(@as(usize, 0), commits[1].req_ids.len);
+    try testing.expectEqual(@as(usize, 1), commits[1].file_changes.len);
+    try testing.expectEqualStrings("tests/test_main.py", commits[1].file_changes[0].path);
 }
 
 test "parseGitLog empty output returns empty slice" {

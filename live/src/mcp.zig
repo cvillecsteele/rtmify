@@ -64,6 +64,7 @@ const tools_json =
     \\{"name":"commit_history","description":"Commits linked to a requirement via COMMITTED_IN edges. Supports limit.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string"},"limit":{"type":"integer"}},"required":["req_id"]}},
     \\{"name":"design_history","description":"Full upstream/downstream chain for a requirement.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string"}},"required":["req_id"]}},
     \\{"name":"chain_gaps","description":"Traceability chain gaps for the active or requested industry profile. Supports severity, profile, limit, and offset.","inputSchema":{"type":"object","properties":{"profile":{"type":"string"},"severity":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]}},
+    \\{"name":"implementation_changes_since","description":"Find requirements or user needs whose implementation files changed since an ISO timestamp. This uses file/commit history, not explicit COMMITTED_IN message references. Supports repo, limit, and offset.","inputSchema":{"type":"object","properties":{"since":{"type":"string"},"node_type":{"type":"string","enum":["Requirement","UserNeed"]},"repo":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":["since","node_type"]}},
     \\{"name":"requirement_trace","description":"Concise markdown trace summary for a requirement.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
     \\{"name":"gap_explanation","description":"Concise markdown explanation for a specific chain gap.","inputSchema":{"type":"object","properties":{"code":{"type":"integer"},"node_id":{"type":"string"}},"required":["code","node_id"]}},
     \\{"name":"impact_summary","description":"Concise markdown impact summary for a node.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
@@ -277,6 +278,27 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         return .{ .text = data };
     } else if (std.mem.eql(u8, name, "chain_gaps")) {
         return chainGapsToolPayload(db, args, alloc);
+    } else if (std.mem.eql(u8, name, "implementation_changes_since")) {
+        const since = try requireStringArg(args, "since");
+        const node_type = try requireStringArg(args, "node_type");
+        const repo = if (args) |a| json_util.getString(a, "repo") else null;
+        const limit_arg = getIntArg(args, "limit");
+        const offset_arg = getIntArg(args, "offset");
+        const limit = if (limit_arg) |v| try std.fmt.allocPrint(alloc, "{d}", .{v}) else null;
+        defer if (limit) |v| alloc.free(v);
+        const offset = if (offset_arg) |v| try std.fmt.allocPrint(alloc, "{d}", .{v}) else null;
+        defer if (offset) |v| alloc.free(v);
+        const data = try routes.handleImplementationChangesResponse(db, since, node_type, repo, limit, offset, alloc);
+        if (!data.ok) return error.InvalidArgument;
+        defer alloc.free(data.body);
+        var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data.body, .{});
+        defer parsed.deinit();
+        if (parsed.value != .array) return .{ .text = try alloc.dupe(u8, data.body) };
+        const note = if (limit_arg != null and parsed.value.array.items.len > 0)
+            try std.fmt.allocPrint(alloc, "Returned {d} implementation-change rows using file/commit evidence.", .{parsed.value.array.items.len})
+        else
+            null;
+        return .{ .text = try alloc.dupe(u8, data.body), .note = note };
     } else if (std.mem.eql(u8, name, "requirement_trace")) {
         const id = try requireStringArg(args, "id");
         return .{ .text = try requirementTraceMarkdown(id, db, alloc) };
@@ -1193,6 +1215,7 @@ test "tools list contains legacy and new tools" {
     try testing.expect(std.mem.indexOf(u8, tools_json, "get_rtm") != null);
     try testing.expect(std.mem.indexOf(u8, tools_json, "requirement_trace") != null);
     try testing.expect(std.mem.indexOf(u8, tools_json, "gap_explanation") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "implementation_changes_since") != null);
 }
 
 test "large output tools honor limit with truncation note" {
@@ -1208,4 +1231,29 @@ test "large output tools honor limit with truncation note" {
     defer payload.deinit(testing.allocator);
     try testing.expect(payload.note != null);
     try testing.expect(std.mem.indexOf(u8, payload.text, "REQ-001") != null or std.mem.indexOf(u8, payload.text, "REQ-002") != null);
+}
+
+test "implementation changes tool returns bounded rows" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("UN-001", "UserNeed", "{}", null);
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("src/foo.c", "SourceFile", "{\"repo\":\"/repo\",\"present\":true}", null);
+    try db.addNode("commit-1", "Commit", "{\"short_hash\":\"abc1234\",\"date\":\"2026-03-06T12:30:00Z\",\"message\":\"refactor\"}", null);
+    try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+    try db.addEdge("REQ-001", "src/foo.c", "IMPLEMENTED_IN");
+    try db.addEdge("src/foo.c", "commit-1", "CHANGED_IN");
+    try db.addEdge("commit-1", "src/foo.c", "CHANGES");
+
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("since", .{ .string = "2026-03-05T00:00:00Z" });
+    try args_obj.put("node_type", .{ .string = "Requirement" });
+    try args_obj.put("limit", .{ .integer = 1 });
+
+    var state: sync_live.SyncState = .{};
+    const payload = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &db, &state, testing.allocator);
+    defer payload.deinit(testing.allocator);
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"node_id\":\"REQ-001\"") != null);
+    try testing.expect(payload.note != null);
 }

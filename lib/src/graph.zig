@@ -65,6 +65,8 @@ pub const EdgeLabel = enum {
     implemented_in,
     verified_by_code,
     committed_in,
+    changed_in,
+    changes,
     annotated_at,
     contains,
     contains_annotation, // kept for backward-compat with old DB rows
@@ -81,6 +83,8 @@ pub const EdgeLabel = enum {
         if (std.mem.eql(u8, s, "IMPLEMENTED_IN")) return .implemented_in;
         if (std.mem.eql(u8, s, "VERIFIED_BY_CODE")) return .verified_by_code;
         if (std.mem.eql(u8, s, "COMMITTED_IN")) return .committed_in;
+        if (std.mem.eql(u8, s, "CHANGED_IN")) return .changed_in;
+        if (std.mem.eql(u8, s, "CHANGES")) return .changes;
         if (std.mem.eql(u8, s, "ANNOTATED_AT")) return .annotated_at;
         if (std.mem.eql(u8, s, "CONTAINS")) return .contains;
         if (std.mem.eql(u8, s, "CONTAINS_ANNOTATION")) return .contains_annotation;
@@ -100,6 +104,8 @@ pub const EdgeLabel = enum {
             .implemented_in => "IMPLEMENTED_IN",
             .verified_by_code => "VERIFIED_BY_CODE",
             .committed_in => "COMMITTED_IN",
+            .changed_in => "CHANGED_IN",
+            .changes => "CHANGES",
             .annotated_at => "ANNOTATED_AT",
             .contains => "CONTAINS",
             .contains_annotation => "CONTAINS_ANNOTATION",
@@ -763,10 +769,14 @@ test "EdgeLabel new variants fromString and toString roundtrip" {
     try testing.expectEqual(EdgeLabel.satisfied_by, EdgeLabel.fromString("SATISFIED_BY").?);
     try testing.expectEqual(EdgeLabel.refined_by, EdgeLabel.fromString("REFINED_BY").?);
     try testing.expectEqual(EdgeLabel.controlled_by, EdgeLabel.fromString("CONTROLLED_BY").?);
+    try testing.expectEqual(EdgeLabel.changed_in, EdgeLabel.fromString("CHANGED_IN").?);
+    try testing.expectEqual(EdgeLabel.changes, EdgeLabel.fromString("CHANGES").?);
     try testing.expectEqualStrings("ALLOCATED_TO", EdgeLabel.allocated_to.toString());
     try testing.expectEqualStrings("SATISFIED_BY", EdgeLabel.satisfied_by.toString());
     try testing.expectEqualStrings("REFINED_BY", EdgeLabel.refined_by.toString());
     try testing.expectEqualStrings("CONTROLLED_BY", EdgeLabel.controlled_by.toString());
+    try testing.expectEqualStrings("CHANGED_IN", EdgeLabel.changed_in.toString());
+    try testing.expectEqualStrings("CHANGES", EdgeLabel.changes.toString());
 }
 
 test "addNode and nodesByType for design_input" {
