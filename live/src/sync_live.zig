@@ -911,6 +911,38 @@ fn clearRuntimeDiagByCodeAndSubject(db: *GraphDb, source: []const u8, subject: [
 
 const testing = std.testing;
 const builtin = @import("builtin");
+const test_git_repo = @import("test_git_repo.zig");
+
+fn testEdgeExists(db: *GraphDb, from_id: []const u8, to_id: []const u8, label: []const u8, alloc: Allocator) !bool {
+    var edges: std.ArrayList(graph_live.Edge) = .empty;
+    defer {
+        for (edges.items) |e| {
+            alloc.free(e.id);
+            alloc.free(e.from_id);
+            alloc.free(e.to_id);
+            alloc.free(e.label);
+        }
+        edges.deinit(alloc);
+    }
+    try db.edgesFrom(from_id, alloc, &edges);
+    for (edges.items) |e| {
+        if (std.mem.eql(u8, e.to_id, to_id) and std.mem.eql(u8, e.label, label)) return true;
+    }
+    return false;
+}
+
+fn testGetNodeJsonBool(db: *GraphDb, node_id: []const u8, field: []const u8, alloc: Allocator) !bool {
+    const node = (try db.getNode(node_id, alloc)) orelse return error.TestExpectedNodeMissing;
+    defer {
+        alloc.free(node.id);
+        alloc.free(node.type);
+        alloc.free(node.properties);
+        if (node.suspect_reason) |s| alloc.free(s);
+    }
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, node.properties, .{});
+    defer parsed.deinit();
+    return json_util.getObjectField(parsed.value, field).?.bool;
+}
 
 test "colLetter single" {
     const a = colLetter(0);
@@ -1340,4 +1372,277 @@ test "repoScanCycle backfills full history first then uses git cursor incrementa
         if (std.mem.eql(u8, e.label, "COMMITTED_IN")) committed_count += 1;
     }
     try testing.expectEqual(@as(usize, 1), committed_count);
+}
+
+test "repoScanCycle real git repo links source annotation commit and file changes" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here
+        \\int main(void) { return 0; }
+        \\
+    );
+    const commit_hash = try fixture.commit("REQ-001 initial implementation", "Alice", "alice@example.com", "2026-03-06T12:00:00Z");
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repoScanCycle(&ctx, alloc);
+
+    const current_path = try std.fs.path.join(alloc, &.{ fixture.path, "src/foo.c" });
+    const annotation_id = try std.fmt.allocPrint(alloc, "{s}:1", .{current_path});
+    defer alloc.free(current_path);
+    defer alloc.free(annotation_id);
+
+    try testing.expect((try db.getNode(current_path, alloc)) != null);
+    try testing.expect((try db.getNode(annotation_id, alloc)) != null);
+    try testing.expect((try db.getNode(commit_hash, alloc)) != null);
+
+    try testing.expect(try testEdgeExists(&db, "REQ-001", current_path, "IMPLEMENTED_IN", alloc));
+    try testing.expect(try testEdgeExists(&db, "REQ-001", annotation_id, "ANNOTATED_AT", alloc));
+    try testing.expect(try testEdgeExists(&db, "REQ-001", commit_hash, "COMMITTED_IN", alloc));
+    try testing.expect(try testEdgeExists(&db, current_path, commit_hash, "CHANGED_IN", alloc));
+    try testing.expect(try testEdgeExists(&db, commit_hash, current_path, "CHANGES", alloc));
+    try testing.expect(try testGetNodeJsonBool(&db, current_path, "present", alloc));
+}
+
+test "repoScanCycle real git repo records later file change without inferring committed_in from later commit" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here
+        \\int main(void) { return 0; }
+        \\
+    );
+    const commit_1 = try fixture.commit("REQ-001 initial implementation", "Alice", "alice@example.com", "2026-03-06T12:00:00Z");
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repoScanCycle(&ctx, alloc);
+
+    std.Thread.sleep(1200 * std.time.ns_per_ms);
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here (bob)
+        \\int main(void) { return 1; }
+        \\
+    );
+    const commit_2 = try fixture.commit("refactor without req id", "Bob", "bob@example.com", "2026-03-07T15:45:00Z");
+    try repoScanCycle(&ctx, alloc);
+
+    const current_path = try std.fs.path.join(alloc, &.{ fixture.path, "src/foo.c" });
+    const annotation_id = try std.fmt.allocPrint(alloc, "{s}:1", .{current_path});
+    defer alloc.free(current_path);
+    defer alloc.free(annotation_id);
+
+    try testing.expect((try db.getNode(annotation_id, alloc)) != null);
+
+    try testing.expect(try testEdgeExists(&db, current_path, commit_2, "CHANGED_IN", alloc));
+    try testing.expect(try testEdgeExists(&db, commit_2, current_path, "CHANGES", alloc));
+
+    var req_edges: std.ArrayList(graph_live.Edge) = .empty;
+    defer {
+        for (req_edges.items) |e| {
+            alloc.free(e.id);
+            alloc.free(e.from_id);
+            alloc.free(e.to_id);
+            alloc.free(e.label);
+        }
+        req_edges.deinit(alloc);
+    }
+    try db.edgesFrom("REQ-001", alloc, &req_edges);
+    var committed_to_first = false;
+    var committed_to_second = false;
+    for (req_edges.items) |e| {
+        if (std.mem.eql(u8, e.label, "COMMITTED_IN") and std.mem.eql(u8, e.to_id, commit_1)) committed_to_first = true;
+        if (std.mem.eql(u8, e.label, "COMMITTED_IN") and std.mem.eql(u8, e.to_id, commit_2)) committed_to_second = true;
+    }
+    try testing.expect(committed_to_first);
+    try testing.expect(!committed_to_second);
+}
+
+test "repoScanCycle real git repo classifies test annotations as verified by code" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("tests/foo_test.c",
+        \\// REQ-001 verified here
+        \\int test_foo(void) { return 0; }
+        \\
+    );
+    const commit_hash = try fixture.commit("add test coverage", "Alice", "alice@example.com", "2026-03-08T09:00:00Z");
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repoScanCycle(&ctx, alloc);
+
+    const test_path = try std.fs.path.join(alloc, &.{ fixture.path, "tests/foo_test.c" });
+    defer alloc.free(test_path);
+
+    const file_node = (try db.getNode(test_path, alloc)).?;
+    defer {
+        alloc.free(file_node.id);
+        alloc.free(file_node.type);
+        alloc.free(file_node.properties);
+        if (file_node.suspect_reason) |s| alloc.free(s);
+    }
+    try testing.expectEqualStrings("TestFile", file_node.type);
+    try testing.expect(try testEdgeExists(&db, "REQ-001", test_path, "VERIFIED_BY_CODE", alloc));
+    try testing.expect(try testEdgeExists(&db, test_path, commit_hash, "CHANGED_IN", alloc));
+}
+
+test "repoScanCycle real git repo preserves historical rename path with present false" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("src/old_name.c",
+        \\// REQ-001 implemented here
+        \\int old_name(void) { return 0; }
+        \\
+    );
+    _ = try fixture.commit("REQ-001 initial implementation", "Alice", "alice@example.com", "2026-03-06T08:00:00Z");
+    try fixture.renameFile("src/old_name.c", "src/new_name.c");
+    const rename_commit = try fixture.commit("rename implementation file", "Alice", "alice@example.com", "2026-03-07T08:00:00Z");
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repoScanCycle(&ctx, alloc);
+
+    const old_path = try std.fs.path.join(alloc, &.{ fixture.path, "src/old_name.c" });
+    const new_path = try std.fs.path.join(alloc, &.{ fixture.path, "src/new_name.c" });
+    defer alloc.free(old_path);
+    defer alloc.free(new_path);
+
+    try testing.expect((try db.getNode(old_path, alloc)) != null);
+    try testing.expect((try db.getNode(new_path, alloc)) != null);
+    try testing.expect(!try testGetNodeJsonBool(&db, old_path, "present", alloc));
+    try testing.expect(try testGetNodeJsonBool(&db, new_path, "present", alloc));
+    try testing.expect(try testEdgeExists(&db, new_path, rename_commit, "CHANGED_IN", alloc));
+}
+
+test "repoScanCycle real git repo backfills and advances cursor incrementally" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here
+        \\int main(void) { return 0; }
+        \\
+    );
+    const commit_1 = try fixture.commit("REQ-001 initial implementation", "Alice", "alice@example.com", "2026-03-06T11:00:00Z");
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repoScanCycle(&ctx, alloc);
+
+    const git_key = try std.fmt.allocPrint(alloc, "git_last_hash_{s}", .{fixture.path});
+    defer alloc.free(git_key);
+    const stored_hash_1 = (try db.getConfig(git_key, alloc)).?;
+    defer alloc.free(stored_hash_1);
+    try testing.expectEqualStrings(commit_1, stored_hash_1);
+
+    std.Thread.sleep(1200 * std.time.ns_per_ms);
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here
+        \\int main(void) { return 2; }
+        \\
+    );
+    const commit_2 = try fixture.commit("REQ-001 follow-up implementation", "Bob", "bob@example.com", "2026-03-07T11:00:00Z");
+    try repoScanCycle(&ctx, alloc);
+
+    const stored_hash_2 = (try db.getConfig(git_key, alloc)).?;
+    defer alloc.free(stored_hash_2);
+    try testing.expectEqualStrings(commit_2, stored_hash_2);
+    try testing.expect((try db.getNode(commit_1, alloc)) != null);
+    try testing.expect((try db.getNode(commit_2, alloc)) != null);
 }

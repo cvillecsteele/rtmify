@@ -37,15 +37,16 @@
     header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
     header span { font-size: 12px; color: #aaa; }
 
-    nav {
+    /* Primary nav */
+    nav.nav-primary {
       background: #fff;
-      border-bottom: 1px solid #ddd;
+      border-bottom: 1px solid #eee;
       padding: 0 24px;
       display: flex;
-      gap: 0;
       align-items: center;
+      gap: 0;
     }
-    nav button {
+    nav.nav-primary button {
       background: none;
       border: none;
       border-bottom: 3px solid transparent;
@@ -55,21 +56,76 @@
       color: #555;
       font-weight: 500;
     }
-    nav button.active {
+    nav.nav-primary button.active {
       color: #1a1a2e;
       border-bottom-color: #1a1a2e;
       font-weight: 600;
     }
-    nav button:hover:not(.active) { color: #333; }
-    .nav-sep {
-      display: inline-block;
-      width: 1px;
-      height: 20px;
-      background: #ddd;
-      margin: 0 6px;
-      align-self: center;
-      flex-shrink: 0;
+    nav.nav-primary button:hover:not(.active) { color: #333; }
+
+    /* Sub-nav */
+    .nav-sub {
+      display: none;
+      background: #f8f8f8;
+      border-bottom: 1px solid #ddd;
+      padding: 0 24px;
     }
+    .nav-sub.active { display: flex; }
+    .nav-sub button {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 9px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #666;
+      font-weight: 500;
+    }
+    .nav-sub button.active {
+      color: #1a1a2e;
+      border-bottom-color: #1a1a2e;
+      font-weight: 600;
+    }
+    .nav-sub button:hover:not(.active) { color: #333; }
+
+    /* Settings gear (right-aligned) */
+    .nav-settings-wrap {
+      margin-left: auto;
+      position: relative;
+    }
+    .nav-settings-btn {
+      background: none;
+      border: none;
+      padding: 12px 10px;
+      cursor: pointer;
+      font-size: 16px;
+      color: #888;
+      line-height: 1;
+    }
+    .nav-settings-btn:hover { color: #1a1a2e; }
+    .settings-dropdown {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 4px);
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      min-width: 160px;
+      z-index: 100;
+    }
+    .settings-dropdown button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: none;
+      border: none;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #333;
+    }
+    .settings-dropdown button:hover { background: #f5f5f5; }
 
     main { padding: 24px; }
 
@@ -620,21 +676,40 @@
     onclick="event.stopPropagation(); showTab('review')"></span>
 </header>
 
-<nav>
-  <button class="active" onclick="showTab('requirements')">Requirements</button>
-  <button onclick="showTab('user-needs')">User Needs</button>
-  <button onclick="showTab('tests')">Tests</button>
-  <button onclick="showTab('rtm')">RTM</button>
-  <button onclick="showTab('risks')">Risks</button>
-  <span class="nav-sep"></span>
-  <button onclick="showTab('impact')">Impact</button>
-  <button id="nav-review" onclick="showTab('review')">Review <span id="suspect-nav-badge" class="badge" style="display:none"></span></button>
-  <button onclick="showTab('chain-gaps')">Chain Gaps</button>
-  <button onclick="showTab('code')">Code</button>
-  <button onclick="showTab('mcp-ai')">MCP &amp; AI</button>
-  <button onclick="showTab('info')">Info</button>
-  <button onclick="showTab('reports')">Reports</button>
+<!-- Primary nav -->
+<nav class="nav-primary">
+  <button class="active" data-group="data" onclick="showGroup('data')">Data</button>
+  <button data-group="analysis" onclick="showGroup('analysis')">
+    Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
+  </button>
+  <button data-group="code" onclick="showGroup('code')">Code</button>
+  <button data-group="reports" onclick="showGroup('reports')">Reports</button>
+  <div class="nav-settings-wrap">
+    <button class="nav-settings-btn" title="Settings" onclick="toggleSettings(event)">⚙</button>
+    <div class="settings-dropdown" id="settings-panel" style="display:none">
+      <button onclick="showSettingsTab('mcp-ai')">MCP &amp; AI</button>
+      <button onclick="showSettingsTab('info')">System Info</button>
+    </div>
+  </div>
 </nav>
+
+<!-- Data sub-nav -->
+<div class="nav-sub active" data-group="data">
+  <button class="active" data-tab="requirements" onclick="showTab('requirements')">Requirements</button>
+  <button data-tab="user-needs" onclick="showTab('user-needs')">User Needs</button>
+  <button data-tab="tests" onclick="showTab('tests')">Tests</button>
+  <button data-tab="risks" onclick="showTab('risks')">Risks</button>
+  <button data-tab="rtm" onclick="showTab('rtm')">RTM</button>
+</div>
+
+<!-- Analysis sub-nav -->
+<div class="nav-sub" data-group="analysis">
+  <button class="active" data-tab="chain-gaps" onclick="showTab('chain-gaps')">Chain Gaps</button>
+  <button data-tab="impact" onclick="showTab('impact')">Impact</button>
+  <button id="nav-review" data-tab="review" onclick="showTab('review')">
+    Suspects <span id="suspect-nav-badge" class="badge" style="display:none"></span>
+  </button>
+</div>
 
 <main>
 
@@ -1015,18 +1090,76 @@ audit_readiness_summary(profile="aerospace")</div>
 <script>
   // --- Tab switching ---
 
+  // Tab → group mapping
+  const TAB_GROUP = {
+    'requirements': 'data', 'user-needs': 'data', 'tests': 'data',
+    'risks': 'data', 'rtm': 'data',
+    'chain-gaps': 'analysis', 'impact': 'analysis', 'review': 'analysis',
+    'code': 'code', 'reports': 'reports',
+    'mcp-ai': 'settings', 'info': 'settings',
+  };
+
+  // Default sub-tab per group
+  const GROUP_DEFAULTS = {
+    data: 'requirements',
+    analysis: 'chain-gaps',
+    code: 'code',
+    reports: 'reports',
+  };
+
+  function showGroup(name) {
+    document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
+      b.classList.toggle('active', b.dataset.group === name));
+    document.querySelectorAll('.nav-sub').forEach(sn =>
+      sn.classList.toggle('active', sn.dataset.group === name));
+    if (GROUP_DEFAULTS[name]) showTab(GROUP_DEFAULTS[name]);
+  }
+
   function showTab(name) {
     document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
-    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
     document.getElementById('tab-' + name).classList.add('active');
-    if (event && event.currentTarget) event.currentTarget.classList.add('active');
-    else document.getElementById('nav-review').classList.add('active');
+
+    const group = TAB_GROUP[name];
+    document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
+      b.classList.toggle('active', b.dataset.group === group));
+
+    document.querySelectorAll('.nav-sub').forEach(sn => {
+      const isActive = sn.dataset.group === group;
+      sn.classList.toggle('active', isActive);
+      if (isActive) {
+        sn.querySelectorAll('button[data-tab]').forEach(b =>
+          b.classList.toggle('active', b.dataset.tab === name));
+      }
+    });
+
     if (name === 'review') loadSuspects();
     if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
     if (name === 'code') loadCodeTraceability();
     if (name === 'mcp-ai') loadMcpHelp();
     if (name === 'info') loadInfo();
   }
+
+  function showSettingsTab(name) {
+    document.getElementById('settings-panel').style.display = 'none';
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
+      b.classList.remove('active'));
+    document.querySelectorAll('.nav-sub').forEach(sn => sn.classList.remove('active'));
+    if (name === 'mcp-ai') loadMcpHelp();
+    if (name === 'info') loadInfo();
+  }
+
+  function toggleSettings(e) {
+    e.stopPropagation();
+    const panel = document.getElementById('settings-panel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  }
+
+  document.addEventListener('click', () => {
+    const p = document.getElementById('settings-panel');
+    if (p) p.style.display = 'none';
+  });
 
   // --- Data loading ---
 
@@ -1871,15 +2004,22 @@ audit_readiness_summary(profile="aerospace")</div>
   function _updateSuspectBadge(count) {
     const headerBadge = document.getElementById('suspect-header-badge');
     const navBadge = document.getElementById('suspect-nav-badge');
+    const groupBadge = document.getElementById('suspect-group-badge');
     if (count > 0) {
       const label = count + ' suspect';
       headerBadge.textContent = '⚠ ' + label;
       headerBadge.style.display = 'inline';
       navBadge.textContent = count;
       navBadge.style.display = 'inline';
+      if (groupBadge) {
+        groupBadge.textContent = count;
+        groupBadge.className = navBadge.className;
+        groupBadge.style.display = 'inline';
+      }
     } else {
       headerBadge.style.display = 'none';
       navBadge.style.display = 'none';
+      if (groupBadge) groupBadge.style.display = 'none';
     }
   }
 
@@ -2394,7 +2534,8 @@ audit_readiness_summary(profile="aerospace")</div>
     container.innerHTML = Array.from(groups.entries()).map(([repo, entries]) => {
       const rows = entries.map(({node, props}) => {
         const filePath = props.path || node.id;
-        return `<tr data-expanded="0" onclick="expandFile(this, ${JSON.stringify(filePath)})" style="cursor:pointer">
+        return `<tr data-expanded="0" data-file-path="${esc(filePath)}">
+          <td><button class="expand-btn" onclick="expandFile(this.closest('tr'), this.closest('tr').dataset.filePath)">▶</button></td>
           <td>${esc(node.type || '')}</td>
           <td style="font-family:var(--font-mono);font-size:12px">${esc(filePath)}</td>
           <td>${esc(String(props.annotation_count || 0))}</td>
@@ -2403,7 +2544,7 @@ audit_readiness_summary(profile="aerospace")</div>
       return `<div class="card" style="margin-bottom:12px">
         <div style="font-weight:600;font-size:13px;margin-bottom:8px;font-family:var(--font-mono)">${esc(repo)}</div>
         <table>
-          <thead><tr><th>Type</th><th>Path</th><th>Annotations</th></tr></thead>
+          <thead><tr><th></th><th>Type</th><th>Path</th><th>Annotations</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -2411,9 +2552,11 @@ audit_readiness_summary(profile="aerospace")</div>
   }
 
   async function expandFile(row, filePath) {
+    const btn = row.querySelector('.expand-btn');
     if (row.dataset.expanded === '1') {
       row.nextElementSibling?.remove();
       row.dataset.expanded = '0';
+      if (btn) btn.textContent = '▶';
       return;
     }
     let anns = [];
@@ -2433,9 +2576,10 @@ audit_readiness_summary(profile="aerospace")</div>
           </div>`;
         }).join('')
       : '<em style="color:var(--muted)">No annotations found.</em>';
-    detail.innerHTML = `<td colspan="3"><div class="file-annotations">${annHtml}</div></td>`;
+    detail.innerHTML = `<td colspan="4"><div class="file-annotations">${annHtml}</div></td>`;
     row.parentNode.insertBefore(detail, row.nextSibling);
     row.dataset.expanded = '1';
+    if (btn) btn.textContent = '▼';
   }
 
   async function loadCoverageGaps() {

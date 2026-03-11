@@ -6,6 +6,12 @@ zig-out/
 live/macos/.build/
 live/macos/RTMify Live/Resources/rtmify-live
 
+# Browser E2E artifacts
+live/tests/node_modules/
+live/tests/test-results/
+live/tests/playwright-report/
+live/tests/.cache/
+
 # Legacy artifacts under sys
 trace/.zig-cache/
 trace/zig-out/
