@@ -2168,11 +2168,13 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "Code Traceability") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "const { node, edges_out, edges_in } = data;") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "function humanEdgeLabel(") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(f.properties") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(a.properties") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(c.properties") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "r.test_suspect") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "r.req_suspect") == null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "${arrow} ${esc(e.label)}") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\" style=\"margin-top:8px;display:none\"") != null);
