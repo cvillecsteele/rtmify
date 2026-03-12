@@ -57,11 +57,36 @@ fn addSqlite(compile: *std.Build.Step.Compile, b: *std.Build) void {
     compile.linkLibC();
 }
 
-fn addLiveSecurityDeps(compile: *std.Build.Step.Compile) void {
-    if (compile.rootModuleTarget().os.tag == .macos) {
-        compile.linkFramework("Security");
-        compile.linkFramework("CoreFoundation");
+fn findExistingPath(paths: []const []const u8) ?[]const u8 {
+    for (paths) |path| {
+        std.fs.accessAbsolute(path, .{}) catch continue;
+        return path;
     }
+    return null;
+}
+
+fn macSdkRoot(b: *std.Build) ?[]const u8 {
+    if (b.graph.env_map.get("SDKROOT")) |sdkroot| return sdkroot;
+    return findExistingPath(&.{
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk",
+        "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+    });
+}
+
+fn addLiveSecurityDeps(compile: *std.Build.Step.Compile, b: *std.Build) void {
+    if (compile.rootModuleTarget().os.tag != .macos) return;
+
+    if (macSdkRoot(b)) |sdkroot| {
+        const framework_dir = b.pathJoin(&.{ sdkroot, "System/Library/Frameworks" });
+        const include_dir = b.pathJoin(&.{ sdkroot, "usr/include" });
+        const lib_dir = b.pathJoin(&.{ sdkroot, "usr/lib" });
+        compile.addSystemFrameworkPath(.{ .cwd_relative = framework_dir });
+        compile.addSystemIncludePath(.{ .cwd_relative = include_dir });
+        compile.addLibraryPath(.{ .cwd_relative = lib_dir });
+    }
+
+    compile.linkFramework("Security");
+    compile.linkFramework("CoreFoundation");
 }
 
 pub fn build(b: *std.Build) void {
@@ -109,7 +134,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addSqlite(live_exe, b);
-    addLiveSecurityDeps(live_exe);
+    addLiveSecurityDeps(live_exe, b);
 
     const cadinspect_exe = b.addExecutable(.{
         .name = "rtmify-cadinspect",
@@ -240,7 +265,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addSqlite(live_tests, b);
-    addLiveSecurityDeps(live_tests);
+    addLiveSecurityDeps(live_tests, b);
     const run_live_tests = b.addRunArtifact(live_tests);
 
     const cadcruncher_tests = b.addTest(.{
@@ -428,7 +453,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         addSqlite(live_release_exe, b);
-        addLiveSecurityDeps(live_release_exe);
+        addLiveSecurityDeps(live_release_exe, b);
 
         const install_live_release = b.addInstallArtifact(live_release_exe, .{
             .dest_dir = .{ .override = .{ .custom = "release" } },
