@@ -318,6 +318,7 @@ pub fn build(b: *std.Build) void {
     win_gui_live_exe.linkSystemLibrary("shell32");
     win_gui_live_exe.linkSystemLibrary("advapi32");
     win_gui_live_exe.linkSystemLibrary("ws2_32");
+    win_gui_live_exe.linkSystemLibrary("crypt32");
     win_gui_live_exe.addWin32ResourceFile(.{ .file = b.path("live/windows/res/rtmify_live.rc") });
 
     const install_win_gui_live = b.addInstallArtifact(win_gui_live_exe, .{});
@@ -357,6 +358,7 @@ pub fn build(b: *std.Build) void {
     check_live_windows_shell.linkSystemLibrary("shell32");
     check_live_windows_shell.linkSystemLibrary("advapi32");
     check_live_windows_shell.linkSystemLibrary("ws2_32");
+    check_live_windows_shell.linkSystemLibrary("crypt32");
     check_live_windows_shell.addWin32ResourceFile(.{ .file = b.path("live/windows/res/rtmify_live.rc") });
 
     const check_live_windows_step = b.step("check-live-windows", "Compile Windows live binaries without executing them");
