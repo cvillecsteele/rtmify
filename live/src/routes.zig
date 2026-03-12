@@ -26,6 +26,7 @@ const design_history_md = @import("design_history_md.zig");
 const design_history_pdf = @import("design_history_pdf.zig");
 
 pub const index_html = @embedFile("static/index.html");
+pub const app_js = @embedFile("static/app.js");
 
 pub const JsonRouteResponse = struct {
     status: std.http.Status = .ok,
@@ -2785,28 +2786,15 @@ test "handleTests uses canonical suspect field" {
     try testing.expect(row.get("test_suspect") == null);
 }
 
-test "index_html smoke covers onboarding profile and code traceability flows" {
-    try testing.expect(std.mem.indexOf(u8, index_html, "provision-preview") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/api/profile") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/api/provision") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/query/chain-gaps") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/api/repos") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/api/diagnostics") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/api/guide/errors") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/query/recent-commits") != null);
+test "index_html smoke covers onboarding and external js bootstrap" {
     try testing.expect(std.mem.indexOf(u8, index_html, ">Guide<") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Error Codes Explained") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "MCP &amp; AI") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, ">Info<") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "/api/info") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Tray App Version") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "rtmify-live Version") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Database Path") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Log File Path") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "claude mcp add --transport http rtmify-live") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "codex mcp add rtmify-live --url") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "\"httpUrl\":") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "window.location.origin + '/mcp'") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "What RTMify Exposes") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "requirement://REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "gap://1203/REQ-001") != null);
@@ -2815,23 +2803,44 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "Create Missing Tabs") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Code Traceability") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "const { node, edges_out, edges_in } = data;") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "function humanEdgeLabel(") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "openGuideForCode(") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "function explainGap(") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "toggleGapHelp(") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "What RTMify Checked") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(f.properties") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(a.properties") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(c.properties") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "r.test_suspect") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "r.req_suspect") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "${arrow} ${esc(e.label)}") == null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "sa-upload-zone") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "uploadSaFile") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "clearCredential") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "src=\"/app.js\"") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "function humanEdgeLabel(") == null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "openGuideForCode(") == null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "window.location.origin + '/mcp'") == null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") == null);
+}
+
+test "app_js smoke covers dashboard behavior and moved api bindings" {
+    try testing.expect(app_js.len > 0);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/profile") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/provision") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/query/chain-gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/repos") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/diagnostics") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/guide/errors") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/query/recent-commits") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/info") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "claude mcp add --transport http rtmify-live") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "codex mcp add rtmify-live --url") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "\"httpUrl\":") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "window.location.origin + '/mcp'") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "What RTMify Checked") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "const { node, edges_out, edges_in } = data;") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "function humanEdgeLabel(") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "openGuideForCode(") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "uploadSaFile") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "clearCredential") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "function explainGap(") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "toggleGapHelp(") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(f.properties") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(a.properties") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(c.properties") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "r.test_suspect") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "r.req_suspect") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "${arrow} ${esc(e.label)}") == null);
 }
 
 test "handleGuideErrors returns grouped guide catalog" {

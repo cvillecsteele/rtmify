@@ -101,6 +101,12 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         try sendHtml(req, routes.index_html);
         return;
     }
+    if (std.mem.eql(u8, path, "/app.js")) {
+        response_status = .ok;
+        response_bytes = routes.app_js.len;
+        try sendStaticText(req, routes.app_js, "application/javascript; charset=utf-8");
+        return;
+    }
 
     if (req.head.method != .OPTIONS and !isLicenseExempt(req.head.method, path)) {
         var license_status = try ctx.license_service.getStatus(alloc);
@@ -467,6 +473,7 @@ fn isLicenseExempt(method: std.http.Method, path: []const u8) bool {
     _ = method;
     return std.mem.eql(u8, path, "/") or
         std.mem.eql(u8, path, "/index.html") or
+        std.mem.eql(u8, path, "/app.js") or
         std.mem.eql(u8, path, "/api/status") or
         std.mem.eql(u8, path, "/api/info") or
         std.mem.eql(u8, path, "/api/license/status") or
@@ -502,8 +509,12 @@ fn sendJsonWithStatus(req: *std.http.Server.Request, body: []const u8, status: s
 }
 
 fn sendHtml(req: *std.http.Server.Request, body: []const u8) !void {
+    try sendStaticText(req, body, "text/html; charset=utf-8");
+}
+
+fn sendStaticText(req: *std.http.Server.Request, body: []const u8, content_type: []const u8) !void {
     const headers = cors_headers ++ [_]std.http.Header{
-        .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+        .{ .name = "Content-Type", .value = content_type },
         .{ .name = "Cache-Control", .value = "no-store, no-cache, must-revalidate, max-age=0" },
         .{ .name = "Pragma", .value = "no-cache" },
     };
@@ -666,4 +677,17 @@ test "successful connection response should start sync" {
 test "failed connection response should not start sync" {
     const resp = routes.JsonRouteResponse{ .status = .bad_request, .body = "{\"ok\":false}", .ok = false };
     try testing.expect(!resp.ok);
+}
+
+test "license exemptions include app js bootstrap asset" {
+    try testing.expect(isLicenseExempt(.GET, "/"));
+    try testing.expect(isLicenseExempt(.GET, "/index.html"));
+    try testing.expect(isLicenseExempt(.GET, "/app.js"));
+    try testing.expect(!isLicenseExempt(.GET, "/query/rtm"));
+}
+
+test "server source serves app js with javascript content type" {
+    const source = @embedFile("server.zig");
+    try testing.expect(std.mem.indexOf(u8, source, "\"/app.js\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "application/javascript; charset=utf-8") != null);
 }
