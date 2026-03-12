@@ -312,6 +312,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    win_gui_live_exe.linkLibrary(static_lib);
     win_gui_live_exe.subsystem = .Windows;
     win_gui_live_exe.linkSystemLibrary("user32");
     win_gui_live_exe.linkSystemLibrary("shell32");
@@ -350,6 +351,7 @@ pub fn build(b: *std.Build) void {
             .optimize = .ReleaseSafe,
         }),
     });
+    check_live_windows_shell.linkLibrary(static_lib);
     check_live_windows_shell.subsystem = .Windows;
     check_live_windows_shell.linkSystemLibrary("user32");
     check_live_windows_shell.linkSystemLibrary("shell32");

@@ -316,8 +316,9 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
             ui.setFont(hw);
             DragAcceptFiles(hw, 1);
             // Check license on startup
-            const lic_status = bridge.rtmify_check_license();
-            if (lic_status == bridge.RTMIFY_OK) {
+            var lic_status: bridge.RtmifyLicenseStatus = undefined;
+            const rc = bridge.rtmify_license_get_status(&lic_status);
+            if (rc == 0 and lic_status.permits_use != 0) {
                 g_state.tag = .drop_zone;
             } else {
                 g_state.tag = .license_gate;

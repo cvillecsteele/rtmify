@@ -1,37 +1,268 @@
-/// LemonSqueezy license verification for rtmify-trace.
-///
-/// Activation flow:
-///   rtmify-trace --activate <key>
-///     → validates key online with LemonSqueezy
-///     → writes ~/.rtmify/license.json on success
-///
-/// Startup check:
-///   check(gpa, .{}) → .ok / .not_activated / .expired
-///
-/// Deactivation:
-///   rtmify-trace --deactivate
-///     → calls LemonSqueezy deactivate endpoint
-///     → removes ~/.rtmify/license.json
-///
-/// For tests: pass Options{ .dir = "/tmp/some-temp-dir" } to redirect
-/// cache I/O away from the real ~/.rtmify/ directory.
-
 const std = @import("std");
-const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
+pub const license_types = @import("license_types.zig");
+pub const license_provider = @import("license_provider.zig");
+pub const license_provider_stub = @import("license_provider_stub.zig");
+pub const license_provider_lemonsqueezy = @import("license_provider_lemonsqueezy.zig");
+pub const license_store = @import("license_store.zig");
+pub const license_store_fs = @import("license_store_fs.zig");
+pub const license_store_memory = @import("license_store_memory.zig");
+pub const license_support = @import("license_support.zig");
 
-/// Cached activation record stored in ~/.rtmify/license.json.
+pub const LicenseState = license_types.LicenseState;
+pub const LicenseDetailCode = license_types.LicenseDetailCode;
+pub const LicenseStatus = license_types.LicenseStatus;
+pub const ActivationRequest = license_types.ActivationRequest;
+pub const OperationResult = license_types.OperationResult;
+pub const CacheRecord = license_types.CacheRecord;
+pub const Provider = license_provider.Provider;
+pub const Store = license_store.Store;
+pub const StubConfig = license_provider_stub.StubConfig;
+
+pub const DEV_KEY = "RTMIFY-DEV-0000-0000";
+pub const GRACE_PERIOD_SECS: i64 = 30 * 24 * 60 * 60;
+pub const REVALIDATION_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
+pub const REVALIDATION_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
+
+pub const ServiceDeps = struct {
+    provider: Provider,
+    store: Store,
+    clock: license_support.Clock,
+    fingerprint_source: license_support.FingerprintSource,
+};
+
+pub const DefaultOptions = struct {
+    dir: ?[]const u8 = null,
+    now: ?i64 = null,
+    clock: ?license_support.Clock = null,
+    fingerprint_source: ?license_support.FingerprintSource = null,
+    http_client: ?license_support.HttpClient = null,
+};
+
+pub const Service = struct {
+    deps: ServiceDeps,
+    owns_provider: bool = false,
+    owns_store: bool = false,
+    owned_clock_state: ?*license_support.FixedClockState = null,
+
+    pub fn deinit(self: *Service, alloc: Allocator) void {
+        if (self.owns_provider) self.deps.provider.deinit(alloc);
+        if (self.owns_store) self.deps.store.deinit(alloc);
+        if (self.owned_clock_state) |state| alloc.destroy(state);
+        self.* = undefined;
+    }
+
+    pub fn getStatus(self: *Service, alloc: Allocator) !LicenseStatus {
+        return self.getStatusImpl(alloc, false);
+    }
+
+    pub fn activate(self: *Service, alloc: Allocator, req: ActivationRequest) !OperationResult {
+        const now = self.deps.clock.now();
+        const fingerprint = try self.deps.fingerprint_source.currentFingerprint(alloc);
+        defer alloc.free(fingerprint);
+
+        if (std.mem.eql(u8, req.license_key, DEV_KEY)) {
+            const record = try buildDevRecord(alloc, self.deps.provider.provider_id, req.license_key, fingerprint, now);
+            defer {
+                var owned = record;
+                owned.deinit(alloc);
+            }
+            try self.deps.store.write(alloc, record);
+            const status = try self.getStatusImpl(alloc, false);
+            return .{ .status = status };
+        }
+
+        var outcome = self.deps.provider.activate(alloc, req.license_key, fingerprint);
+        defer outcome.deinit(alloc);
+        switch (outcome) {
+            .failure => |err| {
+                setLastProviderError(err.message);
+                return .{ .status = try statusForFailure(alloc, self.deps.provider.provider_id, err.code, err.message) };
+            },
+            .success => |entitlement| {
+                if (!entitlement.active or entitlement.invalid_key) {
+                    return .{ .status = try statusForFailure(alloc, self.deps.provider.provider_id, .invalid_key, "invalid key") };
+                }
+                if (entitlement.revoked) {
+                    return .{ .status = try statusForFailure(alloc, self.deps.provider.provider_id, .revoked, "revoked") };
+                }
+                const record = CacheRecord{
+                    .schema_version = 2,
+                    .provider_id = try alloc.dupe(u8, self.deps.provider.provider_id),
+                    .license_key = try alloc.dupe(u8, req.license_key),
+                    .fingerprint = try alloc.dupe(u8, fingerprint),
+                    .activated_at = now,
+                    .expires_at = entitlement.expires_at,
+                    .last_validated_at = now,
+                    .provider_instance_id = if (entitlement.provider_instance_id) |value| try alloc.dupe(u8, value) else null,
+                    .provider_payload_json = try alloc.dupe(u8, entitlement.provider_payload_json),
+                };
+                defer {
+                    var owned = record;
+                    owned.deinit(alloc);
+                }
+                try self.deps.store.write(alloc, record);
+                const status = try self.getStatusImpl(alloc, false);
+                return .{ .status = status };
+            },
+        }
+    }
+
+    pub fn deactivate(self: *Service, alloc: Allocator) !OperationResult {
+        var record = self.deps.store.read(alloc) catch |err| switch (err) {
+            error.InvalidCache => return .{ .status = try makeStatus(alloc, .cache_corrupt, false, "unknown", null, null, null, null, .cache_corrupt, "cache corrupt") },
+            else => return err,
+        };
+        defer if (record) |*value| value.deinit(alloc);
+
+        if (record == null) {
+            return .{ .status = try makeStatus(alloc, .not_activated, false, self.deps.provider.provider_id, null, null, null, null, .not_activated, "license not activated") };
+        }
+
+        if (!std.mem.eql(u8, record.?.license_key, DEV_KEY)) {
+            const fingerprint = try self.deps.fingerprint_source.currentFingerprint(alloc);
+            defer alloc.free(fingerprint);
+            var outcome = self.deps.provider.deactivate(alloc, &record.?, fingerprint);
+            defer outcome.deinit(alloc);
+            switch (outcome) {
+                .success => {},
+                .failure => |err| setLastProviderError(err.message),
+            }
+        }
+
+        try self.deps.store.clear(alloc);
+        return .{ .status = try makeStatus(alloc, .not_activated, false, record.?.provider_id, null, null, null, null, .not_activated, "license not activated") };
+    }
+
+    pub fn refresh(self: *Service, alloc: Allocator) !OperationResult {
+        return .{ .status = try self.getStatusImpl(alloc, true) };
+    }
+
+    fn getStatusImpl(self: *Service, alloc: Allocator, force_refresh: bool) !LicenseStatus {
+        var record = self.deps.store.read(alloc) catch |err| switch (err) {
+            error.InvalidCache => return makeStatus(alloc, .cache_corrupt, false, self.deps.provider.provider_id, null, null, null, null, .cache_corrupt, "cache corrupt"),
+            else => return err,
+        };
+        defer if (record) |*value| value.deinit(alloc);
+
+        if (record == null) {
+            return makeStatus(alloc, .not_activated, false, self.deps.provider.provider_id, null, null, null, null, .not_activated, "license not activated");
+        }
+
+        const now = self.deps.clock.now();
+
+        if (std.mem.eql(u8, record.?.license_key, DEV_KEY)) {
+            return makeStatus(alloc, .valid, true, record.?.provider_id, record.?.activated_at, null, record.?.last_validated_at, null, .none, null);
+        }
+
+        const fingerprint = try self.deps.fingerprint_source.currentFingerprint(alloc);
+        defer alloc.free(fingerprint);
+        if (!std.mem.eql(u8, fingerprint, record.?.fingerprint)) {
+            return makeStatus(alloc, .fingerprint_mismatch, false, record.?.provider_id, record.?.activated_at, record.?.expires_at, record.?.last_validated_at, null, .fingerprint_mismatch, "license is not valid on this machine");
+        }
+
+        if (record.?.expires_at) |expires_at| {
+            if (now > expires_at + GRACE_PERIOD_SECS) {
+                return makeStatus(alloc, .expired, false, record.?.provider_id, record.?.activated_at, record.?.expires_at, record.?.last_validated_at, null, .expired, "license expired");
+            }
+        }
+
+        const needs_revalidation = force_refresh or
+            record.?.last_validated_at == null or
+            (now - record.?.last_validated_at.?) > REVALIDATION_INTERVAL_SECS;
+        if (!needs_revalidation) {
+            return makeStatus(alloc, .valid, true, record.?.provider_id, record.?.activated_at, record.?.expires_at, record.?.last_validated_at, null, .none, null);
+        }
+
+        var outcome = self.deps.provider.validate(alloc, &record.?, fingerprint);
+        defer outcome.deinit(alloc);
+        switch (outcome) {
+            .success => |entitlement| {
+                if (!entitlement.active or entitlement.invalid_key) {
+                    return statusForFailure(alloc, record.?.provider_id, .invalid_key, "invalid key");
+                }
+                if (entitlement.revoked) {
+                    return statusForFailure(alloc, record.?.provider_id, .revoked, "revoked");
+                }
+                record.?.expires_at = entitlement.expires_at;
+                record.?.last_validated_at = now;
+                if (record.?.provider_instance_id) |value| alloc.free(value);
+                record.?.provider_instance_id = if (entitlement.provider_instance_id) |value| try alloc.dupe(u8, value) else null;
+                alloc.free(record.?.provider_payload_json);
+                record.?.provider_payload_json = try alloc.dupe(u8, entitlement.provider_payload_json);
+                try self.deps.store.write(alloc, record.?);
+                if (record.?.expires_at) |expires_at| {
+                    if (now > expires_at + GRACE_PERIOD_SECS) {
+                        return makeStatus(alloc, .expired, false, record.?.provider_id, record.?.activated_at, record.?.expires_at, record.?.last_validated_at, null, .expired, "license expired");
+                    }
+                }
+                return makeStatus(alloc, .valid, true, record.?.provider_id, record.?.activated_at, record.?.expires_at, record.?.last_validated_at, null, .none, null);
+            },
+            .failure => |err| {
+                setLastProviderError(err.message);
+                if (isGraceEligible(err.code)) {
+                    const grace_deadline = (record.?.last_validated_at orelse record.?.activated_at) + REVALIDATION_GRACE_SECS;
+                    if (now <= grace_deadline) {
+                        return makeStatus(alloc, .valid_offline_grace, true, record.?.provider_id, record.?.activated_at, record.?.expires_at, record.?.last_validated_at, grace_deadline, err.code, err.message);
+                    }
+                }
+                return statusForFailure(alloc, record.?.provider_id, err.code, err.message);
+            },
+        }
+    }
+};
+
+pub fn init(deps: ServiceDeps) Service {
+    return .{ .deps = deps };
+}
+
+pub fn initDefaultLemonSqueezy(alloc: Allocator, opts: DefaultOptions) !Service {
+    const provider = try license_provider_lemonsqueezy.create(alloc, .{
+        .http_client = opts.http_client orelse license_support.stdHttpClient(),
+    });
+    const store = try license_store_fs.create(alloc, .{ .dir = opts.dir });
+    var service = Service{
+        .deps = .{
+            .provider = provider,
+            .store = store,
+            .clock = undefined,
+            .fingerprint_source = opts.fingerprint_source orelse license_support.machineFingerprintSource(),
+        },
+        .owns_provider = true,
+        .owns_store = true,
+    };
+    if (opts.clock) |clock| {
+        service.deps.clock = clock;
+    } else if (opts.now) |value| {
+        const state = try alloc.create(license_support.FixedClockState);
+        state.* = .{ .now_value = value };
+        service.deps.clock = license_support.fixedClock(state);
+        service.owned_clock_state = state;
+    } else {
+        service.deps.clock = license_support.systemClock();
+    }
+    return service;
+}
+
+pub fn initDefaultStub(alloc: Allocator, cfg: StubConfig) !Service {
+    return .{
+        .deps = .{
+            .provider = try license_provider_stub.create(alloc, cfg),
+            .store = try license_store_memory.create(alloc),
+            .clock = license_support.systemClock(),
+            .fingerprint_source = license_support.machineFingerprintSource(),
+        },
+        .owns_provider = true,
+        .owns_store = true,
+    };
+}
+
 pub const LicenseRecord = struct {
     license_key: []const u8,
     activated_at: i64,
     fingerprint: []const u8,
-    /// Null means perpetual (never expires). Unix timestamp otherwise.
     expires_at: ?i64 = null,
-    /// Timestamp of the last successful online re-validation. Null = never validated.
     last_validated_at: ?i64 = null,
 };
 
@@ -42,188 +273,72 @@ pub const CheckResult = enum {
     fingerprint_mismatch,
 };
 
-/// Controls where the license cache is stored.
-/// Leave `dir` null to use `~/.rtmify/` (production).
-/// Set `dir` to a temp path in tests.
-/// Set `now` to override the current timestamp in tests.
 pub const Options = struct {
     dir: ?[]const u8 = null,
     now: ?i64 = null,
 };
 
-/// Development bypass key — skips all LemonSqueezy network calls.
-/// Activates instantly on any machine without a real license.
-/// For local development and testing only; never distribute as a valid key.
-pub const DEV_KEY = "RTMIFY-DEV-0000-0000";
+threadlocal var last_provider_error_buf: [512]u8 = .{0} ** 512;
 
-/// 30-day grace period after subscription expiration.
-pub const GRACE_PERIOD_SECS: i64 = 30 * 24 * 60 * 60;
-
-/// Re-validate with LemonSqueezy every 7 days.
-pub const REVALIDATION_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
-
-/// Allow up to 30 days offline before revoking if re-validation cannot reach LS.
-pub const REVALIDATION_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
-
-// ---------------------------------------------------------------------------
-// Thread-local LemonSqueezy error message (set before returning any error)
-// ---------------------------------------------------------------------------
-
-threadlocal var ls_error_buf: [256]u8 = .{0} ** 256;
-
-/// Returns the human-readable error string from the last failed LS API call.
-/// Empty string if no error has been recorded.
 pub fn lastLsError() []const u8 {
-    return std.mem.sliceTo(&ls_error_buf, 0);
+    return std.mem.sliceTo(&last_provider_error_buf, 0);
 }
 
-fn setLsError(msg: []const u8) void {
-    const n = @min(msg.len, ls_error_buf.len - 1);
-    @memcpy(ls_error_buf[0..n], msg[0..n]);
-    ls_error_buf[n] = 0;
+fn setLastProviderError(msg: []const u8) void {
+    const len = @min(msg.len, last_provider_error_buf.len - 1);
+    @memcpy(last_provider_error_buf[0..len], msg[0..len]);
+    last_provider_error_buf[len] = 0;
 }
 
-// ---------------------------------------------------------------------------
-// LemonSqueezy API URLs
-// ---------------------------------------------------------------------------
-
-/// LemonSqueezy API base URL.
-const LS_ACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/activate";
-const LS_DEACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/deactivate";
-const LS_VALIDATE_URL = "https://api.lemonsqueezy.com/v1/licenses/validate";
-
-// ---------------------------------------------------------------------------
-// Machine fingerprint
-// ---------------------------------------------------------------------------
-
-/// Returns a 64-character hex string (SHA-256 of hostname + OS).
-/// `buf` must be exactly 64 bytes.
 pub fn machineFingerprint(buf: *[64]u8) ![]u8 {
-    var sha = std.crypto.hash.sha2.Sha256.init(.{});
-
-    if (builtin.os.tag == .windows) {
-        // GetComputerNameA: max 256 bytes (MAX_COMPUTERNAME_LENGTH + 1 for DNS names)
-        var hostname_buf: [256]u8 = undefined;
-        var size: std.os.windows.DWORD = @intCast(hostname_buf.len);
-        const GetComputerNameA = struct {
-            extern "kernel32" fn GetComputerNameA(
-                lpBuffer: [*]u8,
-                nSize: *std.os.windows.DWORD,
-            ) callconv(.winapi) std.os.windows.BOOL;
-        }.GetComputerNameA;
-        if (GetComputerNameA(&hostname_buf, &size) != 0) {
-            sha.update(hostname_buf[0..size]);
-        }
-    } else {
-        var hostname_buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
-        const hostname = try std.posix.gethostname(&hostname_buf);
-        sha.update(hostname);
-    }
-
-    sha.update("\x00");
-    sha.update(@tagName(builtin.os.tag));
-
-    var digest: [32]u8 = undefined;
-    sha.final(&digest);
-
-    const hex = std.fmt.bytesToHex(&digest, .lower);
-    @memcpy(buf, &hex);
-    return buf[0..];
+    return license_support.machineFingerprint(buf);
 }
 
-// ---------------------------------------------------------------------------
-// Cache path helpers
-// ---------------------------------------------------------------------------
-
-/// Returns an allocated path for the license.json file.
-/// Caller owns the returned slice.
-fn cacheFilePath(gpa: Allocator, opts: Options) ![]u8 {
-    const dir = if (opts.dir) |d| d else blk: {
-        const home_var = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
-        const home = try std.process.getEnvVarOwned(gpa, home_var);
-        defer gpa.free(home);
-        const rtmify_dir = try std.fs.path.join(gpa, &.{ home, ".rtmify" });
-        break :blk rtmify_dir;
-    };
-
-    if (opts.dir == null) {
-        // dir was heap-allocated inside the blk; owned by caller now
-        defer gpa.free(dir);
-        return std.fs.path.join(gpa, &.{ dir, "license.json" });
-    }
-    return std.fs.path.join(gpa, &.{ dir, "license.json" });
-}
-
-/// Ensures the parent directory of `file_path` exists.
-fn ensureParentDir(gpa: Allocator, file_path: []const u8) !void {
-    const dir = std.fs.path.dirname(file_path) orelse return;
-    // makePath is idempotent; it succeeds even if the directory already exists.
-    try std.fs.cwd().makePath(dir);
-    _ = gpa;
-}
-
-// ---------------------------------------------------------------------------
-// Cache read / write
-// ---------------------------------------------------------------------------
-
-/// Read and parse the license cache. Returns null if the file doesn't exist.
-/// On success, all string fields in the returned record are owned by `gpa`;
-/// caller must free them (license_key, fingerprint).
 pub fn readCache(gpa: Allocator, opts: Options) !?LicenseRecord {
-    const path = try cacheFilePath(gpa, opts);
-    defer gpa.free(path);
-
-    const data = std.fs.cwd().readFileAlloc(gpa, path, 8192) catch |err| switch (err) {
-        error.FileNotFound => return null,
+    var store = try license_store_fs.create(gpa, .{ .dir = opts.dir });
+    defer store.deinit(gpa);
+    var record = store.read(gpa) catch |err| switch (err) {
+        error.InvalidCache => return error.InvalidCache,
         else => return err,
     };
-    defer gpa.free(data);
-
-    var parsed = try std.json.parseFromSlice(LicenseRecord, gpa, data, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    // Dupe strings before freeing `data` and `parsed`.
-    return LicenseRecord{
-        .license_key = try gpa.dupe(u8, parsed.value.license_key),
-        .activated_at = parsed.value.activated_at,
-        .fingerprint = try gpa.dupe(u8, parsed.value.fingerprint),
-        .expires_at = parsed.value.expires_at,
-        .last_validated_at = parsed.value.last_validated_at,
+    defer if (record) |*value| value.deinit(gpa);
+    if (record == null) return null;
+    return .{
+        .license_key = try gpa.dupe(u8, record.?.license_key),
+        .activated_at = record.?.activated_at,
+        .fingerprint = try gpa.dupe(u8, record.?.fingerprint),
+        .expires_at = record.?.expires_at,
+        .last_validated_at = record.?.last_validated_at,
     };
 }
 
-/// Serialize and write a LicenseRecord to the cache file.
 pub fn writeCache(gpa: Allocator, opts: Options, record: LicenseRecord) !void {
-    const path = try cacheFilePath(gpa, opts);
-    defer gpa.free(path);
-
-    try ensureParentDir(gpa, path);
-
-    const json_bytes = try std.json.Stringify.valueAlloc(gpa, record, .{});
-    defer gpa.free(json_bytes);
-
-    try std.fs.cwd().writeFile(.{ .sub_path = path, .data = json_bytes });
-}
-
-/// Remove the license cache file (used by --deactivate).
-pub fn removeCache(gpa: Allocator, opts: Options) !void {
-    const path = try cacheFilePath(gpa, opts);
-    defer gpa.free(path);
-
-    std.fs.cwd().deleteFile(path) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
+    var store = try license_store_fs.create(gpa, .{ .dir = opts.dir });
+    defer store.deinit(gpa);
+    const cache_record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try gpa.dupe(u8, "lemonsqueezy"),
+        .license_key = try gpa.dupe(u8, record.license_key),
+        .fingerprint = try gpa.dupe(u8, record.fingerprint),
+        .activated_at = record.activated_at,
+        .expires_at = record.expires_at,
+        .last_validated_at = record.last_validated_at,
+        .provider_instance_id = null,
+        .provider_payload_json = try gpa.dupe(u8, "{}"),
     };
+    defer {
+        var owned = cache_record;
+        owned.deinit(gpa);
+    }
+    try store.write(gpa, cache_record);
 }
 
-// ---------------------------------------------------------------------------
-// License validity check (pure, no I/O)
-// ---------------------------------------------------------------------------
+pub fn removeCache(gpa: Allocator, opts: Options) !void {
+    var store = try license_store_fs.create(gpa, .{ .dir = opts.dir });
+    defer store.deinit(gpa);
+    try store.clear(gpa);
+}
 
-/// Determine whether a record is currently valid given `now` (unix timestamp).
-/// Does not perform any I/O.
 pub fn checkRecord(record: LicenseRecord, now: i64) CheckResult {
     if (record.expires_at) |exp| {
         if (now > exp + GRACE_PERIOD_SECS) return .expired;
@@ -231,447 +346,410 @@ pub fn checkRecord(record: LicenseRecord, now: i64) CheckResult {
     return .ok;
 }
 
-// ---------------------------------------------------------------------------
-// High-level operations
-// ---------------------------------------------------------------------------
-
-/// Check license status from the cached activation record.
-/// Returns .not_activated if no cache file exists.
-/// Returns .fingerprint_mismatch if the cached fingerprint differs from this machine.
-/// Performs online re-validation with LemonSqueezy every 7 days; allows 30-day offline grace.
-/// Caller does not need to free anything.
 pub fn check(gpa: Allocator, opts: Options) !CheckResult {
-    var record = try readCache(gpa, opts) orelse return .not_activated;
-    defer gpa.free(record.license_key);
-    defer gpa.free(record.fingerprint);
-
-    // Dev key: skip fingerprint and revalidation — always ok.
-    if (std.mem.eql(u8, record.license_key, DEV_KEY)) return .ok;
-
-    // Layer 1: verify fingerprint matches this machine
-    var fp_buf: [64]u8 = undefined;
-    const current_fp = try machineFingerprint(&fp_buf);
-    if (!std.mem.eql(u8, current_fp, record.fingerprint)) return .fingerprint_mismatch;
-
-    // Layer 2: expiry check
-    const now = opts.now orelse std.time.timestamp();
-    const expiry = checkRecord(record, now);
-    if (expiry != .ok) return expiry;
-
-    // Layer 3: periodic online re-validation
-    const needs_revalidation = record.last_validated_at == null or
-        (now - record.last_validated_at.?) > REVALIDATION_INTERVAL_SECS;
-
-    if (needs_revalidation) {
-        callLemonSqueezyValidate(gpa, record.license_key, current_fp) catch |err| {
-            // Network/server failure: allow if within offline grace period
-            const last = record.last_validated_at orelse 0;
-            if (now - last > REVALIDATION_GRACE_SECS) {
-                std.log.warn("license re-validation failed and offline grace period exceeded: {s}", .{@errorName(err)});
-                return .not_activated;
-            }
-            return .ok;
-        };
-        // Successful re-validation: persist updated timestamp
-        record.last_validated_at = now;
-        writeCache(gpa, opts, record) catch |err| {
-            std.log.warn("failed to update license cache after re-validation: {s}", .{@errorName(err)});
-        };
-    }
-
-    return .ok;
-}
-
-/// Activate a license key by validating with LemonSqueezy and writing the cache.
-/// Requires network access.
-/// Exception: DEV_KEY is accepted locally without any network call.
-pub fn activate(gpa: Allocator, opts: Options, license_key: []const u8) !void {
-    var fp_buf: [64]u8 = undefined;
-    const fp = try machineFingerprint(&fp_buf);
-    const now = opts.now orelse std.time.timestamp();
-
-    if (!std.mem.eql(u8, license_key, DEV_KEY)) {
-        try callLemonSqueezyActivate(gpa, license_key, fp);
-    }
-
-    const record = LicenseRecord{
-        .license_key = license_key,
-        .activated_at = now,
-        .fingerprint = fp,
-        .expires_at = null,
-        // Use max timestamp so DEV_KEY never triggers online re-validation.
-        .last_validated_at = std.math.maxInt(i64),
-    };
-    try writeCache(gpa, opts, record);
-}
-
-/// Deactivate: inform LemonSqueezy and remove the local cache.
-/// Requires network access. Removes the cache even if the network call fails.
-pub fn deactivate(gpa: Allocator, opts: Options) !void {
-    const record = try readCache(gpa, opts) orelse return; // nothing to do
-    defer gpa.free(record.license_key);
-    defer gpa.free(record.fingerprint);
-
-    callLemonSqueezyDeactivate(gpa, record.license_key, record.fingerprint) catch |err| {
-        std.log.warn("deactivate network call failed: {s}", .{@errorName(err)});
-    };
-
-    try removeCache(gpa, opts);
-}
-
-// ---------------------------------------------------------------------------
-// LemonSqueezy HTTP helpers (require network)
-// ---------------------------------------------------------------------------
-
-/// Minimal JSON structure expected from LemonSqueezy activate/validate response.
-const LsResponse = struct {
-    activated: ?bool = null,
-    deactivated: ?bool = null,
-    @"error": ?[]const u8 = null,
-    license_key: ?struct {
-        status: []const u8,
-    } = null,
-};
-
-fn callLemonSqueezyActivate(gpa: Allocator, license_key: []const u8, fp: []const u8) !void {
-    const body = try std.fmt.allocPrint(gpa, "license_key={s}&instance_name={s}", .{ license_key, fp });
-    defer gpa.free(body);
-
-    const resp_bytes = try httpPost(gpa, LS_ACTIVATE_URL, body);
-    defer gpa.free(resp_bytes);
-
-    var parsed = try std.json.parseFromSlice(LsResponse, gpa, resp_bytes, .{
-        .ignore_unknown_fields = true,
+    var service = try initDefaultLemonSqueezy(gpa, .{
+        .dir = opts.dir,
+        .now = opts.now,
     });
-    defer parsed.deinit();
+    defer service.deinit(gpa);
+    var status = try service.getStatus(gpa);
+    defer status.deinit(gpa);
+    return switch (status.state) {
+        .valid, .valid_offline_grace => .ok,
+        .not_activated, .invalid_key, .revoked, .provider_unavailable, .cache_corrupt, .internal_error => .not_activated,
+        .expired => .expired,
+        .fingerprint_mismatch => .fingerprint_mismatch,
+    };
+}
 
-    if (parsed.value.activated == false or parsed.value.@"error" != null) {
-        setLsError(parsed.value.@"error" orelse "License activation failed (unknown error)");
+pub fn activate(gpa: Allocator, opts: Options, license_key: []const u8) !void {
+    var service = try initDefaultLemonSqueezy(gpa, .{
+        .dir = opts.dir,
+        .now = opts.now,
+    });
+    defer service.deinit(gpa);
+    var result = try service.activate(gpa, .{ .license_key = license_key });
+    defer result.deinit(gpa);
+    if (!result.status.permits_use) {
+        if (result.status.message) |msg| setLastProviderError(msg);
         return error.LicenseActivationFailed;
     }
 }
 
-fn callLemonSqueezyDeactivate(gpa: Allocator, license_key: []const u8, instance_name: []const u8) !void {
-    const body = try std.fmt.allocPrint(gpa, "license_key={s}&instance_name={s}", .{ license_key, instance_name });
-    defer gpa.free(body);
-
-    const resp_bytes = try httpPost(gpa, LS_DEACTIVATE_URL, body);
-    defer gpa.free(resp_bytes);
-
-    var parsed = try std.json.parseFromSlice(LsResponse, gpa, resp_bytes, .{
-        .ignore_unknown_fields = true,
+pub fn deactivate(gpa: Allocator, opts: Options) !void {
+    var service = try initDefaultLemonSqueezy(gpa, .{
+        .dir = opts.dir,
+        .now = opts.now,
     });
-    defer parsed.deinit();
-
-    if (parsed.value.deactivated == false or parsed.value.@"error" != null) {
-        std.log.warn("LemonSqueezy deactivation returned error: {s}", .{
-            parsed.value.@"error" orelse "unknown",
-        });
-    }
+    defer service.deinit(gpa);
+    var result = try service.deactivate(gpa);
+    defer result.deinit(gpa);
 }
 
-fn callLemonSqueezyValidate(gpa: Allocator, license_key: []const u8, fp: []const u8) !void {
-    const body = try std.fmt.allocPrint(gpa, "license_key={s}&instance_name={s}", .{ license_key, fp });
-    defer gpa.free(body);
-
-    const resp_bytes = try httpPost(gpa, LS_VALIDATE_URL, body);
-    defer gpa.free(resp_bytes);
-
-    const LsValidateResponse = struct {
-        valid: ?bool = null,
-        @"error": ?[]const u8 = null,
+fn buildDevRecord(alloc: Allocator, provider_id: []const u8, license_key: []const u8, fingerprint: []const u8, now: i64) !CacheRecord {
+    return .{
+        .schema_version = 2,
+        .provider_id = try alloc.dupe(u8, provider_id),
+        .license_key = try alloc.dupe(u8, license_key),
+        .fingerprint = try alloc.dupe(u8, fingerprint),
+        .activated_at = now,
+        .expires_at = null,
+        .last_validated_at = std.math.maxInt(i64),
+        .provider_instance_id = null,
+        .provider_payload_json = try alloc.dupe(u8, "{\"provider\":\"dev\"}"),
     };
-    var parsed = try std.json.parseFromSlice(LsValidateResponse, gpa, resp_bytes, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value.valid != true) {
-        setLsError(parsed.value.@"error" orelse "License validation failed (unknown error)");
-        return error.LicenseInvalid;
-    }
 }
 
-/// Send an HTTP POST with `application/x-www-form-urlencoded` body.
-/// Returns the response body as an owned slice. Caller must free.
-fn httpPost(gpa: Allocator, url: []const u8, body: []const u8) ![]u8 {
-    var client = std.http.Client{ .allocator = gpa };
-    defer client.deinit();
-
-    var response_buf = std.Io.Writer.Allocating.init(gpa);
-    defer response_buf.deinit();
-
-    const result = try client.fetch(.{
-        .location = .{ .url = url },
-        .method = .POST,
-        .payload = body,
-        .response_writer = &response_buf.writer,
-        .extra_headers = &.{
-            .{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" },
-            .{ .name = "Accept", .value = "application/json" },
-        },
-    });
-
-    if (result.status != .ok and result.status != .created) {
-        return error.LicenseServerError;
-    }
-
-    return response_buf.toOwnedSlice();
+fn isGraceEligible(code: LicenseDetailCode) bool {
+    return switch (code) {
+        .network_error, .server_error, .protocol_error => true,
+        else => false,
+    };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+fn statusForFailure(alloc: Allocator, provider_id: []const u8, code: LicenseDetailCode, message: []const u8) !LicenseStatus {
+    const state: LicenseState = switch (code) {
+        .invalid_key => .invalid_key,
+        .revoked => .revoked,
+        .cache_corrupt => .cache_corrupt,
+        .fingerprint_mismatch => .fingerprint_mismatch,
+        .expired => .expired,
+        .not_activated => .not_activated,
+        .network_error, .server_error => .provider_unavailable,
+        .protocol_error, .internal_error, .none => .internal_error,
+    };
+    return makeStatus(alloc, state, false, provider_id, null, null, null, null, code, message);
+}
+
+fn makeStatus(
+    alloc: Allocator,
+    state: LicenseState,
+    permits_use: bool,
+    provider_id: []const u8,
+    activated_at: ?i64,
+    expires_at: ?i64,
+    last_validated_at: ?i64,
+    offline_grace_deadline: ?i64,
+    detail_code: LicenseDetailCode,
+    message: ?[]const u8,
+) !LicenseStatus {
+    return .{
+        .state = state,
+        .permits_use = permits_use,
+        .provider_id = try alloc.dupe(u8, provider_id),
+        .activated_at = activated_at,
+        .expires_at = expires_at,
+        .last_validated_at = last_validated_at,
+        .offline_grace_deadline = offline_grace_deadline,
+        .detail_code = detail_code,
+        .message = if (message) |value| try alloc.dupe(u8, value) else null,
+    };
+}
 
 const testing = std.testing;
 
-test "machineFingerprint returns 64 hex chars" {
-    var buf: [64]u8 = undefined;
-    const fp = try machineFingerprint(&buf);
-    try testing.expectEqual(@as(usize, 64), fp.len);
-    for (fp) |c| {
-        try testing.expect(std.ascii.isHex(c));
+test "service getStatus returns not_activated when store is empty" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var provider = try license_provider_stub.create(testing.allocator, .{});
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = undefined,
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
+    var fixed_clock = license_support.FixedClockState{ .now_value = 100 };
+    service.deps.clock = license_support.fixedClock(&fixed_clock);
+
+    var status = try service.getStatus(testing.allocator);
+    defer status.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.not_activated, status.state);
+    try testing.expect(!status.permits_use);
+}
+
+test "service activation writes cache and returns valid" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var clock_state = license_support.FixedClockState{ .now_value = 100 };
+    var provider = try license_provider_stub.create(testing.allocator, .{});
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
+
+    var result = try service.activate(testing.allocator, .{ .license_key = "LIVE-1234" });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.valid, result.status.state);
+    try testing.expect(result.status.permits_use);
+}
+
+test "service activation with invalid key returns invalid_key" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var clock_state = license_support.FixedClockState{ .now_value = 100 };
+    var provider = try license_provider_stub.create(testing.allocator, .{ .activate_result = .invalid_key });
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
+
+    var result = try service.activate(testing.allocator, .{ .license_key = "LIVE-1234" });
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.invalid_key, result.status.state);
+    try testing.expectEqual(LicenseDetailCode.invalid_key, result.status.detail_code);
+}
+
+test "service fingerprint mismatch returns fingerprint_mismatch" {
+    var clock_state = license_support.FixedClockState{ .now_value = 100 };
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "real-fp" };
+    var provider = try license_provider_stub.create(testing.allocator, .{});
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
+
+    const record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try testing.allocator.dupe(u8, "stub"),
+        .license_key = try testing.allocator.dupe(u8, "LIVE-1234"),
+        .fingerprint = try testing.allocator.dupe(u8, "other-fp"),
+        .activated_at = 90,
+        .expires_at = null,
+        .last_validated_at = 95,
+        .provider_instance_id = null,
+        .provider_payload_json = try testing.allocator.dupe(u8, "{}"),
+    };
+    defer {
+        var owned = record;
+        owned.deinit(testing.allocator);
     }
+    try store.write(testing.allocator, record);
+
+    var status = try service.getStatus(testing.allocator);
+    defer status.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.fingerprint_mismatch, status.state);
 }
 
-test "machineFingerprint is stable" {
-    var buf1: [64]u8 = undefined;
-    var buf2: [64]u8 = undefined;
-    const fp1 = try machineFingerprint(&buf1);
-    const fp2 = try machineFingerprint(&buf2);
-    try testing.expectEqualStrings(fp1, fp2);
-}
+test "service expired entitlement returns expired" {
+    var clock_state = license_support.FixedClockState{ .now_value = GRACE_PERIOD_SECS + 200 };
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var provider = try license_provider_stub.create(testing.allocator, .{});
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
 
-test "LicenseRecord json round-trip" {
-    const gpa = testing.allocator;
-
-    const original = LicenseRecord{
-        .license_key = "ABCD-1234-EFGH-5678",
-        .activated_at = 1700000000,
-        .fingerprint = "deadbeef01234567deadbeef01234567deadbeef01234567deadbeef01234567",
-        .expires_at = null,
-    };
-
-    const json_bytes = try std.json.Stringify.valueAlloc(gpa, original, .{});
-    defer gpa.free(json_bytes);
-
-    var parsed = try std.json.parseFromSlice(LicenseRecord, gpa, json_bytes, .{});
-    defer parsed.deinit();
-
-    try testing.expectEqualStrings(original.license_key, parsed.value.license_key);
-    try testing.expectEqual(original.activated_at, parsed.value.activated_at);
-    try testing.expectEqualStrings(original.fingerprint, parsed.value.fingerprint);
-    try testing.expectEqual(original.expires_at, parsed.value.expires_at);
-}
-
-test "LicenseRecord json round-trip with expires_at" {
-    const gpa = testing.allocator;
-
-    const original = LicenseRecord{
-        .license_key = "TEST-0000-0000-0001",
-        .activated_at = 1700000000,
-        .fingerprint = "aaaa",
-        .expires_at = 1800000000,
-    };
-
-    const json_bytes = try std.json.Stringify.valueAlloc(gpa, original, .{});
-    defer gpa.free(json_bytes);
-
-    var parsed = try std.json.parseFromSlice(LicenseRecord, gpa, json_bytes, .{});
-    defer parsed.deinit();
-
-    try testing.expectEqual(@as(?i64, 1800000000), parsed.value.expires_at);
-}
-
-test "checkRecord perpetual license never expires" {
-    const rec = LicenseRecord{
-        .license_key = "K",
+    const record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try testing.allocator.dupe(u8, "stub"),
+        .license_key = try testing.allocator.dupe(u8, "LIVE-1234"),
+        .fingerprint = try testing.allocator.dupe(u8, "fp-1"),
         .activated_at = 0,
-        .fingerprint = "f",
-        .expires_at = null,
+        .expires_at = 0,
+        .last_validated_at = 10,
+        .provider_instance_id = null,
+        .provider_payload_json = try testing.allocator.dupe(u8, "{}"),
     };
-    // Any timestamp → ok
-    try testing.expectEqual(CheckResult.ok, checkRecord(rec, 0));
-    try testing.expectEqual(CheckResult.ok, checkRecord(rec, 9_999_999_999));
+    defer {
+        var owned = record;
+        owned.deinit(testing.allocator);
+    }
+    try store.write(testing.allocator, record);
+
+    var status = try service.getStatus(testing.allocator);
+    defer status.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.expired, status.state);
 }
 
-test "checkRecord subscription within grace period" {
-    const now: i64 = 1_700_000_000;
-    const twenty_days: i64 = 20 * 24 * 60 * 60;
-    const rec = LicenseRecord{
-        .license_key = "K",
+test "service provider unavailable within grace returns valid_offline_grace" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var clock_state = license_support.FixedClockState{ .now_value = REVALIDATION_INTERVAL_SECS + 100 };
+    var provider = try license_provider_stub.create(testing.allocator, .{ .validate_result = .provider_unavailable });
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
+
+    const record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try testing.allocator.dupe(u8, "stub"),
+        .license_key = try testing.allocator.dupe(u8, "LIVE-1234"),
+        .fingerprint = try testing.allocator.dupe(u8, "fp-1"),
         .activated_at = 0,
-        .fingerprint = "f",
-        .expires_at = now - twenty_days,
+        .expires_at = null,
+        .last_validated_at = 1,
+        .provider_instance_id = null,
+        .provider_payload_json = try testing.allocator.dupe(u8, "{}"),
     };
-    try testing.expectEqual(CheckResult.ok, checkRecord(rec, now));
+    defer {
+        var owned = record;
+        owned.deinit(testing.allocator);
+    }
+    try store.write(testing.allocator, record);
+
+    var status = try service.getStatus(testing.allocator);
+    defer status.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.valid_offline_grace, status.state);
+    try testing.expect(status.permits_use);
 }
 
-test "checkRecord subscription expired beyond grace" {
-    const now: i64 = 1_700_000_000;
-    const forty_days: i64 = 40 * 24 * 60 * 60;
-    const rec = LicenseRecord{
-        .license_key = "K",
+test "service provider unavailable beyond grace returns provider_unavailable" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var clock_state = license_support.FixedClockState{ .now_value = REVALIDATION_GRACE_SECS + REVALIDATION_INTERVAL_SECS + 100 };
+    var provider = try license_provider_stub.create(testing.allocator, .{ .validate_result = .provider_unavailable });
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
+
+    const record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try testing.allocator.dupe(u8, "stub"),
+        .license_key = try testing.allocator.dupe(u8, "LIVE-1234"),
+        .fingerprint = try testing.allocator.dupe(u8, "fp-1"),
         .activated_at = 0,
-        .fingerprint = "f",
-        .expires_at = now - forty_days,
-    };
-    try testing.expectEqual(CheckResult.expired, checkRecord(rec, now));
-}
-
-test "check returns not_activated when no cache file" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-
-    const result = try check(testing.allocator, .{ .dir = tmp_path });
-    try testing.expectEqual(CheckResult.not_activated, result);
-}
-
-test "writeCache and check ok" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-
-    var fp_buf: [64]u8 = undefined;
-    const real_fp = try machineFingerprint(&fp_buf);
-
-    const fake_now: i64 = 1_700_000_000;
-    const opts = Options{ .dir = tmp_path, .now = fake_now };
-
-    const record = LicenseRecord{
-        .license_key = "LIVE-0000-0000-ABCD",
-        .activated_at = fake_now,
-        .fingerprint = real_fp,
         .expires_at = null,
-        .last_validated_at = fake_now, // just validated; skip network re-validation
+        .last_validated_at = 1,
+        .provider_instance_id = null,
+        .provider_payload_json = try testing.allocator.dupe(u8, "{}"),
     };
-    try writeCache(testing.allocator, opts, record);
+    defer {
+        var owned = record;
+        owned.deinit(testing.allocator);
+    }
+    try store.write(testing.allocator, record);
 
-    const result = try check(testing.allocator, opts);
-    try testing.expectEqual(CheckResult.ok, result);
+    var status = try service.getStatus(testing.allocator);
+    defer status.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.provider_unavailable, status.state);
+    try testing.expect(!status.permits_use);
 }
 
-test "writeCache then removeCache then not_activated" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+test "service refresh updates last_validated_at" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var clock_state = license_support.FixedClockState{ .now_value = 500 };
+    var provider = try license_provider_stub.create(testing.allocator, .{});
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-
-    var fp_buf: [64]u8 = undefined;
-    const real_fp = try machineFingerprint(&fp_buf);
-
-    const fake_now: i64 = 1_700_000_000;
-    const opts = Options{ .dir = tmp_path, .now = fake_now };
-
-    const record = LicenseRecord{
-        .license_key = "LIVE-1111-1111-1111",
-        .activated_at = fake_now,
-        .fingerprint = real_fp,
+    const record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try testing.allocator.dupe(u8, "stub"),
+        .license_key = try testing.allocator.dupe(u8, "LIVE-1234"),
+        .fingerprint = try testing.allocator.dupe(u8, "fp-1"),
+        .activated_at = 0,
         .expires_at = null,
-        .last_validated_at = fake_now,
+        .last_validated_at = 10,
+        .provider_instance_id = null,
+        .provider_payload_json = try testing.allocator.dupe(u8, "{}"),
     };
-    try writeCache(testing.allocator, opts, record);
-    try removeCache(testing.allocator, opts);
+    defer {
+        var owned = record;
+        owned.deinit(testing.allocator);
+    }
+    try store.write(testing.allocator, record);
 
-    const result = try check(testing.allocator, opts);
-    try testing.expectEqual(CheckResult.not_activated, result);
+    var result = try service.refresh(testing.allocator);
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(@as(?i64, 500), result.status.last_validated_at);
 }
 
-test "check expired subscription" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
+test "service deactivate clears cache and returns not_activated" {
+    var fp_state = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    var clock_state = license_support.FixedClockState{ .now_value = 500 };
+    var provider = try license_provider_stub.create(testing.allocator, .{});
+    defer provider.deinit(testing.allocator);
+    var store = try license_store_memory.create(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var service = init(.{
+        .provider = provider,
+        .store = store,
+        .clock = license_support.fixedClock(&clock_state),
+        .fingerprint_source = license_support.fixedFingerprintSource(&fp_state),
+    });
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-
-    var fp_buf: [64]u8 = undefined;
-    const real_fp = try machineFingerprint(&fp_buf);
-
-    const fake_now: i64 = 1_700_000_000;
-    const forty_days: i64 = 40 * 24 * 60 * 60;
-    const opts = Options{ .dir = tmp_path, .now = fake_now };
-
-    const record = LicenseRecord{
-        .license_key = "SUB-0001",
-        .activated_at = fake_now - forty_days - 100,
-        .fingerprint = real_fp,
-        .expires_at = fake_now - forty_days,
-        .last_validated_at = fake_now, // expiry check comes before re-validation
-    };
-    try writeCache(testing.allocator, opts, record);
-
-    const result = try check(testing.allocator, opts);
-    try testing.expectEqual(CheckResult.expired, result);
-}
-
-test "check returns fingerprint_mismatch when stored fingerprint differs" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-
-    const fake_now: i64 = 1_700_000_000;
-    const opts = Options{ .dir = tmp_path, .now = fake_now };
-
-    const record = LicenseRecord{
-        .license_key = "REAL-KEY-0001",
-        .activated_at = fake_now,
-        .fingerprint = "0000000000000000000000000000000000000000000000000000000000000000",
+    const record = CacheRecord{
+        .schema_version = 2,
+        .provider_id = try testing.allocator.dupe(u8, "stub"),
+        .license_key = try testing.allocator.dupe(u8, "LIVE-1234"),
+        .fingerprint = try testing.allocator.dupe(u8, "fp-1"),
+        .activated_at = 0,
         .expires_at = null,
-        .last_validated_at = fake_now,
+        .last_validated_at = 10,
+        .provider_instance_id = null,
+        .provider_payload_json = try testing.allocator.dupe(u8, "{}"),
     };
-    try writeCache(testing.allocator, opts, record);
+    defer {
+        var owned = record;
+        owned.deinit(testing.allocator);
+    }
+    try store.write(testing.allocator, record);
 
-    const result = try check(testing.allocator, opts);
-    try testing.expectEqual(CheckResult.fingerprint_mismatch, result);
+    var result = try service.deactivate(testing.allocator);
+    defer result.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.not_activated, result.status.state);
+
+    const after = try store.read(testing.allocator);
+    try testing.expect(after == null);
 }
 
-test "dev key activates and checks ok without network" {
+test "service returns cache_corrupt on invalid cache" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
+    const dir = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(dir);
+    const file = try std.fs.path.join(testing.allocator, &.{ dir, "license.json" });
+    defer testing.allocator.free(file);
+    try std.fs.cwd().writeFile(.{ .sub_path = file, .data = "{not json" });
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-    const opts = Options{ .dir = tmp_path, .now = 1_700_000_000 };
+    var service = try initDefaultLemonSqueezy(testing.allocator, .{
+        .dir = dir,
+        .now = 100,
+        .http_client = license_support.stdHttpClient(),
+        .fingerprint_source = undefined,
+    });
+    var fixed_fp = license_support.FixedFingerprintState{ .fingerprint = "fp-1" };
+    service.deps.fingerprint_source = license_support.fixedFingerprintSource(&fixed_fp);
+    defer service.deinit(testing.allocator);
 
-    try activate(testing.allocator, opts, DEV_KEY);
-
-    const result = try check(testing.allocator, opts);
-    try testing.expectEqual(CheckResult.ok, result);
-}
-
-test "check skips re-validation when recently validated" {
-    // If last_validated_at is recent, check() must return .ok without hitting
-    // the network (which would fail with a fake key in the test environment).
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = try tmp.dir.realpath(".", &path_buf);
-
-    var fp_buf: [64]u8 = undefined;
-    const real_fp = try machineFingerprint(&fp_buf);
-
-    const fake_now: i64 = 1_700_000_000;
-    const one_day: i64 = 24 * 60 * 60;
-    const opts = Options{ .dir = tmp_path, .now = fake_now };
-
-    const record = LicenseRecord{
-        .license_key = "FAKE-KEY-NOT-REAL",
-        .activated_at = fake_now - one_day,
-        .fingerprint = real_fp,
-        .expires_at = null,
-        .last_validated_at = fake_now - one_day, // 1 day ago < 7-day interval
-    };
-    try writeCache(testing.allocator, opts, record);
-
-    const result = try check(testing.allocator, opts);
-    try testing.expectEqual(CheckResult.ok, result);
+    var status = try service.getStatus(testing.allocator);
+    defer status.deinit(testing.allocator);
+    try testing.expectEqual(LicenseState.cache_corrupt, status.state);
 }

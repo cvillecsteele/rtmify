@@ -152,7 +152,7 @@
     main { padding: 24px; }
 
     section { display: none; }
-    section.active { display: block; }
+    section.active { display: block; animation: tab-enter 0.14s ease-out; }
 
     .toolbar {
       display: flex;
@@ -236,13 +236,10 @@
 
     .req-id { font-family: var(--font-mono); font-size: 13px; font-weight: 600; white-space: nowrap; }
     .test-id { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
-    .result-pass { color: var(--accent-ok); font-weight: 600; }
-    .result-fail { color: #c0392b; font-weight: 600; }
-    .result-pending { color: #888; font-style: italic; }
-    .result-missing {
-      color: var(--accent-warn-text);
-      font-style: italic;
-    }
+    .result-pass    { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 10px; letter-spacing: 0.02em; white-space: nowrap; color: #15803d; background: #dcfce7; border: 1px solid #86efac; }
+    .result-fail    { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 10px; letter-spacing: 0.02em; white-space: nowrap; color: #b91c1c; background: #fee2e2; border: 1px solid #fca5a5; }
+    .result-pending { display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 10px; letter-spacing: 0.02em; white-space: nowrap; color: #525252; background: #f5f5f5; border: 1px solid #d4d4d4; }
+    .result-missing { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 10px; letter-spacing: 0.02em; white-space: nowrap; color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; }
 
     .empty-state {
       padding: 48px 24px;
@@ -274,6 +271,37 @@
       justify-content: center;
     }
     #lobby.visible { display: flex; }
+    #license-gate {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(238, 238, 245, 0.98);
+      z-index: 110;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    #license-gate.visible { display: flex; }
+    .license-gate-card { width: 520px; }
+    .license-gate-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      align-items: center;
+      margin-top: 18px;
+    }
+    .license-gate-meta {
+      font-size: 12px;
+      color: #666;
+      margin-top: 16px;
+      line-height: 1.6;
+    }
+    .license-inline-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
     .lobby-card {
       background: #fff;
       border: 1px solid #ddd;
@@ -437,12 +465,16 @@
     /* Inline row expansion */
     .expand-btn {
       background: none; border: none; cursor: pointer;
-      font-size: 10px; color: #767676; padding: 1px 5px 1px 0;
-      vertical-align: middle; transition: color 0.1s;
-      min-width: 44px; min-height: 44px;
+      color: #bbb; padding: 2px 3px;
+      vertical-align: middle; transition: color 0.1s, background 0.1s;
+      min-width: 24px; min-height: 24px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 3px; flex-shrink: 0;
     }
-    .expand-btn:hover { color: #1a1a2e; }
+    .expand-btn:hover { color: #1a1a2e; background: #f0f0f8; }
     .expand-btn.open { color: #1a1a2e; }
+    .expand-btn svg { display: block; transition: transform 0.15s ease-out; }
+    .expand-btn.open svg { transform: rotate(90deg); }
     .expand-btn:focus-visible {
       outline: 2px solid #1a1a2e;
       outline-offset: 2px;
@@ -453,6 +485,7 @@
       padding: 16px 24px 18px 32px;
       display: flex; flex-direction: column; gap: 16px;
       background: #f8f8ff; border-top: 1px solid #e0e0f0;
+      animation: row-enter 0.15s ease-out;
     }
     .detail-props { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: flex-start; }
     .dp-row { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
@@ -511,6 +544,19 @@
     .suspect-clear:hover { background: var(--accent-warn-dark); }
     tr.suspect td:first-child { border-left: 3px solid var(--accent-warn); }
     tr.suspect { background: #fffde7; }
+
+    /* Row hover states */
+    tbody tr { transition: background 0.1s; }
+    tbody tr:hover:not(.detail-row) { background: #f7f8ff; }
+    tbody tr.warning:hover { background: #fff2e4; }
+    tbody tr.error:hover { background: #fff0f0; }
+    tbody tr.suspect:hover { background: #fffbdd; }
+    tbody tr.detail-row:hover { background: transparent; }
+
+    /* Row entrance animation */
+    tbody tr { animation: row-enter 0.18s ease-out both; }
+    tr.loading-row { animation: none; }
+    tr.detail-row  { animation: none; }
 
     /* Profile selector */
     .profile-radios { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
@@ -739,6 +785,27 @@
       font-style: italic;
       animation: loading-pulse 1.4s ease-in-out infinite;
     }
+
+    /* Motion */
+    @keyframes tab-enter {
+      from { opacity: 0; transform: translateY(5px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes row-enter {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes badge-pop {
+      0%  { transform: scale(1); }
+      45% { transform: scale(1.3); }
+      100%{ transform: scale(1); }
+    }
+    .badge-pop { animation: badge-pop 0.25s ease-out; }
+
+    @media (prefers-reduced-motion: reduce) {
+      section.active, tbody tr, .detail-inner { animation: none; }
+      .expand-btn svg { transition: none; }
+    }
   </style>
 </head>
 <body>
@@ -818,6 +885,23 @@
     <div id="provision-preview" class="text-sm-muted mb-12" style="display:none"></div>
     <div class="lobby-actions">
       <button id="lobby-btn" class="btn" onclick="connectSheet()">Connect</button>
+    </div>
+  </div>
+</div>
+
+<div id="license-gate">
+  <div class="lobby-card license-gate-card">
+    <h2>Activate RTMify Live</h2>
+    <div id="license-gate-state" class="lobby-subtitle">Enter a license key to continue.</div>
+    <div id="license-gate-error" class="lobby-error" style="display:none"></div>
+    <input id="license-key-input" class="lobby-input" type="text" placeholder="XXXX-XXXX-XXXX-XXXX"
+      aria-label="License key" onkeydown="if(event.key==='Enter') activateLicense()">
+    <div class="license-gate-actions">
+      <button class="btn" type="button" onclick="refreshLicenseStatus()">Refresh Status</button>
+      <button id="license-activate-btn" class="btn" type="button" onclick="activateLicense()">Activate</button>
+    </div>
+    <div class="license-gate-meta">
+      Need a license? <a href="https://store.rtmify.io" target="_blank" rel="noopener noreferrer">Visit store.rtmify.io</a>
     </div>
   </div>
 </div>
@@ -1223,6 +1307,10 @@ audit_readiness_summary(profile="aerospace")</div>
     <div id="info-error" class="error-banner" style="display:none"></div>
     <div class="card card--padded">
       <div class="info-grid">
+        <div class="info-label">License State</div>
+        <div id="info-license-state" class="req-id">Loading…</div>
+        <div class="info-label">License Provider</div>
+        <div id="info-license-provider" class="req-id">Loading…</div>
         <div class="info-label">Tray App Version</div>
         <div id="info-tray-version" class="req-id">Loading…</div>
         <div class="info-label">rtmify-live Version</div>
@@ -1231,6 +1319,10 @@ audit_readiness_summary(profile="aerospace")</div>
         <div id="info-db-path" class="req-id">Loading…</div>
         <div class="info-label">Log File Path</div>
         <div id="info-log-path" class="req-id">Loading…</div>
+      </div>
+      <div class="license-inline-actions">
+        <button id="info-license-refresh" class="btn" onclick="refreshLicenseStatus()">Refresh License Status</button>
+        <button id="info-license-deactivate" class="btn" onclick="deactivateLicense()" style="display:none">Deactivate License</button>
       </div>
     </div>
   </section>
@@ -1278,6 +1370,9 @@ audit_readiness_summary(profile="aerospace")</div>
 </main>
 
 <script>
+  const CHEVRON_SVG = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 1.5l4 3.5-4 3.5"/></svg>`;
+  let licenseStatusCache = null;
+
   // --- Tab switching ---
 
   // Tab → group mapping
@@ -1531,6 +1626,13 @@ audit_readiness_summary(profile="aerospace")</div>
   // --- Data loading ---
 
   async function loadData() {
+    try {
+      const licenseStatus = await loadLicenseStatus(true);
+      if (licenseStatus && licenseStatus.permits_use === false) {
+        showLicenseGate(licenseStatus);
+        return;
+      }
+    } catch (_) {}
     _closeAllExpanded();
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
     await loadProfileState();
@@ -1560,17 +1662,22 @@ audit_readiness_summary(profile="aerospace")</div>
 
   async function loadInfo() {
     const errEl = document.getElementById('info-error');
+    const licenseStateEl = document.getElementById('info-license-state');
+    const licenseProviderEl = document.getElementById('info-license-provider');
     const trayEl = document.getElementById('info-tray-version');
     const liveEl = document.getElementById('info-live-version');
     const dbEl = document.getElementById('info-db-path');
     const logEl = document.getElementById('info-log-path');
-    if (!errEl || !trayEl || !liveEl || !dbEl || !logEl) return;
+    if (!errEl || !trayEl || !liveEl || !dbEl || !logEl || !licenseStateEl || !licenseProviderEl) return;
 
     errEl.style.display = 'none';
     try {
+      const licenseStatus = await loadLicenseStatus(true);
       const res = await fetch('/api/info', { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const info = await res.json();
+      licenseStateEl.textContent = licenseStatus?.state || 'unknown';
+      licenseProviderEl.textContent = licenseStatus?.provider_id || 'unknown';
       trayEl.textContent = info.tray_app_version || 'not available';
       liveEl.textContent = info.live_version || 'unknown';
       dbEl.textContent = info.db_path || 'unknown';
@@ -1578,6 +1685,8 @@ audit_readiness_summary(profile="aerospace")</div>
     } catch (e) {
       errEl.textContent = 'Failed to load info: ' + e.message;
       errEl.style.display = 'block';
+      licenseStateEl.textContent = '—';
+      licenseProviderEl.textContent = '—';
       trayEl.textContent = '—';
       liveEl.textContent = '—';
       dbEl.textContent = '—';
@@ -1627,10 +1736,10 @@ audit_readiness_summary(profile="aerospace")</div>
       const status = r.status || '—';
       const tgCell = r.test_group_id
         ? `<span class="test-id">${esc(r.test_group_id)}</span>`
-        : '<span class="result-missing">No test linked</span>';
+        : '<span class="result-missing">No Test</span>';
       const resultCell = resultBadge(r.result, !!r.test_group_id);
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,5)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,5)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${esc(r.statement || '—')}</td>
         <td>${esc(status)}</td>
         <td>${tgCell}</td>
@@ -1663,7 +1772,7 @@ audit_readiness_summary(profile="aerospace")</div>
     tbody.innerHTML = rows.map(r => {
       const rowClass = r.suspect ? ' class="suspect"' : '';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.id)}" aria-expanded="false" onclick="toggleRow('${esc(r.id)}',this,4)">▶</button><span class="req-id">${esc(r.id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.id)}" aria-expanded="false" onclick="toggleRow('${esc(r.id)}',this,4)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.id)}</span></td>
         <td>${esc(r.properties.statement || '—')}</td>
         <td>${esc(r.properties.source || '—')}</td>
         <td>${esc(r.properties.priority || '—')}</td>
@@ -1697,7 +1806,7 @@ audit_readiness_summary(profile="aerospace")</div>
         ? `<span class="req-id">${esc(r.req_id)}</span>`
         : '<span class="text-placeholder">—</span>';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.test_id || r.test_group_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.test_id || r.test_group_id)}',this,5)">▶</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.test_id || r.test_group_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.test_id || r.test_group_id)}',this,5)">${CHEVRON_SVG}</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
         <td><span class="test-id">${esc(r.test_id || '—')}</span></td>
         <td>${esc(r.test_type || '—')}</td>
         <td>${esc(r.test_method || '—')}</td>
@@ -1735,13 +1844,13 @@ audit_readiness_summary(profile="aerospace")</div>
         : '<span class="text-placeholder">—</span>';
       const tgCell = r.test_group_id
         ? `<span class="test-id">${esc(r.test_group_id)}</span>`
-        : '<span class="result-missing">UNTESTED</span>';
+        : '<span class="result-missing">Untested</span>';
       const testCell = r.test_id ? `<span class="test-id">${esc(r.test_id)}</span>` : '';
       const resultCell = r.test_group_id ? resultBadge(r.result, true) : '';
       const severity = rowSeverity(r);
       const rowClass = r.suspect ? 'suspect' : (severity || '');
       return `<tr${rowClass ? ` class="${rowClass}"` : ''}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,8)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,8)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${parentCell}</td>
         <td>${esc(r.statement || '—')}</td>
         <td>${tgCell}</td>
@@ -1784,7 +1893,7 @@ audit_readiness_summary(profile="aerospace")</div>
         : '<span class="text-placeholder">—</span>';
       const rowClass = !r.req_id ? ' class="warning"' : '';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.risk_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.risk_id)}',this,7)">▶</button><span class="req-id">${esc(r.risk_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.risk_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.risk_id)}',this,7)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.risk_id)}</span></td>
         <td>${esc(r.description || '—')}</td>
         <td class="text-center">${esc(r.initial_severity || '—')}</td>
         <td class="text-center">${esc(r.initial_likelihood || '—')}</td>
@@ -1808,9 +1917,9 @@ audit_readiness_summary(profile="aerospace")</div>
 
   function resultBadge(result, hasTest) {
     if (!hasTest) return '';
-    if (!result) return '<span class="result-pending">PENDING</span>';
-    if (result === 'PASS') return '<span class="result-pass">PASS</span>';
-    if (result === 'FAIL') return '<span class="result-fail">FAIL</span>';
+    if (!result) return '<span class="result-pending">Pending</span>';
+    if (result === 'PASS') return '<span class="result-pass">Pass</span>';
+    if (result === 'FAIL') return '<span class="result-fail">Fail</span>';
     return `<span class="result-pending">${esc(result)}</span>`;
   }
 
@@ -1906,6 +2015,11 @@ audit_readiness_summary(profile="aerospace")</div>
     try {
       const res = await fetch('/api/status');
       const status = await res.json();
+      licenseStatusCache = status.license || null;
+      if (status.license && status.license.permits_use === false) {
+        showLicenseGate(status.license);
+        return;
+      }
       applyStatus(status);
     } catch (_) {}
     updateProvisionPreview();
@@ -1955,6 +2069,161 @@ audit_readiness_summary(profile="aerospace")</div>
     }
     if (status.workbook_url) document.getElementById('lobby-url').value = status.workbook_url;
     document.getElementById('lobby-btn').disabled = false;
+  }
+
+  function licenseStateMessage(status) {
+    if (!status) return 'Enter a license key to continue.';
+    switch (status.state) {
+      case 'not_activated':
+        return 'Enter a license key to unlock RTMify Live.';
+      case 'expired':
+        return 'This license has expired. Refresh or activate a valid key to continue.';
+      case 'fingerprint_mismatch':
+        return 'This license cache belongs to a different machine.';
+      case 'provider_unavailable':
+        return 'The license provider could not be reached. Refresh status or try again later.';
+      case 'cache_corrupt':
+        return 'The local license cache could not be read.';
+      case 'revoked':
+        return 'This license is no longer active.';
+      case 'invalid_key':
+        return 'The current license key is not valid.';
+      case 'valid_offline_grace':
+        return 'License is valid in offline grace mode.';
+      case 'valid':
+        return 'License is active.';
+      default:
+        return 'License activation is required.';
+    }
+  }
+
+  function syncLicenseInfo(status) {
+    const stateEl = document.getElementById('info-license-state');
+    const providerEl = document.getElementById('info-license-provider');
+    const deactivateBtn = document.getElementById('info-license-deactivate');
+    if (stateEl) stateEl.textContent = status?.state || 'unknown';
+    if (providerEl) providerEl.textContent = status?.provider_id || 'unknown';
+    if (deactivateBtn) deactivateBtn.style.display = status?.permits_use ? 'inline-block' : 'none';
+  }
+
+  function showLicenseGate(status, errorMessage = '') {
+    licenseStatusCache = status || licenseStatusCache;
+    const gate = document.getElementById('license-gate');
+    const stateEl = document.getElementById('license-gate-state');
+    const errEl = document.getElementById('license-gate-error');
+    const lobby = document.getElementById('lobby');
+    if (lobby) lobby.classList.remove('visible');
+    _releaseLobby();
+    if (stateEl) stateEl.textContent = licenseStateMessage(status);
+    if (errEl) {
+      const message = errorMessage || status?.message || '';
+      errEl.textContent = message;
+      errEl.style.display = message ? 'block' : 'none';
+    }
+    syncLicenseInfo(status);
+    gate.classList.add('visible');
+    document.getElementById('license-key-input')?.focus();
+  }
+
+  function hideLicenseGate() {
+    document.getElementById('license-gate').classList.remove('visible');
+  }
+
+  async function loadLicenseStatus(force = false) {
+    if (!force && licenseStatusCache) return licenseStatusCache;
+    const res = await fetch('/api/license/status', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    licenseStatusCache = data.license || null;
+    syncLicenseInfo(licenseStatusCache);
+    return licenseStatusCache;
+  }
+
+  async function continueLicensedBoot(statusPayload = null) {
+    const status = statusPayload || await (async () => {
+      const res = await fetch('/api/status', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    })();
+
+    licenseStatusCache = status.license || licenseStatusCache;
+    syncLicenseInfo(licenseStatusCache);
+    hideLicenseGate();
+
+    if (status.configured) {
+      document.getElementById('lobby').classList.remove('visible');
+      _releaseLobby();
+      await loadData();
+      await handleGuideHash();
+      return;
+    }
+
+    await showLobby();
+  }
+
+  async function activateLicense() {
+    const input = document.getElementById('license-key-input');
+    const btn = document.getElementById('license-activate-btn');
+    const key = (input?.value || '').trim();
+    if (!key) {
+      showLicenseGate(licenseStatusCache, 'Please enter a license key.');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Activating…';
+    try {
+      const res = await fetch('/api/license/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ license_key: key }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const status = data.license || null;
+      licenseStatusCache = status;
+      syncLicenseInfo(status);
+      if (!res.ok || !status || !status.permits_use) {
+        showLicenseGate(status, status?.message || `Activation failed (HTTP ${res.status})`);
+        return;
+      }
+      await continueLicensedBoot();
+    } catch (e) {
+      showLicenseGate(licenseStatusCache, e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Activate';
+    }
+  }
+
+  async function deactivateLicense() {
+    if (!window.confirm('Deactivate the license on this machine?')) return;
+    try {
+      const res = await fetch('/api/license/deactivate', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      const status = data.license || null;
+      licenseStatusCache = status;
+      syncLicenseInfo(status);
+      showLicenseGate(status, status?.message || '');
+    } catch (e) {
+      showLicenseGate(licenseStatusCache, e.message);
+    }
+  }
+
+  async function refreshLicenseStatus() {
+    try {
+      const res = await fetch('/api/license/refresh', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      const status = data.license || null;
+      licenseStatusCache = status;
+      syncLicenseInfo(status);
+      if (status?.permits_use) {
+        await continueLicensedBoot();
+      } else {
+        showLicenseGate(status, status?.message || '');
+      }
+    } catch (e) {
+      showLicenseGate(licenseStatusCache, e.message);
+    }
   }
 
   // --- Service-account drag and drop ---
@@ -2140,12 +2409,10 @@ audit_readiness_summary(profile="aerospace")</div>
     if (_expanded.has(id)) {
       _expanded.get(id).remove();
       _expanded.delete(id);
-      btn.textContent = '▶';
       btn.classList.remove('open');
       btn.setAttribute('aria-expanded', 'false');
       return;
     }
-    btn.textContent = '▼';
     btn.classList.add('open');
     btn.setAttribute('aria-expanded', 'true');
 
@@ -2209,7 +2476,7 @@ audit_readiness_summary(profile="aerospace")</div>
     return `
       <div class="tree-section">
         <div class="tree-section-header" onclick="toggleTreeSection(this)">
-          <button class="expand-btn" aria-label="Expand ${label}" aria-expanded="false">▶</button>
+          <button class="expand-btn" aria-label="Expand ${label}" aria-expanded="false">${CHEVRON_SVG}</button>
           <span class="tree-section-label">${label}</span>
           <span class="tree-count">${edges.length}</span>
         </div>
@@ -2224,7 +2491,7 @@ audit_readiness_summary(profile="aerospace")</div>
     return `
       <div class="tree-node">
         <div class="tree-node-header">
-          <button class="expand-btn" aria-label="Expand ${esc(e.node.id)}" aria-expanded="false" onclick="toggleTreeNode(this,'${esc(e.node.id)}')">▶</button>
+          <button class="expand-btn" aria-label="Expand ${esc(e.node.id)}" aria-expanded="false" onclick="toggleTreeNode(this,'${esc(e.node.id)}')">${CHEVRON_SVG}</button>
           <span class="tree-edge-label">${esc(relation)}</span>
           <span class="tree-node-id">${esc(e.node.id)}</span>
           <span class="node-type-badge">${esc(e.node.type)}</span>
@@ -2238,7 +2505,6 @@ audit_readiness_summary(profile="aerospace")</div>
     const btn = header.querySelector('.expand-btn');
     const opening = body.style.display === 'none';
     body.style.display = opening ? '' : 'none';
-    btn.textContent = opening ? '▼' : '▶';
     btn.classList.toggle('open', opening);
     btn.setAttribute('aria-expanded', String(opening));
   }
@@ -2248,7 +2514,6 @@ audit_readiness_summary(profile="aerospace")</div>
     const body = header.nextElementSibling;
     const opening = body.style.display === 'none';
     body.style.display = opening ? '' : 'none';
-    btn.textContent = opening ? '▼' : '▶';
     btn.classList.toggle('open', opening);
     btn.setAttribute('aria-expanded', String(opening));
     if (opening && !body.dataset.loaded) {
@@ -2259,7 +2524,7 @@ audit_readiness_summary(profile="aerospace")</div>
       body.querySelectorAll('.tree-section-body').forEach(sec => {
         sec.style.display = '';
         const innerBtn = sec.previousElementSibling.querySelector('.expand-btn');
-        if (innerBtn) { innerBtn.textContent = '▼'; innerBtn.classList.add('open'); innerBtn.setAttribute('aria-expanded', 'true'); }
+        if (innerBtn) { innerBtn.classList.add('open'); innerBtn.setAttribute('aria-expanded', 'true'); }
       });
     }
   }
@@ -2307,7 +2572,7 @@ audit_readiness_summary(profile="aerospace")</div>
           <thead><tr><th>Node ID</th><th>Type</th><th>Via</th></tr></thead>
           <tbody>
             ${data.map(n => `<tr>
-              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,3)">▶</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,3)">${CHEVRON_SVG}</button><span class="req-id">${esc(n.id)}</span></td>
               <td><span class="node-type-badge">${esc(n.type)}</span></td>
               <td><span class="tree-edge-label">${esc(n.dir)} ${esc(n.via)}</span></td>
             </tr>`).join('')}
@@ -2348,7 +2613,7 @@ audit_readiness_summary(profile="aerospace")</div>
           <thead><tr><th>Node ID</th><th>Type</th><th>Reason</th><th></th></tr></thead>
           <tbody>
             ${data.map(n => `<tr class="suspect">
-              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,4)">▶</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,4)">${CHEVRON_SVG}</button><span class="req-id">${esc(n.id)}</span></td>
               <td><span class="node-type-badge">${esc(n.type)}</span></td>
               <td class="text-suspect">${esc(n.suspect_reason || '')}</td>
               <td><button class="suspect-clear" onclick="clearSuspect('${esc(n.id)}')">Mark Reviewed</button></td>
@@ -2362,20 +2627,31 @@ audit_readiness_summary(profile="aerospace")</div>
     const headerBadge = document.getElementById('suspect-header-badge');
     const navBadge = document.getElementById('suspect-nav-badge');
     const groupBadge = document.getElementById('suspect-group-badge');
+    const prevCount = navBadge.dataset.count ? Number(navBadge.dataset.count) : -1;
     if (count > 0) {
       const label = count + ' suspect';
       headerBadge.textContent = '⚠ ' + label;
       headerBadge.style.display = 'inline';
       navBadge.textContent = count;
+      navBadge.dataset.count = count;
       navBadge.style.display = 'inline';
       if (groupBadge) {
         groupBadge.textContent = count;
         groupBadge.className = navBadge.className;
         groupBadge.style.display = 'inline';
       }
+      if (prevCount !== count) {
+        [navBadge, headerBadge, groupBadge].forEach(el => {
+          if (!el) return;
+          el.classList.remove('badge-pop');
+          void el.offsetWidth;
+          el.classList.add('badge-pop');
+        });
+      }
     } else {
       headerBadge.style.display = 'none';
       navBadge.style.display = 'none';
+      navBadge.dataset.count = '0';
       if (groupBadge) groupBadge.style.display = 'none';
     }
   }
@@ -2411,10 +2687,17 @@ audit_readiness_summary(profile="aerospace")</div>
     try {
       const res = await fetch('/api/status');
       status = await res.json();
+      licenseStatusCache = status.license || null;
+      syncLicenseInfo(licenseStatusCache);
     } catch (e) {
       // Server unreachable — show main app and let loadData handle errors
       await loadData();
       await handleGuideHash();
+      return;
+    }
+
+    if (status.license && status.license.permits_use === false) {
+      showLicenseGate(status.license);
       return;
     }
 
@@ -2834,7 +3117,7 @@ audit_readiness_summary(profile="aerospace")</div>
       const rows = entries.map(({node, props}) => {
         const filePath = props.path || node.id;
         return `<tr data-expanded="0" data-file-path="${esc(filePath)}">
-          <td><button class="expand-btn" aria-label="Expand ${esc(filePath)}" aria-expanded="false" onclick="expandFile(this.closest('tr'), this.closest('tr').dataset.filePath)">▶</button></td>
+          <td><button class="expand-btn" aria-label="Expand ${esc(filePath)}" aria-expanded="false" onclick="expandFile(this.closest('tr'), this.closest('tr').dataset.filePath)">${CHEVRON_SVG}</button></td>
           <td>${esc(node.type || '')}</td>
           <td class="mono-sm">${esc(filePath)}</td>
           <td>${esc(String(props.annotation_count || 0))}</td>
@@ -2855,7 +3138,7 @@ audit_readiness_summary(profile="aerospace")</div>
     if (row.dataset.expanded === '1') {
       row.nextElementSibling?.remove();
       row.dataset.expanded = '0';
-      if (btn) { btn.textContent = '▶'; btn.setAttribute('aria-expanded', 'false'); }
+      if (btn) { btn.classList.remove('open'); btn.setAttribute('aria-expanded', 'false'); }
       return;
     }
     let anns = [];
@@ -2878,7 +3161,7 @@ audit_readiness_summary(profile="aerospace")</div>
     detail.innerHTML = `<td colspan="4"><div class="file-annotations">${annHtml}</div></td>`;
     row.parentNode.insertBefore(detail, row.nextSibling);
     row.dataset.expanded = '1';
-    if (btn) { btn.textContent = '▼'; btn.setAttribute('aria-expanded', 'true'); }
+    if (btn) { btn.classList.add('open'); btn.setAttribute('aria-expanded', 'true'); }
   }
 
   async function loadCoverageGaps() {

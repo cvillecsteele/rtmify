@@ -8,6 +8,11 @@ private func lastError() -> String {
     String(cString: rtmify_last_error())
 }
 
+struct LicenseStatus {
+    let state: Int32
+    let permitsUse: Bool
+}
+
 func rtmifyLoad(path: String) async throws -> OpaquePointer {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
@@ -44,12 +49,22 @@ func rtmifyGenerate(graph: OpaquePointer, format: String,
     }
 }
 
-func rtmifyActivate(key: String) async throws {
+func rtmifyLicenseStatus() throws -> LicenseStatus {
+    var status = RtmifyLicenseStatus()
+    let rc = rtmify_license_get_status(&status)
+    if rc == 0 {
+        return LicenseStatus(state: status.state, permitsUse: status.permits_use != 0)
+    }
+    throw BridgeError(message: lastError())
+}
+
+func rtmifyActivate(key: String) async throws -> LicenseStatus {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
-            let rc = key.withCString { rtmify_activate_license($0) }
-            if rc == RTMIFY_OK {
-                continuation.resume()
+            var status = RtmifyLicenseStatus()
+            let rc = key.withCString { rtmify_license_activate($0, &status) }
+            if rc == 0 {
+                continuation.resume(returning: LicenseStatus(state: status.state, permitsUse: status.permits_use != 0))
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))
             }
@@ -57,12 +72,13 @@ func rtmifyActivate(key: String) async throws {
     }
 }
 
-func rtmifyDeactivate() async throws {
+func rtmifyDeactivate() async throws -> LicenseStatus {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
-            let rc = rtmify_deactivate_license()
-            if rc == RTMIFY_OK {
-                continuation.resume()
+            var status = RtmifyLicenseStatus()
+            let rc = rtmify_license_deactivate(&status)
+            if rc == 0 {
+                continuation.resume(returning: LicenseStatus(state: status.state, permitsUse: status.permits_use != 0))
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))
             }

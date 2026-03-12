@@ -47,8 +47,14 @@ final class ViewModel: ObservableObject {
 
     private func runLicenseCheck() async -> Bool {
         guard let binary = binaryPath() else { return false }
-        let result = await runCommand(binary, args: ["--version"])
-        return result.exitCode == 0
+        let result = await runCommand(binary, args: ["--license-status-json"])
+        guard result.exitCode == 0 else { return false }
+        guard let data = result.stdout.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let permitsUse = json["permits_use"] as? Bool else {
+            return false
+        }
+        return permitsUse
     }
 
     func activate(key: String) {

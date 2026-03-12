@@ -6,6 +6,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const rtmify = @import("rtmify");
+const license = rtmify.license;
 const render_md = rtmify.render_md;
 const render_docx = rtmify.render_docx;
 const render_pdf = rtmify.render_pdf;
@@ -389,14 +390,17 @@ pub fn handleNode(db: *graph_live.GraphDb, node_id: []const u8, alloc: Allocator
 // GET /api/status
 // ---------------------------------------------------------------------------
 
-pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) ![]const u8 {
+pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
     const last_sync = state.last_sync_at.load(.seq_cst);
     const has_error = state.has_error.load(.seq_cst);
     const sync_count = state.sync_count.load(.seq_cst);
-    const license_valid = state.license_valid.load(.seq_cst);
     const repo_scan_in_progress = state.repo_scan_in_progress.load(.seq_cst);
     const repo_scan_last_started_at = state.repo_scan_last_started_at.load(.seq_cst);
     const repo_scan_last_finished_at = state.repo_scan_last_finished_at.load(.seq_cst);
+    var license_status = try license_service.getStatus(alloc);
+    defer license_status.deinit(alloc);
+    const license_valid = license_status.permits_use;
+    state.product_enabled.store(license_valid, .seq_cst);
 
     var err_buf: [256]u8 = undefined;
     const err_len = state.getError(&err_buf);
@@ -412,6 +416,8 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc:
         if (configured) "true" else "false", last_sync, if (has_error) "true" else "false",
     });
     try appendJsonStr(&buf, err_str, alloc);
+    try buf.appendSlice(alloc, ",\"license\":");
+    try appendLicenseStatusJson(&buf, license_status, alloc);
     try std.fmt.format(buf.writer(alloc), ",\"sync_count\":{d},\"license_valid\":{s},\"platform\":", .{
         sync_count, if (license_valid) "true" else "false",
     });
@@ -433,6 +439,45 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc:
     });
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+pub fn handleLicenseStatus(service: *license.Service, alloc: Allocator) ![]const u8 {
+    var status = try service.getStatus(alloc);
+    defer status.deinit(alloc);
+    return licenseEnvelopeJson(status, alloc);
+}
+
+pub fn handleLicenseActivateResponse(service: *license.Service, body: []const u8, alloc: Allocator) !JsonRouteResponse {
+    const Request = struct {
+        license_key: ?[]const u8 = null,
+    };
+
+    var parsed = std.json.parseFromSlice(Request, alloc, body, .{
+        .ignore_unknown_fields = true,
+    }) catch {
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"error\":\"invalid JSON\"}"), false);
+    };
+    defer parsed.deinit();
+    const key = parsed.value.license_key orelse return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"error\":\"missing license_key\"}"), false);
+
+    var result = try service.activate(alloc, .{ .license_key = key });
+    defer result.deinit(alloc);
+    const body_json = try licenseEnvelopeJson(result.status, alloc);
+    return jsonRouteResponse(.ok, body_json, result.status.permits_use);
+}
+
+pub fn handleLicenseDeactivateResponse(service: *license.Service, alloc: Allocator) !JsonRouteResponse {
+    var result = try service.deactivate(alloc);
+    defer result.deinit(alloc);
+    const body_json = try licenseEnvelopeJson(result.status, alloc);
+    return jsonRouteResponse(.ok, body_json, true);
+}
+
+pub fn handleLicenseRefreshResponse(service: *license.Service, alloc: Allocator) !JsonRouteResponse {
+    var result = try service.refresh(alloc);
+    defer result.deinit(alloc);
+    const body_json = try licenseEnvelopeJson(result.status, alloc);
+    return jsonRouteResponse(.ok, body_json, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,6 +506,45 @@ pub fn handleInfo(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
     try appendJsonStr(&buf, log_path, alloc);
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+fn licenseEnvelopeJson(status: license.LicenseStatus, alloc: Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"license\":");
+    try appendLicenseStatusJson(&buf, status, alloc);
+    try buf.append(alloc, '}');
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendLicenseStatusJson(buf: *std.ArrayList(u8), status: license.LicenseStatus, alloc: Allocator) !void {
+    try buf.appendSlice(alloc, "{\"state\":");
+    try appendJsonStr(buf, @tagName(status.state), alloc);
+    try buf.appendSlice(alloc, ",\"permits_use\":");
+    try buf.appendSlice(alloc, if (status.permits_use) "true" else "false");
+    try buf.appendSlice(alloc, ",\"provider_id\":");
+    try appendJsonStr(buf, status.provider_id, alloc);
+    try buf.appendSlice(alloc, ",\"activated_at\":");
+    try appendJsonIntOpt(buf, status.activated_at, alloc);
+    try buf.appendSlice(alloc, ",\"expires_at\":");
+    try appendJsonIntOpt(buf, status.expires_at, alloc);
+    try buf.appendSlice(alloc, ",\"last_validated_at\":");
+    try appendJsonIntOpt(buf, status.last_validated_at, alloc);
+    try buf.appendSlice(alloc, ",\"offline_grace_deadline\":");
+    try appendJsonIntOpt(buf, status.offline_grace_deadline, alloc);
+    try buf.appendSlice(alloc, ",\"detail_code\":");
+    try appendJsonStr(buf, @tagName(status.detail_code), alloc);
+    try buf.appendSlice(alloc, ",\"message\":");
+    try appendJsonStrOpt(buf, status.message, alloc);
+    try buf.append(alloc, '}');
+}
+
+fn appendJsonIntOpt(buf: *std.ArrayList(u8), value: ?i64, alloc: Allocator) !void {
+    if (value) |v| {
+        try std.fmt.format(buf.writer(alloc), "{d}", .{v});
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2078,10 +2162,16 @@ test "gitless mode status is configured and repos list is empty" {
     try db.storeConfig("workbook_label", "sheet-123");
     try db.storeConfig("credential_display", "svc@example.com");
 
-    const status = try handleStatus(&db, &state, alloc);
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+    var activation = try license_service.activate(alloc, .{ .license_key = license.DEV_KEY });
+    defer activation.deinit(alloc);
+
+    const status = try handleStatus(&db, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"platform\":\"google\"") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"credential_display\":\"svc@example.com\"") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"license_valid\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":false") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":0") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_finished_at\":0") != null);
@@ -2103,10 +2193,58 @@ test "handleStatus includes repo scan lifecycle fields" {
     state.repo_scan_last_started_at.store(123, .seq_cst);
     state.repo_scan_last_finished_at.store(456, .seq_cst);
 
-    const status = try handleStatus(&db, &state, alloc);
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+    const status = try handleStatus(&db, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":123") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_finished_at\":456") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"license_valid\":false") != null);
+}
+
+test "handleLicenseStatus returns structured license JSON" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+
+    const body = try handleLicenseStatus(&license_service, alloc);
+    try testing.expect(std.mem.indexOf(u8, body, "\"license\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"state\":\"not_activated\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"permits_use\":false") != null);
+}
+
+test "handleLicenseActivateResponse transitions to valid" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+
+    const resp = try handleLicenseActivateResponse(&license_service, "{\"license_key\":\"RTMIFY-DEV-0000-0000\"}", alloc);
+    try testing.expectEqual(std.http.Status.ok, resp.status);
+    try testing.expect(resp.ok);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"state\":\"valid\"") != null);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"permits_use\":true") != null);
+}
+
+test "handleLicenseDeactivateResponse returns not_activated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+    var activation = try license_service.activate(alloc, .{ .license_key = license.DEV_KEY });
+    defer activation.deinit(alloc);
+
+    const resp = try handleLicenseDeactivateResponse(&license_service, alloc);
+    try testing.expectEqual(std.http.Status.ok, resp.status);
+    try testing.expect(resp.ok);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"state\":\"not_activated\"") != null);
 }
 
 test "handleInfo returns version and path details" {

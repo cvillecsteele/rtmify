@@ -38,6 +38,15 @@ pub const RTMIFY_ERR_OUTPUT: i32 = 5;
 // ---------------------------------------------------------------------------
 
 pub const RtmifyGraph = opaque {};
+pub const RtmifyLicenseStatus = extern struct {
+    state: i32,
+    permits_use: i32,
+    activated_at: i64,
+    expires_at: i64,
+    last_validated_at: i64,
+    offline_grace_deadline: i64,
+    detail_code: i32,
+};
 
 // ---------------------------------------------------------------------------
 // C ABI extern declarations (librtmify.a)
@@ -59,6 +68,10 @@ pub extern fn rtmify_gap_count(graph: *const RtmifyGraph) i32;
 pub extern fn rtmify_warning_count() i32;
 pub extern fn rtmify_last_error() [*:0]const u8;
 pub extern fn rtmify_free(graph: *RtmifyGraph) void;
+pub extern fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) i32;
+pub extern fn rtmify_license_activate(license_key: [*:0]const u8, out_status: *RtmifyLicenseStatus) i32;
+pub extern fn rtmify_license_deactivate(out_status: *RtmifyLicenseStatus) i32;
+pub extern fn rtmify_license_refresh(out_status: *RtmifyLicenseStatus) i32;
 pub extern fn rtmify_activate_license(license_key: [*:0]const u8) i32;
 pub extern fn rtmify_check_license() i32;
 pub extern fn rtmify_deactivate_license() i32;
@@ -125,7 +138,9 @@ fn generateWorker(ctx: *GenerateContext) void {
 }
 
 fn activateWorker(ctx: *ActivateContext) void {
-    const status = rtmify_activate_license(&ctx.key);
+    var license_status: RtmifyLicenseStatus = undefined;
+    const api_status = rtmify_license_activate(&ctx.key, &license_status);
+    const status: i32 = if (api_status == 0 and license_status.permits_use != 0) RTMIFY_OK else RTMIFY_ERR_LICENSE;
     _ = PostMessageW(ctx.hwnd, WM_ACTIVATE_COMPLETE, @intCast(status), 0);
     std.heap.page_allocator.destroy(ctx);
 }

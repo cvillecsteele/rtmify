@@ -4,6 +4,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const license = @import("rtmify").license;
 const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
 const routes = @import("routes.zig");
@@ -239,7 +240,9 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         const data = try routes.handleSchema(db, alloc);
         return .{ .text = data };
     } else if (std.mem.eql(u8, name, "get_status")) {
-        const data = try routes.handleStatus(db, state, alloc);
+        var license_service = try license.initDefaultLemonSqueezy(alloc, .{});
+        defer license_service.deinit(alloc);
+        const data = try routes.handleStatus(db, state, &license_service, alloc);
         return .{ .text = data };
     } else if (std.mem.eql(u8, name, "clear_suspect")) {
         const node_id = try requireStringArg(args, "id");
@@ -728,7 +731,8 @@ fn statusMarkdown(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: A
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const data = try routes.handleStatus(db, state, arena);
+    var license_service = try license.initDefaultLemonSqueezy(arena, .{});
+    const data = try routes.handleStatus(db, state, &license_service, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();
     var buf: std.ArrayList(u8) = .empty;

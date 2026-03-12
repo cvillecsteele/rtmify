@@ -3,6 +3,15 @@
 #include <stdint.h>
 
 typedef struct RtmifyGraph RtmifyGraph;
+typedef struct RtmifyLicenseStatus {
+    int32_t state;
+    int32_t permits_use;
+    int64_t activated_at;
+    int64_t expires_at;
+    int64_t last_validated_at;
+    int64_t offline_grace_deadline;
+    int32_t detail_code;
+} RtmifyLicenseStatus;
 
 #define RTMIFY_OK                  0
 #define RTMIFY_ERR_FILE_NOT_FOUND  1
@@ -18,6 +27,10 @@ int32_t rtmify_gap_count(const RtmifyGraph* graph);
 int32_t rtmify_warning_count(void);
 const char* rtmify_last_error(void);
 void rtmify_free(RtmifyGraph* graph);
+int32_t rtmify_license_get_status(RtmifyLicenseStatus* out_status);
+int32_t rtmify_license_activate(const char* license_key, RtmifyLicenseStatus* out_status);
+int32_t rtmify_license_deactivate(RtmifyLicenseStatus* out_status);
+int32_t rtmify_license_refresh(RtmifyLicenseStatus* out_status);
 int32_t rtmify_activate_license(const char* license_key);
 int32_t rtmify_check_license(void);
 int32_t rtmify_deactivate_license(void);

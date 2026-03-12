@@ -27,6 +27,43 @@ pub const RtmifyStatus = enum(c_int) {
     err_output = 5,
 };
 
+pub const RtmifyLicenseState = enum(c_int) {
+    valid = 0,
+    valid_offline_grace = 1,
+    not_activated = 2,
+    expired = 3,
+    fingerprint_mismatch = 4,
+    revoked = 5,
+    invalid_key = 6,
+    provider_unavailable = 7,
+    cache_corrupt = 8,
+    internal_error = 9,
+};
+
+pub const RtmifyLicenseDetailCode = enum(c_int) {
+    none = 0,
+    invalid_key = 1,
+    revoked = 2,
+    network_error = 3,
+    server_error = 4,
+    protocol_error = 5,
+    cache_corrupt = 6,
+    fingerprint_mismatch = 7,
+    expired = 8,
+    not_activated = 9,
+    internal_error = 10,
+};
+
+pub const RtmifyLicenseStatus = extern struct {
+    state: c_int,
+    permits_use: c_int,
+    activated_at: i64,
+    expires_at: i64,
+    last_validated_at: i64,
+    offline_grace_deadline: i64,
+    detail_code: c_int,
+};
+
 // ---------------------------------------------------------------------------
 // Opaque graph handle (heap-allocated, owns its GPA and Graph)
 // ---------------------------------------------------------------------------
@@ -243,54 +280,161 @@ pub export fn rtmify_generate(
 // C ABI: license functions
 // ---------------------------------------------------------------------------
 
-pub export fn rtmify_activate_license(license_key: [*:0]const u8) RtmifyStatus {
+fn nullableTime(value: ?i64) i64 {
+    return value orelse -1;
+}
+
+fn mapLicenseState(state: license.LicenseState) RtmifyLicenseState {
+    return switch (state) {
+        .valid => .valid,
+        .valid_offline_grace => .valid_offline_grace,
+        .not_activated => .not_activated,
+        .expired => .expired,
+        .fingerprint_mismatch => .fingerprint_mismatch,
+        .revoked => .revoked,
+        .invalid_key => .invalid_key,
+        .provider_unavailable => .provider_unavailable,
+        .cache_corrupt => .cache_corrupt,
+        .internal_error => .internal_error,
+    };
+}
+
+fn mapLicenseDetail(code: license.LicenseDetailCode) RtmifyLicenseDetailCode {
+    return switch (code) {
+        .none => .none,
+        .invalid_key => .invalid_key,
+        .revoked => .revoked,
+        .network_error => .network_error,
+        .server_error => .server_error,
+        .protocol_error => .protocol_error,
+        .cache_corrupt => .cache_corrupt,
+        .fingerprint_mismatch => .fingerprint_mismatch,
+        .expired => .expired,
+        .not_activated => .not_activated,
+        .internal_error => .internal_error,
+    };
+}
+
+fn fillLicenseStatus(out_status: *RtmifyLicenseStatus, status: license.LicenseStatus) void {
+    out_status.* = .{
+        .state = @intFromEnum(mapLicenseState(status.state)),
+        .permits_use = @intFromBool(status.permits_use),
+        .activated_at = nullableTime(status.activated_at),
+        .expires_at = nullableTime(status.expires_at),
+        .last_validated_at = nullableTime(status.last_validated_at),
+        .offline_grace_deadline = nullableTime(status.offline_grace_deadline),
+        .detail_code = @intFromEnum(mapLicenseDetail(status.detail_code)),
+    };
+}
+
+fn withDefaultLicenseService(comptime func: anytype) RtmifyStatus {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();
-
-    const key = std.mem.span(license_key);
-    license.activate(gpa, .{}, key) catch |err| {
-        setError("license activation failed: {s}", .{@errorName(err)});
+    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
         return .err_license;
     };
-    return .ok;
+    defer service.deinit(gpa);
+    return func(gpa, &service);
+}
+
+pub export fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) c_int {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer service.deinit(gpa);
+
+    var status = service.getStatus(gpa) catch |err| {
+        setError("license status failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer status.deinit(gpa);
+    if (status.message) |msg| setError("{s}", .{msg});
+    fillLicenseStatus(out_status, status);
+    return 0;
+}
+
+pub export fn rtmify_license_activate(license_key: [*:0]const u8, out_status: *RtmifyLicenseStatus) c_int {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer service.deinit(gpa);
+
+    const key = std.mem.span(license_key);
+    var result = service.activate(gpa, .{ .license_key = key }) catch |err| {
+        setError("license activation failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer result.deinit(gpa);
+    if (result.status.message) |msg| setError("{s}", .{msg});
+    fillLicenseStatus(out_status, result.status);
+    return 0;
+}
+
+pub export fn rtmify_license_deactivate(out_status: *RtmifyLicenseStatus) c_int {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer service.deinit(gpa);
+
+    var result = service.deactivate(gpa) catch |err| {
+        setError("license deactivation failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer result.deinit(gpa);
+    if (result.status.message) |msg| setError("{s}", .{msg});
+    fillLicenseStatus(out_status, result.status);
+    return 0;
+}
+
+pub export fn rtmify_license_refresh(out_status: *RtmifyLicenseStatus) c_int {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer service.deinit(gpa);
+
+    var result = service.refresh(gpa) catch |err| {
+        setError("license refresh failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer result.deinit(gpa);
+    if (result.status.message) |msg| setError("{s}", .{msg});
+    fillLicenseStatus(out_status, result.status);
+    return 0;
+}
+
+pub export fn rtmify_activate_license(license_key: [*:0]const u8) RtmifyStatus {
+    var out_status: RtmifyLicenseStatus = undefined;
+    if (rtmify_license_activate(license_key, &out_status) != 0) return .err_license;
+    return if (out_status.permits_use != 0) .ok else .err_license;
 }
 
 pub export fn rtmify_check_license() RtmifyStatus {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
-
-    const result = license.check(gpa, .{}) catch {
-        setError("license check failed", .{});
-        return .err_license;
-    };
-    return switch (result) {
-        .ok => .ok,
-        .not_activated => blk: {
-            setError("license not activated", .{});
-            break :blk .err_license;
-        },
-        .expired => blk: {
-            setError("license expired", .{});
-            break :blk .err_license;
-        },
-        .fingerprint_mismatch => blk: {
-            setError("license is not valid on this machine", .{});
-            break :blk .err_license;
-        },
-    };
+    var out_status: RtmifyLicenseStatus = undefined;
+    if (rtmify_license_get_status(&out_status) != 0) return .err_license;
+    return if (out_status.permits_use != 0) .ok else .err_license;
 }
 
 pub export fn rtmify_deactivate_license() RtmifyStatus {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
-
-    license.deactivate(gpa, .{}) catch |err| {
-        setError("deactivation failed: {s}", .{@errorName(err)});
-        return .err_license;
-    };
+    var out_status: RtmifyLicenseStatus = undefined;
+    if (rtmify_license_deactivate(&out_status) != 0) return .err_license;
     return .ok;
 }
 

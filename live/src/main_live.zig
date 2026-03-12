@@ -28,6 +28,7 @@ const help_text =
     \\  --profile <name>       Industry profile: medical|aerospace|automotive|generic
     \\  --activate <key>       Activate license key
     \\  --deactivate           Deactivate license
+    \\  --license-status-json  Print structured license status JSON and exit
     \\  --version              Print version and exit
     \\  --help                 Print this help and exit
     \\
@@ -45,6 +46,7 @@ pub fn main() !void {
     var db_path: [:0]const u8 = "graph.db";
     var port: u16 = 8000;
     var show_version = false;
+    var show_license_status_json = false;
     var show_help = false;
     var no_browser = false;
     var activate_key: ?[]const u8 = null;
@@ -57,6 +59,8 @@ pub fn main() !void {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--version")) {
             show_version = true;
+        } else if (std.mem.eql(u8, arg, "--license-status-json")) {
+            show_license_status_json = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             show_help = true;
         } else if (std.mem.eql(u8, arg, "--no-browser")) {
@@ -97,24 +101,39 @@ pub fn main() !void {
         return;
     }
 
+    var license_service = try license.initDefaultLemonSqueezy(gpa, .{});
+    defer license_service.deinit(gpa);
+
+    if (show_license_status_json) {
+        var status = try license_service.getStatus(gpa);
+        defer status.deinit(gpa);
+        try stdout.print(
+            "{{\"state\":\"{s}\",\"permits_use\":{s},\"provider_id\":\"{s}\",\"detail_code\":\"{s}\"}}\n",
+            .{
+                @tagName(status.state),
+                if (status.permits_use) "true" else "false",
+                status.provider_id,
+                @tagName(status.detail_code),
+            },
+        );
+        return;
+    }
+
     if (activate_key) |key| {
-        license.activate(gpa, .{}, key) catch {
-            const ls_msg = license.lastLsError();
-            if (ls_msg.len > 0) {
-                try stderr.print("Error: {s}\n", .{ls_msg});
-            } else {
-                try stderr.writeAll("Error: license activation failed. Check your key and internet connection.\n");
-            }
+        var result = try license_service.activate(gpa, .{ .license_key = key });
+        defer result.deinit(gpa);
+        if (!result.status.permits_use) {
+            const msg = result.status.message orelse "license activation failed";
+            try stderr.print("Error: {s}\n", .{msg});
             std.process.exit(2);
-        };
+        }
         try stdout.print("License activated successfully.\n", .{});
         return;
     }
 
     if (do_deactivate) {
-        license.deactivate(gpa, .{}) catch |err| {
-            try stderr.print("Warning: deactivation error: {s}\n", .{@errorName(err)});
-        };
+        var result = try license_service.deactivate(gpa);
+        defer result.deinit(gpa);
         try stdout.print("License deactivated.\n", .{});
         return;
     }
@@ -147,21 +166,24 @@ pub fn main() !void {
 
     var state: sync_live.SyncState = .{};
 
-    // License check — result stored in state for the web UI
-    const lic_result = license.check(gpa, .{}) catch .not_activated;
-    state.license_valid.store(lic_result == .ok, .seq_cst);
-    if (lic_result != .ok) {
-        std.log.warn("license check: {s} — web UI will show license gate", .{@tagName(lic_result)});
+    var startup_license_status = try license_service.getStatus(gpa);
+    defer startup_license_status.deinit(gpa);
+    state.product_enabled.store(startup_license_status.permits_use, .seq_cst);
+    if (!startup_license_status.permits_use) {
+        std.log.warn("license check: {s} — product routes will be gated", .{@tagName(startup_license_status.state)});
     }
 
-    if (try connection_mod.loadActive(&g, gpa)) |loaded_active| {
-        var active = loaded_active;
-        defer active.deinit(gpa);
-        const started = maybeStartSync(&g, &state, active, gpa) catch |e| blk: {
-            std.log.warn("sync thread not started: {s}", .{@errorName(e)});
-            break :blk false;
-        };
-        if (started) std.log.info("sync thread started for configured provider connection", .{});
+    const loaded_active = try connection_mod.loadActive(&g, gpa);
+    if (startup_license_status.permits_use) {
+        if (loaded_active) |active_value| {
+            var active = active_value;
+            defer active.deinit(gpa);
+            const started = maybeStartSync(&g, &state, active, gpa) catch |e| blk: {
+                std.log.warn("sync thread not started: {s}", .{@errorName(e)});
+                break :blk false;
+            };
+            if (started) std.log.info("sync thread started for configured provider connection", .{});
+        }
     }
 
     // Store profile if given
@@ -242,6 +264,7 @@ pub fn main() !void {
     const ctx: server.ServerCtx = .{
         .db = &g,
         .state = &state,
+        .license_service = &license_service,
         .alloc = gpa,
         .startSyncFn = startSyncCallback,
     };

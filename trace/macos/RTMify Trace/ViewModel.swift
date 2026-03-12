@@ -34,8 +34,12 @@ final class ViewModel: ObservableObject {
     // MARK: - License
 
     func checkLicense() {
-        let rc = rtmify_check_license()
-        state = rc == RTMIFY_OK ? .dropZone : .licenseGate
+        do {
+            let status = try rtmifyLicenseStatus()
+            state = status.permitsUse ? .dropZone : .licenseGate
+        } catch {
+            state = .licenseGate
+        }
     }
 
     func activate(key: String) {
@@ -47,9 +51,9 @@ final class ViewModel: ObservableObject {
         activationError = nil
         Task {
             do {
-                try await rtmifyActivate(key: key)
+                let status = try await rtmifyActivate(key: key)
                 isActivating = false
-                state = .dropZone
+                state = status.permitsUse ? .dropZone : .licenseGate
             } catch let e as BridgeError {
                 isActivating = false
                 activationError = e.message
@@ -63,7 +67,7 @@ final class ViewModel: ObservableObject {
     func deactivate() {
         Task {
             do {
-                try await rtmifyDeactivate()
+                _ = try await rtmifyDeactivate()
                 freeGraph()
                 state = .licenseGate
             } catch let e as BridgeError {

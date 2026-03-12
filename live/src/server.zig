@@ -6,6 +6,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const rtmify = @import("rtmify");
+const license = rtmify.license;
 const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
 const routes = @import("routes.zig");
@@ -13,6 +15,7 @@ const routes = @import("routes.zig");
 pub const ServerCtx = struct {
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
+    license_service: *license.Service,
     alloc: Allocator,
     /// Called after POST /api/connection to (re)start the sync thread if not already running.
     /// Set by main_live.zig; null means auto-start is not configured.
@@ -97,6 +100,21 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         response_bytes = routes.index_html.len;
         try sendHtml(req, routes.index_html);
         return;
+    }
+
+    if (req.head.method != .OPTIONS and !isLicenseExempt(req.head.method, path)) {
+        var license_status = try ctx.license_service.getStatus(alloc);
+        defer license_status.deinit(alloc);
+        ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
+        if (!license_status.permits_use) {
+            const body = try std.fmt.allocPrint(alloc, "{{\"error\":\"license_required\",\"license_state\":\"{s}\"}}", .{
+                @tagName(license_status.state),
+            });
+            response_status = .forbidden;
+            response_bytes = body.len;
+            try sendJsonWithStatus(req, body, .forbidden);
+            return;
+        }
     }
 
     if (req.head.method == .GET) {
@@ -194,7 +212,12 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/status")) {
-            const body = try routes.handleStatus(ctx.db, ctx.state, alloc);
+            const body = try routes.handleStatus(ctx.db, ctx.state, ctx.license_service, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/license/status")) {
+            const body = try routes.handleLicenseStatus(ctx.license_service, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -321,6 +344,39 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body_bytes = try readBody(req, alloc);
             response_status = .ok;
             try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.state, alloc);
+        } else if (std.mem.eql(u8, path, "/api/license/activate")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handleLicenseActivateResponse(ctx.license_service, body_bytes, alloc);
+            if (resp.ok) {
+                var license_status = try ctx.license_service.getStatus(alloc);
+                defer license_status.deinit(alloc);
+                ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
+                if (license_status.permits_use) {
+                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+                }
+            }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/license/deactivate")) {
+            const resp = try routes.handleLicenseDeactivateResponse(ctx.license_service, alloc);
+            if (resp.ok) ctx.state.product_enabled.store(false, .seq_cst);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/license/refresh")) {
+            const resp = try routes.handleLicenseRefreshResponse(ctx.license_service, alloc);
+            if (resp.ok) {
+                var license_status = try ctx.license_service.getStatus(alloc);
+                defer license_status.deinit(alloc);
+                ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
+                if (license_status.permits_use) {
+                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+                }
+            }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handlePostProfileResponse(ctx.db, body_bytes, alloc);
@@ -405,6 +461,18 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         response_bytes = "{\"error\":\"not found\"}".len;
         try send404(req);
     }
+}
+
+fn isLicenseExempt(method: std.http.Method, path: []const u8) bool {
+    _ = method;
+    return std.mem.eql(u8, path, "/") or
+        std.mem.eql(u8, path, "/index.html") or
+        std.mem.eql(u8, path, "/api/status") or
+        std.mem.eql(u8, path, "/api/info") or
+        std.mem.eql(u8, path, "/api/license/status") or
+        std.mem.eql(u8, path, "/api/license/activate") or
+        std.mem.eql(u8, path, "/api/license/deactivate") or
+        std.mem.eql(u8, path, "/api/license/refresh");
 }
 
 // ---------------------------------------------------------------------------

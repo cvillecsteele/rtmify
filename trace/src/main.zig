@@ -314,6 +314,8 @@ fn generateReport(
 fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
+    var license_service = try license.initDefaultLemonSqueezy(gpa, .{});
+    defer license_service.deinit(gpa);
 
     if (args.help) {
         try stdout.writeAll(HELP);
@@ -326,32 +328,29 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     }
 
     if (args.activate) |key| {
-        license.activate(gpa, .{}, key) catch {
-            const ls_msg = license.lastLsError();
-            if (ls_msg.len > 0) {
-                try stderr.print("Error: {s}\n", .{ls_msg});
-            } else {
-                try stderr.writeAll("Error: license activation failed. Check your key and internet connection.\n");
-            }
+        var activation = try license_service.activate(gpa, .{ .license_key = key });
+        defer activation.deinit(gpa);
+        if (!activation.status.permits_use) {
+            try stderr.print("Error: {s}\n", .{activation.status.message orelse "license activation failed"});
             return EXIT_LICENSE;
-        };
+        }
         try stdout.print("License activated successfully.\n", .{});
         return EXIT_SUCCESS;
     }
 
     if (args.deactivate) {
-        license.deactivate(gpa, .{}) catch |err| {
-            try stderr.print("Warning: deactivation error: {s}\n", .{@errorName(err)});
-        };
+        var deactivation = try license_service.deactivate(gpa);
+        defer deactivation.deinit(gpa);
         try stdout.print("License deactivated.\n", .{});
         return EXIT_SUCCESS;
     }
 
     // License gate
-    const lic_result = license.check(gpa, .{}) catch .not_activated;
-    switch (lic_result) {
-        .ok => {},
-        .not_activated => {
+    var lic_status = try license_service.getStatus(gpa);
+    defer lic_status.deinit(gpa);
+    switch (lic_status.state) {
+        .valid, .valid_offline_grace => {},
+        .not_activated, .invalid_key => {
             try stderr.writeAll("Error: license not activated.\n");
             try stderr.writeAll("Run: rtmify-trace --activate <your-license-key>\n");
             return EXIT_LICENSE;
@@ -364,6 +363,10 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
         .fingerprint_mismatch => {
             try stderr.writeAll("Error: this license is not valid on this machine.\n");
             try stderr.writeAll("To move your license, deactivate on the old machine first.\n");
+            return EXIT_LICENSE;
+        },
+        .revoked, .provider_unavailable, .cache_corrupt, .internal_error => {
+            try stderr.print("Error: {s}\n", .{lic_status.message orelse "license check failed"});
             return EXIT_LICENSE;
         },
     }

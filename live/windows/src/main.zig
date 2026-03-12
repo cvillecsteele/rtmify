@@ -206,6 +206,10 @@ fn startupErrorMessage(err: process_mod.SpawnServerError) []const u8 {
 }
 
 fn startServer(hwnd: HWND, user_initiated: bool) void {
+    if (g_srv_state == .license_gate) {
+        license_mod.showLicenseDialog(g_hinstance, hwnd, g_port);
+        return;
+    }
     if (g_srv_state == .running or g_srv_state == .starting) return;
 
     clearServerError();
@@ -311,6 +315,7 @@ pub export fn wWinMain(
     g_hinstance = hinstance;
     g_launch_at_login = checkLaunchAtLogin();
     g_cfg.port = g_port;
+    g_srv_state = if (license_mod.licensePermitsUse()) .stopped else .license_gate;
 
     const class_name = W("RTMifyLiveTray");
     var wc: WNDCLASSEXW = std.mem.zeroes(WNDCLASSEXW);

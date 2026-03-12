@@ -49,6 +49,20 @@ extern "user32" fn MessageBoxW(hWnd: ?HWND, lpText: [*:0]const u16, lpCaption: [
 const MB_OK: UINT = 0x00000000;
 const MB_ICONERROR: UINT = 0x00000010;
 
+const RtmifyLicenseStatus = extern struct {
+    state: i32,
+    permits_use: i32,
+    activated_at: i64,
+    expires_at: i64,
+    last_validated_at: i64,
+    offline_grace_deadline: i64,
+    detail_code: i32,
+};
+
+extern fn rtmify_last_error() [*:0]const u8;
+extern fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) i32;
+extern fn rtmify_license_activate(license_key: [*:0]const u8, out_status: *RtmifyLicenseStatus) i32;
+
 fn W(comptime s: []const u8) [:0]const u16 {
     return std.unicode.utf8ToUtf16LeStringLiteral(s);
 }
@@ -101,6 +115,11 @@ pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) voi
 pub var g_license_hwnd: ?HWND = null;
 pub var g_notify_hwnd: ?HWND = null;
 
+pub fn licensePermitsUse() bool {
+    var status: RtmifyLicenseStatus = undefined;
+    return rtmify_license_get_status(&status) == 0 and status.permits_use != 0;
+}
+
 /// Handle WM_COMMAND in the license dialog.
 pub fn handleCommand(hwnd: HWND, ctrl_id: c_int) void {
     if (ctrl_id == IDC_ACTIVATE_BTN) {
@@ -112,9 +131,11 @@ pub fn handleCommand(hwnd: HWND, ctrl_id: c_int) void {
         const key = key_utf8[0..key_len];
         if (key.len == 0) return;
 
-        const process = @import("process.zig");
-        const rc = process.spawnActivate(key);
-        if (rc == 0) {
+        var key_z: [129:0]u8 = std.mem.zeroes([129:0]u8);
+        @memcpy(key_z[0..key.len], key);
+        var status: RtmifyLicenseStatus = undefined;
+        const rc = rtmify_license_activate(&key_z, &status);
+        if (rc == 0 and status.permits_use != 0) {
             _ = DestroyWindow(hwnd);
             g_license_hwnd = null;
             // Notify main window
@@ -123,6 +144,7 @@ pub fn handleCommand(hwnd: HWND, ctrl_id: c_int) void {
                 _ = SendMessageW(nwnd, WM_APP + 2, 0, 0);
             }
         } else {
+            _ = rtmify_last_error();
             _ = SetDlgItemTextW(hwnd, IDC_STATUS_LABEL, W("Activation failed. Check key and internet."));
         }
     } else if (ctrl_id == IDCANCEL) {

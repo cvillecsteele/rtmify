@@ -39,8 +39,8 @@ pub const SyncState = struct {
     sync_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     /// True once a sync thread has been spawned; prevents double-start.
     sync_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    /// Reflects the result of license.check() at startup / activation.
-    license_valid: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Gates background product work when licensing does not permit use.
+    product_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     repo_scan_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     repo_scan_last_started_at: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     repo_scan_last_finished_at: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
@@ -119,6 +119,11 @@ pub fn syncThread(cfg: SyncConfig) void {
     var backoff: u64 = 30; // seconds
 
     while (true) {
+        if (!cfg.state.product_enabled.load(.seq_cst)) {
+            std.Thread.sleep(30 * std.time.ns_per_s);
+            continue;
+        }
+
         const change_token = runtime.changeToken(alloc) catch |e| {
             const msg = @errorName(e);
             cfg.state.setError(msg);
@@ -616,6 +621,11 @@ pub fn repoScanThread(ctx: *RepoScanCtx) void {
     }
 
     while (true) {
+        if (!ctx.state.product_enabled.load(.seq_cst)) {
+            std.Thread.sleep(30 * std.time.ns_per_s);
+            continue;
+        }
+
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
         const a = arena.allocator();
