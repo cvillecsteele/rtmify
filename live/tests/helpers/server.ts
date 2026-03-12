@@ -16,20 +16,23 @@ function binaryPath(): string {
   return process.env.RTMIFY_LIVE_BIN || path.join(sysRoot, 'zig-out', 'bin', 'rtmify-live');
 }
 
-async function waitForServer(baseUrl: string, timeoutMs = 20_000): Promise<void> {
+async function waitForServer(basePort: number, timeoutMs = 20_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let lastError = 'server did not respond';
   while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${baseUrl}/api/status`, { cache: 'no-store' });
-      if (res.ok) return;
-      lastError = `HTTP ${res.status}`;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+    for (let offset = 0; offset <= 10; offset += 1) {
+      const baseUrl = `http://127.0.0.1:${basePort + offset}`;
+      try {
+        const res = await fetch(`${baseUrl}/api/status`, { cache: 'no-store' });
+        if (res.ok) return baseUrl;
+        lastError = `HTTP ${res.status}`;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+      }
     }
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`Timed out waiting for ${baseUrl}: ${lastError}`);
+  throw new Error(`Timed out waiting for port ${basePort}: ${lastError}`);
 }
 
 export async function startServer(options: {
@@ -60,9 +63,9 @@ export async function startServer(options: {
     output += d.toString();
   });
 
-  const baseUrl = `http://127.0.0.1:${options.port}`;
+  let baseUrl = `http://127.0.0.1:${options.port}`;
   try {
-    await waitForServer(baseUrl);
+    baseUrl = await waitForServer(options.port);
   } catch (err) {
     child.kill('SIGKILL');
     throw new Error(`${String(err)}\n--- server output ---\n${output}`);

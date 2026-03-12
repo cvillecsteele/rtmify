@@ -265,12 +265,18 @@
       display: none;
       position: fixed;
       inset: 0;
-      background: #eeeef5;
+      background: radial-gradient(ellipse at 50% 40%, #1a1a2e 0%, #0a0a14 100%);
       z-index: 100;
       align-items: center;
       justify-content: center;
     }
-    #lobby.visible { display: flex; }
+    #lobby.visible { display: flex; animation: lobby-bg-in 0.2s ease; }
+    @keyframes lobby-bg-in { from { opacity: 0; } to { opacity: 1; } }
+    #lobby.visible #lobby-card { animation: lobby-card-in 0.28s cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes lobby-card-in {
+      from { opacity: 0; transform: translateY(20px) scale(0.97); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
     #license-gate {
       display: none;
       position: fixed;
@@ -304,75 +310,165 @@
     }
     .lobby-card {
       background: #fff;
-      border: 1px solid #ddd;
-      border-top: 3px solid var(--dark);
-      border-radius: 8px;
-      padding: 36px 40px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 32px 36px;
       width: 480px;
       max-width: 95vw;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      box-shadow: 0 32px 80px rgba(0,0,0,0.5);
     }
-    .lobby-card h2 { font-size: 22px; font-weight: 600; margin-bottom: 4px; color: #1a1a2e; }
-    .lobby-subtitle { color: #888; font-size: 13px; margin-bottom: 24px; }
-    .lobby-step { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; margin-top: 20px; }
-    .lobby-step:first-of-type { margin-top: 0; }
-    .step-num {
-      width: 22px; height: 22px; border-radius: 50%;
-      background: var(--dark); color: #fff;
-      font-size: 11px; font-weight: 600;
-      display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
+    /* Wizard screens */
+    .lobby-screen { display: none; }
+    .lobby-screen.active { display: block; animation: screen-enter-fwd 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
+    .lobby-screen.exit-fwd { animation: screen-exit-fwd 0.16s ease-in forwards; }
+    .lobby-screen.exit-back { animation: screen-exit-back 0.16s ease-in forwards; }
+    .lobby-screen.active.enter-back { animation: screen-enter-back 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
+    @keyframes screen-enter-fwd  { from { opacity:0; transform:translateX(20px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes screen-exit-fwd   { from { opacity:1; transform:translateX(0); }   to { opacity:0; transform:translateX(-20px); } }
+    @keyframes screen-enter-back { from { opacity:0; transform:translateX(-20px); } to { opacity:1; transform:translateX(0); } }
+    @keyframes screen-exit-back  { from { opacity:1; transform:translateX(0); }   to { opacity:0; transform:translateX(20px); } }
+    /* Lobby nav */
+    .lobby-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    .lobby-back-btn {
+      background: none; border: none; cursor: pointer;
+      font-size: 13px; color: #888; padding: 4px 0; font-family: var(--font-body);
+      display: flex; align-items: center; gap: 4px; visibility: hidden;
     }
-    .step-label { font-size: 12px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: 0.05em; }
-    .lobby-label { font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px; }
-    .lobby-email {
-      font-family: var(--font-mono);
-      font-size: 13px;
-      background: #f0f0f8;
-      border: 1.5px solid var(--dark);
-      border-radius: 4px;
-      padding: 10px 12px;
-      margin-bottom: 20px;
-      cursor: pointer;
-      word-break: break-all;
-      min-height: 36px;
+    .lobby-back-btn.visible { visibility: visible; }
+    .lobby-back-btn:hover { color: #1a1a2e; }
+    /* Step dots */
+    .lobby-dots { display: flex; gap: 6px; justify-content: center; }
+    .lobby-dot { width: 6px; height: 6px; border-radius: 50%; background: #ddd; transition: background 0.2s, width 0.2s; }
+    .lobby-dot.active { background: #1a1a2e; width: 18px; border-radius: 3px; }
+    /* Screen headers */
+    .screen-label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px; }
+    .screen-headline { font-size: 22px; font-weight: 600; color: #1a1a2e; margin-bottom: 20px; line-height: 1.2; }
+    /* Profile list */
+    .profile-list {
+      border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;
+      max-height: 310px; overflow-y: auto; margin-bottom: 20px;
+      -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%);
+      mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent 100%);
     }
-    .lobby-email:hover { background: #e8e8f0; }
+    .profile-list::-webkit-scrollbar { width: 4px; }
+    .profile-list::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+    .profile-row {
+      display: flex; align-items: center; gap: 12px; padding: 13px 16px;
+      cursor: pointer; border-bottom: 1px solid #f0f0f0; transition: background 0.1s; user-select: none;
+    }
+    .profile-row:last-child { border-bottom: none; }
+    .profile-row:hover { background: #f8f8fb; }
+    .profile-row:focus-visible { outline: 2px solid #1a1a2e; outline-offset: -2px; border-radius: 6px; }
+    .profile-row.selected { background: #f0f0f8; border-left: 3px solid #1a1a2e; padding-left: 13px; }
+    .profile-row-icon { width: 20px; height: 20px; flex-shrink: 0; color: #888; display: flex; align-items: center; }
+    .profile-row.selected .profile-row-icon { color: #1a1a2e; }
+    .profile-row-name { flex: 1; font-size: 14px; font-weight: 500; color: #1a1a1a; }
+    .profile-row-check {
+      width: 18px; height: 18px; flex-shrink: 0; border: 1.5px solid #ccc; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; transition: border-color 0.1s, background 0.1s;
+    }
+    .profile-row.selected .profile-row-check { background: #1a1a2e; border-color: #1a1a2e; }
+    .profile-row-check svg { display: none; }
+    .profile-row.selected .profile-row-check svg { display: block; }
+    /* Provider tiles */
+    .provider-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+    .provider-tile {
+      border: 1.5px solid #e0e0e0; border-radius: 10px; padding: 20px 16px;
+      cursor: pointer; text-align: center;
+      transition: border-color 0.15s, background 0.15s; user-select: none;
+    }
+    .provider-tile:hover { border-color: #aaa; background: #fafafa; }
+    .provider-tile.selected { border-color: #1a1a2e; border-width: 2px; background: #f0f0f8; }
+    .provider-tile-logo { height: 32px; margin-bottom: 10px; display: flex; align-items: center; justify-content: center; }
+    .provider-tile-name { font-size: 13px; font-weight: 600; color: #1a1a1a; }
+    .provider-tile-sub { font-size: 11px; color: #888; margin-top: 3px; }
+    /* Credential upload zone */
+    .sa-upload-zone {
+      border: 2px dashed #ccc; border-radius: 8px; padding: 28px 20px; text-align: center;
+      cursor: pointer; transition: border-color 0.15s, background 0.15s; margin-bottom: 16px;
+    }
+    .sa-upload-zone:hover, .sa-upload-zone.drag-over { border-color: #1a1a2e; background: #f0f0f8; }
+    .sa-upload-zone-icon { color: #bbb; margin-bottom: 10px; }
+    .sa-upload-zone-primary { font-size: 14px; font-weight: 500; color: #333; margin-bottom: 4px; }
+    .sa-upload-zone-secondary { font-size: 12px; color: #888; }
+    .sa-loaded-chip {
+      display: flex; align-items: center; gap: 10px;
+      background: #f0f0f8; border: 1.5px solid #1a1a2e;
+      border-radius: 6px; padding: 10px 14px; margin-bottom: 16px;
+    }
+    .sa-loaded-chip-icon { color: #2d7a2d; flex-shrink: 0; }
+    .sa-loaded-email { font-family: var(--font-mono); font-size: 12px; color: #1a1a2e; flex: 1; word-break: break-all; }
+    .sa-loaded-change { font-size: 12px; color: #888; cursor: pointer; text-decoration: underline; flex-shrink: 0; }
+    .sa-loaded-change:hover { color: #1a1a2e; }
+    /* Password toggle */
+    .password-toggle-wrap { position: relative; }
+    .password-toggle {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer; color: #999; padding: 2px;
+      display: flex; align-items: center;
+    }
+    .password-toggle:hover { color: #555; }
+    /* Mission brief */
+    .mission-brief { border: 1px solid #e8e8e8; border-radius: 8px; overflow: hidden; margin-bottom: 24px; }
+    .brief-row { display: grid; grid-template-columns: 120px 1fr; padding: 10px 14px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    .brief-row:last-child { border-bottom: none; }
+    .brief-key { color: #888; font-weight: 500; }
+    .brief-val { color: #1a1a1a; font-weight: 500; font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+    .brief-val.plain { font-family: var(--font-body); font-size: 13px; }
+    /* Authorize button */
+    .authorize-btn {
+      width: 100%; padding: 13px 20px; background: #1a1a2e; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer;
+      font-size: 15px; font-weight: 600; font-family: var(--font-body);
+      position: relative; overflow: hidden; transition: background 0.15s;
+    }
+    .authorize-btn:hover:not(:disabled) { background: #2a2a4e; }
+    .authorize-btn:disabled { cursor: not-allowed; opacity: 0.85; }
+    .authorize-btn-fill {
+      position: absolute; left: 0; top: 0; bottom: 0;
+      background: rgba(255,255,255,0.12); width: 0%; transition: width 0.4s ease; pointer-events: none;
+    }
+    .authorize-btn-label { position: relative; z-index: 1; }
+    /* Success screen */
+    .success-screen { text-align: center; padding: 12px 0 4px; }
+    .success-check { margin: 0 auto 20px; display: flex; align-items: center; justify-content: center; }
+    .success-check svg .check-circle {
+      stroke-dasharray: 176; stroke-dashoffset: 176;
+      animation: check-circle-draw 0.35s ease-out 0.05s forwards;
+    }
+    .success-check svg .check-mark {
+      stroke-dasharray: 40; stroke-dashoffset: 40;
+      animation: check-mark-draw 0.25s ease-out 0.3s forwards;
+    }
+    @keyframes check-circle-draw { to { stroke-dashoffset: 0; } }
+    @keyframes check-mark-draw   { to { stroke-dashoffset: 0; } }
+    .success-title { font-size: 20px; font-weight: 600; color: #1a1a2e; margin-bottom: 6px; }
+    .success-sub { font-size: 13px; color: #888; margin-bottom: 20px; }
+    .success-detail { background: #f8f8fb; border-radius: 6px; padding: 14px 16px; margin-bottom: 24px; text-align: left; }
+    .success-detail-row { display: flex; gap: 10px; font-size: 13px; margin-bottom: 6px; }
+    .success-detail-row:last-child { margin-bottom: 0; }
+    .success-detail-key { color: #888; min-width: 80px; }
+    .success-detail-val { color: #1a1a2e; font-weight: 500; }
+    .open-workspace-btn {
+      width: 100%; padding: 12px; background: #1a1a2e; color: #fff;
+      border: none; border-radius: 6px; cursor: pointer;
+      font-size: 14px; font-weight: 600; font-family: var(--font-body);
+      opacity: 0; animation: success-btn-appear 0.3s ease 0.7s forwards;
+    }
+    .open-workspace-btn:hover { background: #2a2a4e; }
+    @keyframes success-btn-appear { to { opacity: 1; } }
+    /* License gate uses this as a state description label */
+    .lobby-subtitle { color: #888; font-size: 13px; margin-bottom: 16px; }
+    /* Shared lobby inputs */
     .lobby-input {
-      width: 100%;
-      font-size: 14px;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      padding: 8px 12px;
-      margin-bottom: 20px;
-      outline: none;
+      width: 100%; font-size: 14px; border: 1px solid #ccc;
+      border-radius: 4px; padding: 8px 12px; margin-bottom: 16px; outline: none; font-family: var(--font-body);
     }
     .lobby-input:focus { border-color: #1a1a2e; box-shadow: 0 0 0 3px rgba(26, 26, 46, 0.12); }
     .lobby-input:disabled { background: #f2f2f2; color: #999; }
-    .lobby-actions { display: flex; justify-content: flex-end; }
     .lobby-error {
-      background: #fde8e8;
-      border: 1px solid #f5c6c6;
-      border-radius: 4px;
-      padding: 10px 14px;
-      color: #c0392b;
-      margin-bottom: 16px;
-      font-size: 13px;
-    }
-    .copied-hint { font-size: 11px; color: var(--accent-ok); margin-left: 8px; }
-    .drop-hint {
-      font-size: 12px;
-      color: #aaa;
-      text-align: center;
-      margin-top: -12px;
-      margin-bottom: 20px;
-    }
-    .lobby-card { transition: border-color 0.15s, background 0.15s; }
-    .lobby-card.drag-over {
-      border-color: #1a1a2e;
-      background: #f0f0f8;
-      outline: 2px dashed #1a1a2e;
-      outline-offset: -4px;
+      background: #fde8e8; border: 1px solid #f5c6c6; border-radius: 4px;
+      padding: 10px 14px; color: #c0392b; margin-bottom: 16px; font-size: 13px;
     }
 
     /* Node drawer */
@@ -557,17 +653,6 @@
     tbody tr { animation: row-enter 0.18s ease-out both; }
     tr.loading-row { animation: none; }
     tr.detail-row  { animation: none; }
-
-    /* Profile selector */
-    .profile-radios { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
-    .profile-radio {
-      display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;
-      border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px 12px;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .profile-radio:has(input:checked) { border-color: var(--dark); background: #f0f0f8; }
-    .profile-radio input[type=radio] { margin: 0; accent-color: var(--dark); }
-    .profile-desc { color: #595959; font-size: 11px; }
 
     /* Chain gaps tab */
     .gap-badge-sev { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
@@ -769,8 +854,6 @@
     .info-label        { font-weight: 600; color: #666; }
     .mcp-card-body     { margin-bottom: 10px; color: var(--muted); line-height: 1.5; }
     .header-badge      { margin-left: auto; font-size: 12px; background: var(--accent-warn); color: #fff; border-radius: 10px; padding: 3px 12px; cursor: pointer; }
-    .drop-hint--flush  { margin-top: 0; }
-    .drop-hint--mt8    { margin-top: 8px; }
     .lobby-input--no-mb { margin-bottom: 0; }
     .w-input           { max-width: 280px; }
 
@@ -819,73 +902,135 @@
   <div id="drawer-content" tabindex="-1"></div>
 </div>
 
-<div id="lobby" role="dialog" aria-modal="true" aria-labelledby="lobby-title">
-  <div class="lobby-card" id="lobby-card"
-      ondragover="onSaDragOver(event)"
-      ondragleave="onSaDragLeave(event)"
-      ondrop="onSaDrop(event)">
-    <h2 id="lobby-title">RTMify Live</h2>
-    <p class="lobby-subtitle">Connect your compliance workspace</p>
-    <div id="lobby-error" class="lobby-error" style="display:none"></div>
-    <div class="lobby-step"><span class="step-num">1</span><span class="step-label">Choose provider</span></div>
-    <div class="profile-radios mb-16">
-      <label class="profile-radio">
-        <input type="radio" name="provider" value="google" checked onchange="setProvider('google')">
-        <span>Google Sheets</span>
-      </label>
-      <label class="profile-radio">
-        <input type="radio" name="provider" value="excel" onchange="setProvider('excel')">
-        <span>Excel Online</span>
-      </label>
-    </div>
+<div id="lobby" role="dialog" aria-modal="true" aria-labelledby="lobby-headline">
+  <div class="lobby-card" id="lobby-card">
     <input type="file" id="sa-file-input" accept=".json,application/json" style="display:none">
-    <div id="lobby-sa-section">
-      <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Upload credentials</span></div>
-      <p class="drop-hint drop-hint--flush">
-        Drop `service-account.json` anywhere in this panel to update credentials.
-        <a href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer">How to create a Google service account JSON key</a>
-      </p>
-      <p class="lobby-label">Loaded Google service account:</p>
-      <div class="lobby-email" id="lobby-email" onclick="copyEmail()" title="Click to copy"></div>
-      <span class="copied-hint" id="copy-hint" style="display:none">Copied!</span>
-      <p class="drop-hint drop-hint--mt8" id="lobby-share-hint" style="display:none">
-        Copy this email address by clicking it. Then you must <strong>share</strong> the RTM sheet with this email address.
-      </p>
+
+    <!-- Lobby nav: back button + step dots -->
+    <div class="lobby-nav">
+      <button class="lobby-back-btn" id="lobby-back-btn" onclick="lobbyBack()" aria-label="Back">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="10,3 5,8 10,13"/></svg>
+        Back
+      </button>
+      <div class="lobby-dots" id="lobby-dots">
+        <div class="lobby-dot active" data-dot="1"></div>
+        <div class="lobby-dot" data-dot="2"></div>
+        <div class="lobby-dot" data-dot="3"></div>
+        <div class="lobby-dot" data-dot="4"></div>
+      </div>
     </div>
-    <div id="lobby-excel-section" style="display:none">
-      <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Enter Excel app credentials</span></div>
-      <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" aria-label="Azure tenant ID" oninput="updateProvisionPreviewDebounced()">
-      <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" aria-label="Azure client ID" oninput="updateProvisionPreviewDebounced()">
-      <input id="excel-client-secret" class="lobby-input" type="password" placeholder="Azure client secret" aria-label="Azure client secret" oninput="updateProvisionPreviewDebounced()">
+
+    <div id="lobby-error" class="lobby-error" style="display:none"></div>
+
+    <!-- Screen 1: Mission Profile -->
+    <div class="lobby-screen active" data-screen="1">
+      <p class="screen-label">Step 1 of 4</p>
+      <h2 class="screen-headline" id="lobby-headline">What standard governs your work?</h2>
+      <div class="profile-list" id="profile-list"></div>
+      <button class="authorize-btn" onclick="lobbyNext(1)">
+        <span class="authorize-btn-label">Continue →</span>
+      </button>
     </div>
-    <div class="lobby-step"><span class="step-num">3</span><span class="step-label">Paste workbook URL</span></div>
-    <input id="lobby-url" class="lobby-input" type="text"
-      aria-label="Workbook URL"
-      oninput="updateProvisionPreviewDebounced()"
-      placeholder="https://docs.google.com/spreadsheets/d/…" />
-    <div class="lobby-step"><span class="step-num">4</span><span class="step-label">Choose profile</span></div>
-    <div class="profile-radios">
-      <label class="profile-radio">
-        <input type="radio" name="profile" value="generic" checked onchange="updateProvisionPreview()">
-        <span>Generic <span class="profile-desc">— Basic requirements traceability</span></span>
-      </label>
-      <label class="profile-radio">
-        <input type="radio" name="profile" value="medical" onchange="updateProvisionPreview()">
-        <span>Medical <span class="profile-desc">— ISO 13485 / IEC 62304 / FDA 21 CFR Part 11</span></span>
-      </label>
-      <label class="profile-radio">
-        <input type="radio" name="profile" value="aerospace" onchange="updateProvisionPreview()">
-        <span>Aerospace <span class="profile-desc">— DO-178C / AS9100</span></span>
-      </label>
-      <label class="profile-radio">
-        <input type="radio" name="profile" value="automotive" onchange="updateProvisionPreview()">
-        <span>Automotive <span class="profile-desc">— ISO 26262 / ASPICE</span></span>
-      </label>
+
+    <!-- Screen 2: Provider -->
+    <div class="lobby-screen" data-screen="2">
+      <p class="screen-label">Step 2 of 4</p>
+      <h2 class="screen-headline">Where is your workbook?</h2>
+      <div class="provider-tiles">
+        <div class="provider-tile selected" id="tile-google" onclick="selectProvider('google')">
+          <div class="provider-tile-logo">
+            <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#0F9D58"/><path d="M12 16h24v16H12z" fill="#fff" opacity=".9"/><path d="M12 20h24M12 24h24M12 28h24M20 16v16M28 16v16" stroke="#0F9D58" stroke-width="1.5"/><path d="M12 16h24v3H12z" fill="#0F9D58"/></svg>
+          </div>
+          <div class="provider-tile-name">Google Sheets</div>
+          <div class="provider-tile-sub">Google Workspace</div>
+        </div>
+        <div class="provider-tile" id="tile-excel" onclick="selectProvider('excel')">
+          <div class="provider-tile-logo">
+            <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#217346"/><path d="M8 12h20v24H8z" fill="#185C37"/><path d="M8 12l12 12L8 36" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M28 16h12M28 24h12M28 32h12M28 20h12M28 28h12" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </div>
+          <div class="provider-tile-name">Excel Online</div>
+          <div class="provider-tile-sub">Microsoft 365</div>
+        </div>
+      </div>
+      <button class="authorize-btn" onclick="lobbyNext(2)">
+        <span class="authorize-btn-label">Continue →</span>
+      </button>
     </div>
-    <div id="provision-preview" class="text-sm-muted mb-12" style="display:none"></div>
-    <div class="lobby-actions">
-      <button id="lobby-btn" class="btn" onclick="connectSheet()">Connect</button>
+
+    <!-- Screen 3: Credentials + Workbook URL -->
+    <div class="lobby-screen" data-screen="3">
+      <p class="screen-label">Step 3 of 4</p>
+      <h2 class="screen-headline">Connect your workbook</h2>
+      <!-- Google path -->
+      <div id="s3-google">
+        <div class="sa-upload-zone" id="sa-upload-zone"
+             onclick="document.getElementById('sa-file-input').click()"
+             ondragover="onSaDragOver(event)"
+             ondragleave="onSaDragLeave(event)"
+             ondrop="onSaDrop(event)">
+          <div class="sa-upload-zone-icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="sa-upload-zone-primary">Drop service-account.json here</div>
+          <div class="sa-upload-zone-secondary">or click to browse · <a href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">How to create a key</a></div>
+        </div>
+        <div class="sa-loaded-chip" id="sa-loaded-chip" style="display:none">
+          <span class="sa-loaded-chip-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="7"/><polyline points="5,8.5 7,10.5 11,6"/></svg></span>
+          <span class="sa-loaded-email" id="sa-loaded-email"></span>
+          <span class="sa-loaded-change" onclick="clearCredential()">Change</span>
+        </div>
+        <p class="text-hint mb-12" id="lobby-share-hint" style="display:none">
+          Share your RTM sheet with this email address to grant read access.
+        </p>
+      </div>
+      <!-- Excel path -->
+      <div id="s3-excel" style="display:none">
+        <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" aria-label="Azure tenant ID" oninput="lobbyStateFromInputs()">
+        <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" aria-label="Azure client ID" oninput="lobbyStateFromInputs()">
+        <div class="password-toggle-wrap">
+          <input id="excel-client-secret" class="lobby-input lobby-input--no-mb" type="password" placeholder="Azure client secret" aria-label="Azure client secret" oninput="lobbyStateFromInputs()" style="padding-right:38px">
+          <button type="button" class="password-toggle" onclick="toggleSecretVisibility()" aria-label="Show or hide client secret">
+            <svg id="secret-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+        <div style="margin-bottom:16px"></div>
+      </div>
+      <input id="lobby-url" class="lobby-input" type="text"
+             aria-label="Workbook URL"
+             oninput="lobbyStateFromInputs()"
+             placeholder="https://docs.google.com/spreadsheets/d/…" />
+      <button class="authorize-btn" id="s3-continue-btn" onclick="lobbyNext(3)">
+        <span class="authorize-btn-label">Review →</span>
+      </button>
     </div>
+
+    <!-- Screen 4: Mission Brief -->
+    <div class="lobby-screen" data-screen="4">
+      <p class="screen-label">Ready to authorize</p>
+      <h2 class="screen-headline" id="brief-headline"></h2>
+      <div class="mission-brief" id="mission-brief"></div>
+      <button class="authorize-btn" id="authorize-btn" onclick="connectSheet()">
+        <div class="authorize-btn-fill" id="authorize-fill"></div>
+        <span class="authorize-btn-label" id="authorize-label">Authorize &amp; Connect</span>
+      </button>
+    </div>
+
+    <!-- Screen 5: Success -->
+    <div class="lobby-screen" data-screen="5">
+      <div class="success-screen">
+        <div class="success-check">
+          <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+            <circle class="check-circle" cx="32" cy="32" r="28" stroke="#2d7a2d" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+            <polyline class="check-mark" points="20,33 28,41 44,23" stroke="#2d7a2d" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+        </div>
+        <div class="success-title">Workspace authorized.</div>
+        <div class="success-sub" id="success-sub"></div>
+        <div class="success-detail" id="success-detail"></div>
+        <button class="open-workspace-btn" onclick="openWorkspace()">Open Workspace</button>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1399,11 +1544,6 @@ audit_readiness_summary(profile="aerospace")</div>
   let guideLookupByKey = new Map();
   let pendingGuideAnchor = null;
 
-  let _provisionPreviewTimer = null;
-  function updateProvisionPreviewDebounced() {
-    clearTimeout(_provisionPreviewTimer);
-    _provisionPreviewTimer = setTimeout(updateProvisionPreview, 500);
-  }
 
   function showGroup(name) {
     document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
@@ -2021,54 +2161,69 @@ audit_readiness_summary(profile="aerospace")</div>
         return;
       }
       applyStatus(status);
+      resetLobbyScreens(1);
+      lobbyCurrentScreen = 1;
+      updateLobbyNav();
+      if (status.workbook_url && status.platform && lobbyState.profileId) {
+        lobbyCurrentScreen = 1;
+        showScreen(4, 'forward');
+        return;
+      }
     } catch (_) {}
-    updateProvisionPreview();
+    resetLobbyScreens(1);
+    lobbyCurrentScreen = 1;
+    updateLobbyNav();
   }
 
-  let lobbyGoogleCredentialJson = '';
-  let lobbyGoogleCredentialDisplay = '';
-  let lobbyStatus = null;
-
-  function selectedProvider() {
-    const selected = document.querySelector('input[name=provider]:checked');
-    return selected ? selected.value : 'google';
+  function clearProfileSelection() {
+    lobbyState.profileId = null;
+    lobbyState.prefilledConnection = false;
+    document.querySelectorAll('.profile-row').forEach(row => {
+      row.classList.remove('selected');
+      row.setAttribute('aria-selected', 'false');
+    });
   }
 
-  function setProvider(provider) {
-    document.getElementById('lobby-sa-section').style.display = provider === 'google' ? '' : 'none';
-    document.getElementById('lobby-excel-section').style.display = provider === 'excel' ? '' : 'none';
-    document.getElementById('lobby-url').placeholder = provider === 'excel'
-      ? 'https://tenant.sharepoint.com/:x:/r/sites/...'
-      : 'https://docs.google.com/spreadsheets/d/...';
-    updateProvisionPreview();
+  function resetLobbyScreens(activeScreen) {
+    document.querySelectorAll('.lobby-screen').forEach(screen => {
+      screen.classList.remove('active', 'exit-fwd', 'exit-back', 'enter-back');
+    });
+    document.querySelector(`.lobby-screen[data-screen="${activeScreen}"]`)?.classList.add('active');
   }
 
   function applyStatus(status) {
-    lobbyStatus = status;
-    const emailEl = document.getElementById('lobby-email');
-    const shareHintEl = document.getElementById('lobby-share-hint');
     if (status.platform) {
-      document.querySelector(`input[name=provider][value="${status.platform}"]`)?.click();
+      lobbyState.provider = status.platform;
+      selectProvider(status.platform);
     }
+    if (status.workbook_url) {
+      lobbyState.workbookUrl = status.workbook_url;
+      document.getElementById('lobby-url').value = status.workbook_url;
+    }
+    lobbyState.prefilledConnection = Boolean(status.platform && status.workbook_url);
     if (status.platform === 'google' && status.credential_display) {
-      emailEl.textContent = status.credential_display;
-      emailEl.style.color = '';
-      emailEl.style.cursor = 'pointer';
-      emailEl.onclick = copyEmail;
-      emailEl.title = 'Click to copy';
-      lobbyGoogleCredentialDisplay = status.credential_display;
-      shareHintEl.style.display = 'block';
-    } else {
-      emailEl.textContent = 'Drop or click to upload service-account.json';
-      emailEl.style.color = '#aaa';
-      emailEl.style.cursor = 'pointer';
-      emailEl.onclick = () => document.getElementById('sa-file-input').click();
-      emailEl.title = 'Click to browse for service-account.json';
-      if (!lobbyGoogleCredentialDisplay) lobbyGoogleCredentialDisplay = '';
-      shareHintEl.style.display = 'none';
+      lobbyState.googleCredentialEmail = status.credential_display;
+      document.getElementById('sa-loaded-email').textContent = status.credential_display;
+      document.getElementById('sa-upload-zone').style.display = 'none';
+      document.getElementById('sa-loaded-chip').style.display = '';
+      document.getElementById('lobby-share-hint').style.display = 'block';
     }
-    if (status.workbook_url) document.getElementById('lobby-url').value = status.workbook_url;
-    document.getElementById('lobby-btn').disabled = false;
+    if (status.profile) {
+      const backendToUi = { medical:'medical', aerospace:'aerospace', automotive:'automotive', generic:null };
+      const uiId = backendToUi[status.profile] ?? null;
+      if (uiId !== null) {
+        lobbyState.profileId = uiId;
+        document.querySelectorAll('.profile-row').forEach(row => {
+          row.classList.toggle('selected', row.dataset.profileId === uiId);
+          row.setAttribute('aria-selected', row.dataset.profileId === uiId ? 'true' : 'false');
+        });
+      } else {
+        clearProfileSelection();
+      }
+      // generic → profileId stays null, user must re-select from the expanded list
+    } else {
+      clearProfileSelection();
+    }
   }
 
   function licenseStateMessage(status) {
@@ -2230,20 +2385,20 @@ audit_readiness_summary(profile="aerospace")</div>
 
   function onSaDragOver(e) {
     e.preventDefault();
-    document.getElementById('lobby-card').classList.add('drag-over');
+    document.getElementById('sa-upload-zone').classList.add('drag-over');
   }
 
   function onSaDragLeave(e) {
     if (!e.currentTarget.contains(e.relatedTarget)) {
-      document.getElementById('lobby-card').classList.remove('drag-over');
+      document.getElementById('sa-upload-zone').classList.remove('drag-over');
     }
   }
 
   async function onSaDrop(e) {
     e.preventDefault();
-    document.getElementById('lobby-card').classList.remove('drag-over');
+    document.getElementById('sa-upload-zone').classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
-    if (selectedProvider() === 'google' && file) await uploadSaFile(file);
+    if (lobbyState.provider === 'google' && file) await uploadSaFile(file);
   }
 
   async function uploadSaFile(file) {
@@ -2260,26 +2415,22 @@ audit_readiness_summary(profile="aerospace")</div>
       return;
     }
 
+    let parsed;
     try {
-      const parsed = JSON.parse(text);
-      lobbyGoogleCredentialDisplay = parsed.client_email || 'Loaded service account';
-      lobbyGoogleCredentialJson = text;
+      parsed = JSON.parse(text);
     } catch {
       errEl.textContent = 'Invalid Google service-account JSON.';
       errEl.style.display = 'block';
       return;
     }
 
-    const emailEl = document.getElementById('lobby-email');
-    emailEl.textContent = lobbyGoogleCredentialDisplay;
-    emailEl.style.color = '';
-    emailEl.style.cursor = 'pointer';
-    emailEl.onclick = copyEmail;
-    emailEl.title = 'Click to copy';
+    lobbyState.googleCredentialEmail = parsed.client_email || 'Loaded service account';
+    lobbyState.googleCredentialJson  = text;
+
+    document.getElementById('sa-loaded-email').textContent = lobbyState.googleCredentialEmail;
+    document.getElementById('sa-upload-zone').style.display = 'none';
+    document.getElementById('sa-loaded-chip').style.display = '';
     document.getElementById('lobby-share-hint').style.display = 'block';
-    document.getElementById('lobby-sa-section').style.display = '';
-    document.getElementById('lobby-btn').disabled = false;
-    updateProvisionPreview();
   }
 
   document.getElementById('sa-file-input').addEventListener('change', function() {
@@ -2666,12 +2817,230 @@ audit_readiness_summary(profile="aerospace")</div>
 
   // --- Lobby ---
 
+  const lobbyState = {
+    profileId: null,
+    provider: 'google',
+    googleCredentialJson: '',
+    googleCredentialEmail: '',
+    excelTenantId: '',
+    excelClientId: '',
+    excelClientSecret: '',
+    workbookUrl: '',
+    prefilledConnection: false,
+  };
+
+  let lobbyCurrentScreen = 1;
+
+  const LOBBY_PROFILES = [
+    { id:'aerospace',  backendId:'aerospace', label:'Aerospace',                    standards:'DO-178C · AS9100D',                      tagline:'Authorize your DO-178C traceability instrument' },
+    { id:'automotive', backendId:'automotive', label:'Automotive',                  standards:'ISO 26262 · ASPICE',                     tagline:'Authorize your ISO 26262 / ASPICE workspace' },
+    { id:'defense',    backendId:'aerospace',  label:'Defense',                     standards:'DO-178C · MIL-STD-882 · DEF STAN 00-56', tagline:'Authorize your defense safety workspace' },
+    { id:'industrial', backendId:'generic',    label:'Industrial Automation',       standards:'IEC 61511 · IEC 62443',                  tagline:'Authorize your functional safety workspace' },
+    { id:'maritime',   backendId:'generic',    label:'Maritime & Offshore',         standards:'DNV GL · IEC 61508',                     tagline:'Authorize your maritime safety workspace' },
+    { id:'medical',    backendId:'medical',    label:'Medical Device',              standards:'ISO 13485 · IEC 62304 · FDA 21 CFR Part 11', tagline:'Authorize your IEC 62304 / ISO 13485 workspace' },
+    { id:'nuclear',    backendId:'generic',    label:'Nuclear',                     standards:'IEC 61513 · IEEE 603',                   tagline:'Authorize your nuclear I&C traceability workspace' },
+    { id:'rail',       backendId:'generic',    label:'Rail',                        standards:'EN 50128 · EN 50129',                    tagline:'Authorize your EN 50128 workspace' },
+    { id:'samd',       backendId:'medical',    label:'Software as a Medical Device',standards:'IEC 62304 · FDA SaMD · IMDRF',            tagline:'Authorize your FDA SaMD workspace' },
+    { id:'space',      backendId:'aerospace',  label:'Space',                       standards:'ECSS · NASA-STD-8739',                   tagline:'Authorize your ECSS / NASA workspace' },
+  ];
+
+  const PROFILE_ICONS = {
+    aerospace:  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16l-9-13-9 13h4l5-7 5 7z"/><path d="M3 16h18"/></svg>',
+    automotive: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="9"/><line x1="12" y1="15" x2="12" y2="21"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg>',
+    defense:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></svg>',
+    industrial: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>',
+    maritime:   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2"/><line x1="12" y1="7" x2="12" y2="14"/><path d="M7 14c0 3 2.5 5 5 6 2.5-1 5-3 5-6H7z"/><line x1="7" y1="11" x2="17" y2="11"/></svg>',
+    medical:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3M3 16v3a2 2 0 002 2h3m8 0h3a2 2 0 002-2v-3M9 12h6M12 9v6"/></svg>',
+    nuclear:    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2a10 10 0 100 20A10 10 0 0012 2z" stroke-dasharray="3 3"/><path d="M12 4v4M12 16v4M4 12h4M16 12h4"/></svg>',
+    rail:       '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="13" rx="2"/><circle cx="8.5" cy="13.5" r="1.5"/><circle cx="15.5" cy="13.5" r="1.5"/><path d="M8 20l-2 2M16 20l2 2M5 20h14"/><line x1="4" y1="8" x2="20" y2="8"/></svg>',
+    samd:       '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><path d="M10 10h4M12 8v4"/></svg>',
+    space:      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C8 2 5 7 5 12c0 2.5 1 5 3 7l4-4 4 4c2-2 3-4.5 3-7 0-5-3-10-7-10z"/><circle cx="12" cy="11" r="2"/><path d="M5 19l-2 2M19 19l2 2"/></svg>',
+  };
+
+  function renderProfileList() {
+    const list = document.getElementById('profile-list');
+    list.innerHTML = LOBBY_PROFILES.map(p => `
+      <div class="profile-row${p.id === lobbyState.profileId ? ' selected' : ''}" data-profile-id="${p.id}" role="option" aria-selected="${p.id === lobbyState.profileId}" tabindex="0" onclick="selectProfile('${p.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectProfile('${p.id}')}">
+        <span class="profile-row-icon">${PROFILE_ICONS[p.id]}</span>
+        <span class="profile-row-name">${p.label}</span>
+        <span class="profile-row-check"><svg width="10" height="8" viewBox="0 0 10 8" fill="none"><polyline points="1,4 4,7 9,1" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+      </div>`).join('');
+  }
+
+  function selectProfile(id) {
+    lobbyState.profileId = id;
+    lobbyState.prefilledConnection = false;
+    document.querySelectorAll('.profile-row').forEach(row => {
+      const isSelected = row.dataset.profileId === id;
+      row.classList.toggle('selected', isSelected);
+      row.setAttribute('aria-selected', isSelected);
+    });
+  }
+
+  function selectProvider(provider) {
+    lobbyState.provider = provider;
+    lobbyState.prefilledConnection = false;
+    document.getElementById('tile-google').classList.toggle('selected', provider === 'google');
+    document.getElementById('tile-excel').classList.toggle('selected', provider === 'excel');
+    document.getElementById('s3-google').style.display = provider === 'google' ? '' : 'none';
+    document.getElementById('s3-excel').style.display = provider === 'excel' ? '' : 'none';
+    document.getElementById('lobby-url').placeholder = provider === 'excel'
+      ? 'https://tenant.sharepoint.com/:x:/r/sites/…'
+      : 'https://docs.google.com/spreadsheets/d/…';
+  }
+
+  function showScreen(n, direction) {
+    if (direction === undefined) direction = 'forward';
+    const prev = document.querySelector(`.lobby-screen[data-screen="${lobbyCurrentScreen}"]`);
+    const next = document.querySelector(`.lobby-screen[data-screen="${n}"]`);
+    const exitClass = direction === 'forward' ? 'exit-fwd' : 'exit-back';
+    const enterClass = direction === 'back' ? 'enter-back' : '';
+
+    prev.classList.add(exitClass);
+    prev.addEventListener('animationend', function handler() {
+      prev.removeEventListener('animationend', handler);
+      prev.classList.remove('active', exitClass);
+      next.classList.add('active');
+      if (enterClass) {
+        next.classList.add(enterClass);
+        next.addEventListener('animationend', function h2() {
+          next.removeEventListener('animationend', h2);
+          next.classList.remove(enterClass);
+        });
+      }
+    });
+
+    lobbyCurrentScreen = n;
+    updateLobbyNav();
+    if (n === 4) renderMissionBrief();
+  }
+
+  function updateLobbyNav() {
+    const backBtn = document.getElementById('lobby-back-btn');
+    const dots = document.getElementById('lobby-dots');
+    const onSuccess = lobbyCurrentScreen === 5;
+    backBtn.classList.toggle('visible', lobbyCurrentScreen > 1 && !onSuccess);
+    dots.style.visibility = onSuccess ? 'hidden' : '';
+    document.querySelectorAll('.lobby-dot').forEach(dot => {
+      dot.classList.toggle('active', Number(dot.dataset.dot) === lobbyCurrentScreen);
+    });
+  }
+
+  function lobbyNext(fromScreen) {
+    const errEl = document.getElementById('lobby-error');
+    errEl.style.display = 'none';
+    if (fromScreen === 1) {
+      if (!lobbyState.profileId) {
+        errEl.textContent = 'Select a profile to continue.';
+        errEl.style.display = 'block';
+        return;
+      }
+      showScreen(2, 'forward');
+    } else if (fromScreen === 2) {
+      showScreen(3, 'forward');
+    } else if (fromScreen === 3) {
+      lobbyStateFromInputs();
+      if (lobbyState.provider === 'google') {
+        if (!lobbyState.googleCredentialJson) {
+          errEl.textContent = 'Upload a service-account.json file to continue.';
+          errEl.style.display = 'block';
+          return;
+        }
+      } else {
+        if (!lobbyState.excelTenantId || !lobbyState.excelClientId || !lobbyState.excelClientSecret) {
+          errEl.textContent = 'Enter all Azure credentials to continue.';
+          errEl.style.display = 'block';
+          return;
+        }
+      }
+      if (!lobbyState.workbookUrl) {
+        errEl.textContent = 'Enter a workbook URL to continue.';
+        errEl.style.display = 'block';
+        return;
+      }
+      showScreen(4, 'forward');
+    }
+  }
+
+  function lobbyBack() {
+    if (lobbyCurrentScreen > 1) showScreen(lobbyCurrentScreen - 1, 'back');
+  }
+
+  function lobbyStateFromInputs() {
+    const workbookUrl = document.getElementById('lobby-url').value.trim();
+    if (workbookUrl !== lobbyState.workbookUrl) lobbyState.prefilledConnection = false;
+    lobbyState.workbookUrl = workbookUrl;
+    if (lobbyState.provider === 'excel') {
+      const tenantId = document.getElementById('excel-tenant-id').value.trim();
+      const clientId = document.getElementById('excel-client-id').value.trim();
+      const clientSecret = document.getElementById('excel-client-secret').value.trim();
+      if (tenantId !== lobbyState.excelTenantId || clientId !== lobbyState.excelClientId || clientSecret !== lobbyState.excelClientSecret) {
+        lobbyState.prefilledConnection = false;
+      }
+      lobbyState.excelTenantId     = tenantId;
+      lobbyState.excelClientId     = clientId;
+      lobbyState.excelClientSecret = clientSecret;
+    }
+  }
+
+  function toggleSecretVisibility() {
+    const input = document.getElementById('excel-client-secret');
+    const eye   = document.getElementById('secret-eye');
+    const isPassword = input.type === 'password';
+    input.type = isPassword ? 'text' : 'password';
+    eye.style.opacity = isPassword ? '0.4' : '1';
+  }
+
+  function renderMissionBrief() {
+    const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
+    if (!profile) return;
+    document.getElementById('brief-headline').textContent = profile.tagline;
+    const urlDisplay = lobbyState.workbookUrl.length > 44
+      ? '…' + lobbyState.workbookUrl.slice(-42) : lobbyState.workbookUrl;
+    const accountDisplay = lobbyState.provider === 'google'
+      ? (lobbyState.googleCredentialEmail || '—')
+      : (lobbyState.excelTenantId || '—');
+    const providerLabel = lobbyState.provider === 'google' ? 'Google Sheets' : 'Excel Online';
+    document.getElementById('mission-brief').innerHTML = `
+      <div class="brief-row"><span class="brief-key">Profile</span><span class="brief-val plain">${profile.label}</span></div>
+      <div class="brief-row"><span class="brief-key">Standard</span><span class="brief-val plain">${profile.standards}</span></div>
+      <div class="brief-row"><span class="brief-key">Provider</span><span class="brief-val plain">${providerLabel}</span></div>
+      <div class="brief-row"><span class="brief-key">Account</span><span class="brief-val">${esc(accountDisplay)}</span></div>
+      <div class="brief-row"><span class="brief-key">Workbook</span><span class="brief-val">${esc(urlDisplay)}</span></div>`;
+  }
+
+  function showSuccess() {
+    const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId) || { label: '—', standards: '—' };
+    document.getElementById('success-sub').textContent =
+      `${profile.label} · ${lobbyState.provider === 'google' ? 'Google Sheets' : 'Excel Online'}`;
+    document.getElementById('success-detail').innerHTML = `
+      <div class="success-detail-row"><span class="success-detail-key">Standard</span><span class="success-detail-val">${esc(profile.standards)}</span></div>
+      <div class="success-detail-row"><span class="success-detail-key">Account</span><span class="success-detail-val">${esc(lobbyState.googleCredentialEmail || lobbyState.excelTenantId || '—')}</span></div>
+      <div class="success-detail-row"><span class="success-detail-key">Sync</span><span class="success-detail-val">Starting…</span></div>`;
+    showScreen(5, 'forward');
+  }
+
+  function openWorkspace() {
+    document.getElementById('lobby').classList.remove('visible');
+    _releaseLobby();
+    loadData();
+  }
+
+  function clearCredential() {
+    lobbyState.googleCredentialJson = '';
+    lobbyState.googleCredentialEmail = '';
+    lobbyState.prefilledConnection = false;
+    document.getElementById('sa-upload-zone').style.display = '';
+    document.getElementById('sa-loaded-chip').style.display = 'none';
+    document.getElementById('lobby-share-hint').style.display = 'none';
+  }
+
   function _trapLobby() {
     document.querySelector('main').inert = true;
     document.querySelector('header').inert = true;
     document.querySelector('nav.nav-primary').inert = true;
     document.querySelectorAll('.nav-sub').forEach(n => { n.inert = true; });
-    const first = document.querySelector('#lobby input[name=provider]');
+    const first = document.querySelector('#lobby .profile-row');
     if (first) first.focus();
   }
 
@@ -2722,83 +3091,56 @@ audit_readiness_summary(profile="aerospace")</div>
     automotive: 'ISO 26262 / ASPICE',
   };
 
-  function currentProfile() {
-    const profileVal = document.querySelector('input[name=profile]:checked');
-    return profileVal ? profileVal.value : 'generic';
-  }
-
   function buildDraftConnection() {
-    const platform = selectedProvider();
-    const workbookUrl = document.getElementById('lobby-url').value.trim();
+    const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
+    if (!profile) return null;
     const draft = {
-      platform,
-      profile: currentProfile(),
-      workbook_url: workbookUrl,
+      platform: lobbyState.provider,
+      profile: profile.backendId,
+      workbook_url: lobbyState.workbookUrl,
       credentials: {},
     };
-    if (platform === 'google') {
-      if (!lobbyGoogleCredentialJson) return null;
-      draft.credentials.service_account_json = lobbyGoogleCredentialJson;
+    if (lobbyState.provider === 'google') {
+      if (!lobbyState.googleCredentialJson) return null;
+      draft.credentials.service_account_json = lobbyState.googleCredentialJson;
     } else {
-      const tenantId = document.getElementById('excel-tenant-id').value.trim();
-      const clientId = document.getElementById('excel-client-id').value.trim();
-      const clientSecret = document.getElementById('excel-client-secret').value.trim();
-      if (!tenantId || !clientId || !clientSecret) return null;
-      draft.credentials.tenant_id = tenantId;
-      draft.credentials.client_id = clientId;
-      draft.credentials.client_secret = clientSecret;
+      if (!lobbyState.excelTenantId || !lobbyState.excelClientId || !lobbyState.excelClientSecret) return null;
+      draft.credentials.tenant_id     = lobbyState.excelTenantId;
+      draft.credentials.client_id     = lobbyState.excelClientId;
+      draft.credentials.client_secret = lobbyState.excelClientSecret;
     }
-    if (!workbookUrl) return null;
+    if (!lobbyState.workbookUrl) return null;
     return draft;
   }
 
-  async function updateProvisionPreview() {
-    const previewEl = document.getElementById('provision-preview');
-    const errEl = document.getElementById('lobby-error');
-    const draft = buildDraftConnection();
-    if (!draft) {
-      previewEl.style.display = 'none';
+  async function connectSheet() {
+    const btn    = document.getElementById('authorize-btn');
+    const fill   = document.getElementById('authorize-fill');
+    const label  = document.getElementById('authorize-label');
+    const errEl  = document.getElementById('lobby-error');
+    const draft  = buildDraftConnection();
+
+    if (!draft && lobbyState.prefilledConnection && lobbyState.profileId && lobbyState.provider && lobbyState.workbookUrl) {
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      fill.style.width = '100%';
+      label.textContent = 'Using saved connection…';
+      await new Promise(r => setTimeout(r, 150));
+      showSuccess();
+      await loadData();
+      await handleGuideHash();
       return;
     }
-    try {
-      const res = await fetch('/api/connection/validate', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(draft),
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data.ok) {
-        previewEl.textContent = 'Connection check failed: ' + formatDiagnosticsError(data);
-        previewEl.style.display = 'block';
-        return;
-      }
-      if (!data.preview || !data.preview.ready) {
-        previewEl.style.display = 'none';
-        return;
-      }
-      errEl.style.display = 'none';
-      previewEl.textContent = provisionPreviewText(data.preview);
-      previewEl.style.display = 'block';
-    } catch (e) {
-      previewEl.textContent = 'Connection check failed: ' + e.message;
-      previewEl.style.display = 'block';
-    }
-  }
 
-  async function connectSheet() {
-    const urlInput = document.getElementById('lobby-url');
-    const errEl = document.getElementById('lobby-error');
-    const btn = document.getElementById('lobby-btn');
-    const draft = buildDraftConnection();
     if (!draft) {
-      errEl.textContent = 'Enter provider credentials and a workbook URL before connecting.';
+      errEl.textContent = 'Complete all fields before connecting.';
       errEl.style.display = 'block';
       return;
     }
     errEl.style.display = 'none';
     btn.disabled = true;
-    btn.textContent = 'Connecting…';
+    fill.style.width = '25%';
+    label.textContent = 'Verifying credentials…';
 
     try {
       const res = await fetch('/api/connection', {
@@ -2806,6 +3148,8 @@ audit_readiness_summary(profile="aerospace")</div>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(draft),
       });
+      fill.style.width = '70%';
+      label.textContent = 'Reading workbook…';
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(formatDiagnosticsError(data) || data.detail || `HTTP ${res.status}`);
@@ -2814,12 +3158,15 @@ audit_readiness_summary(profile="aerospace")</div>
       errEl.textContent = 'Failed to connect: ' + e.message;
       errEl.style.display = 'block';
       btn.disabled = false;
-      btn.textContent = 'Connect';
+      fill.style.width = '0%';
+      label.textContent = 'Authorize & Connect';
       return;
     }
 
-    document.getElementById('lobby').classList.remove('visible');
-    _releaseLobby();
+    fill.style.width = '100%';
+    label.textContent = 'Connected.';
+    await new Promise(r => setTimeout(r, 300));
+    showSuccess();
     await loadData();
     await handleGuideHash();
   }
@@ -3220,20 +3567,18 @@ audit_readiness_summary(profile="aerospace")</div>
 
   function formatDiagnosticsError(data) {
     const diagnostics = data.diagnostics || [];
-    if (!diagnostics.length) return data.error || 'Request failed';
+    if (!diagnostics.length) return data.detail || data.error || 'Request failed';
     return diagnostics.map(d => `E${d.code}: ${d.message}`).join(' ');
   }
 
   function copyEmail() {
-    const value = document.getElementById('lobby-email').textContent;
-    navigator.clipboard.writeText(value).then(() => {
-      const hint = document.getElementById('copy-hint');
-      hint.style.display = 'inline';
-      setTimeout(() => { hint.style.display = 'none'; }, 2000);
-    });
+    const value = document.getElementById('sa-loaded-email').textContent;
+    if (!value) return;
+    navigator.clipboard.writeText(value).catch(() => {});
   }
 
   // --- Init ---
+  renderProfileList();
   window.addEventListener('hashchange', () => {
     handleGuideHash();
   });

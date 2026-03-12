@@ -428,6 +428,10 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, licens
     try appendJsonStrOpt(&buf, if (active) |a| a.workbook_label else null, alloc);
     try buf.appendSlice(alloc, ",\"workbook_url\":");
     try appendJsonStrOpt(&buf, if (active) |a| a.workbook_url else null, alloc);
+    const profile = try db.getConfig("profile", alloc);
+    defer if (profile) |value| alloc.free(value);
+    try buf.appendSlice(alloc, ",\"profile\":");
+    try appendJsonStrOpt(&buf, profile, alloc);
     const last_scan = (try db.getConfig("last_scan_at", alloc)) orelse try alloc.dupe(u8, "never");
     defer alloc.free(last_scan);
     try buf.appendSlice(alloc, ",\"last_scan_at\":");
@@ -2825,10 +2829,9 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "${arrow} ${esc(e.label)}") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\"") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "class=\"drop-hint drop-hint--mt8\" id=\"lobby-share-hint\" style=\"display:none\"") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "shareHintEl.style.display = 'block'") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "shareHintEl.style.display = 'none'") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "document.getElementById('lobby-share-hint').style.display = 'block'") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "sa-upload-zone") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "uploadSaFile") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "clearCredential") != null);
 }
 
 test "handleGuideErrors returns grouped guide catalog" {
