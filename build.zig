@@ -211,6 +211,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_trace_tests = b.addRunArtifact(trace_tests);
 
+    const windows_trace_state_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trace/windows/src/state.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_windows_trace_state_tests = b.addRunArtifact(windows_trace_state_tests);
+
     const live_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("live/src/lib_live.zig"),
@@ -266,6 +275,7 @@ pub fn build(b: *std.Build) void {
 
     const test_trace_step = b.step("test-trace", "Run trace CLI unit tests");
     test_trace_step.dependOn(&run_trace_tests.step);
+    test_trace_step.dependOn(&run_windows_trace_state_tests.step);
 
     const test_live_step = b.step("test-live", "Run live module unit tests");
     test_live_step.dependOn(&run_live_tests.step);
@@ -279,6 +289,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_trace_tests.step);
+    test_step.dependOn(&run_windows_trace_state_tests.step);
     test_step.dependOn(&run_live_tests.step);
     test_step.dependOn(&run_windows_lifecycle_tests.step);
     test_step.dependOn(&run_windows_process_tests.step);
