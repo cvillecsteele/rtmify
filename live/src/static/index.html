@@ -1617,7 +1617,7 @@ audit_readiness_summary(profile="aerospace")</div>
     badge.style.display = 'inline-block';
 
     if (reqs.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><strong>No requirements</strong>Sync your Google Sheet or click Refresh.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><strong>No requirements</strong><br>Sync your Google Sheet or click Refresh.</td></tr>';
       return;
     }
 
@@ -1656,7 +1656,7 @@ audit_readiness_summary(profile="aerospace")</div>
       return;
     }
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><strong>No user needs</strong>Check your sheet\'s User Needs tab.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-state"><strong>No user needs</strong><br>Check your sheet\'s User Needs tab.</td></tr>';
       return;
     }
     rows.sort((a, b) => a.id.localeCompare(b.id));
@@ -1688,7 +1688,7 @@ audit_readiness_summary(profile="aerospace")</div>
       return;
     }
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><strong>No tests</strong>Check your sheet\'s Tests tab.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><strong>No tests</strong><br>Check your sheet\'s Tests tab.</td></tr>';
       return;
     }
     tbody.innerHTML = rows.map(r => {
@@ -1725,7 +1725,7 @@ audit_readiness_summary(profile="aerospace")</div>
     }
 
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No RTM data</strong>Requirements and tests must both be loaded.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No RTM data</strong><br>Requirements and tests must both be loaded.</td></tr>';
       return;
     }
 
@@ -1772,7 +1772,7 @@ audit_readiness_summary(profile="aerospace")</div>
     }
 
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No risks</strong>Check your sheet\'s Risks tab.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No risks</strong><br>Check your sheet\'s Risks tab.</td></tr>';
       return;
     }
 
@@ -2282,42 +2282,19 @@ audit_readiness_summary(profile="aerospace")</div>
     let data;
     try {
       const url = new URL('/query/impact/' + encodeURIComponent(id), window.location.origin).toString();
-      console.info('runImpact request', {
-        id,
-        url,
-        href: window.location.href,
-        origin: window.location.origin,
-        online: navigator.onLine,
-      });
-      window.__rtmify_lastImpactDebug = {
-        id,
-        url,
-        href: window.location.href,
-        origin: window.location.origin,
-        online: navigator.onLine,
-      };
       const res = await fetch(url, { cache: 'no-store' });
-      console.info('runImpact response', { id, status: res.status, ok: res.ok, type: res.type, redirected: res.redirected, url: res.url });
       if (res.status === 404) throw new Error(`Node "${id}" not found`);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       data = await res.json();
-      console.info('runImpact payload', { id, count: Array.isArray(data) ? data.length : null });
     } catch (e) {
-      console.error('runImpact failed', {
-        id,
-        message: e?.message || String(e),
-        name: e?.name || 'Error',
-        stack: e?.stack || null,
-      });
-      const debug = window.__rtmify_lastImpactDebug || {};
-      errEl.textContent = `${e.message} (url=${debug.url || 'unknown'}, origin=${debug.origin || 'unknown'})`;
+      errEl.textContent = e.message;
       errEl.style.display = 'block';
       result.innerHTML = '';
       return;
     }
 
     if (data.length === 0) {
-      result.innerHTML = '<div class="empty-state"><strong>No downstream impact</strong>Nothing depends on this node via traced edges.</div>';
+      result.innerHTML = '<div class="empty-state"><strong>No downstream impact</strong><br>Nothing depends on this node via traced edges.</div>';
       return;
     }
 
@@ -2361,7 +2338,7 @@ audit_readiness_summary(profile="aerospace")</div>
     _updateSuspectBadge(data.length);
 
     if (data.length === 0) {
-      result.innerHTML = '<div class="empty-state"><strong>All clear</strong>No nodes flagged for review.</div>';
+      result.innerHTML = '<div class="empty-state"><strong>All clear</strong><br>No nodes flagged for review.</div>';
       return;
     }
 
@@ -2661,7 +2638,7 @@ audit_readiness_summary(profile="aerospace")</div>
     badge.style.display = 'inline-block';
 
     if (!gaps || gaps.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No gaps</strong>All traceability checks pass for this profile.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No gaps</strong><br>All traceability checks pass for this profile.</td></tr>';
       return;
     }
 
@@ -2787,7 +2764,7 @@ audit_readiness_summary(profile="aerospace")</div>
       const data = await res.json();
       const repos = data.repos || [];
       if (repos.length === 0) {
-        el.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No repos yet</strong>Add a local Git repository path above.</td></tr>';
+        el.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No repos yet</strong><br>Add a local Git repository path above.</td></tr>';
         return;
       }
       el.innerHTML = repos.map((r) => `<tr>
