@@ -15,6 +15,10 @@
       --mid: #2a2a4e;
       --text: #1a1a1a;
       --muted: #555555;
+      --accent-warn: #f9a825;
+      --accent-warn-dark: #f57f17;
+      --accent-warn-text: #6b4f00;
+      --accent-ok: #2d7a2d;
     }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -31,11 +35,27 @@
       color: #fff;
       padding: 14px 24px;
       display: flex;
-      align-items: baseline;
+      align-items: center;
       gap: 16px;
     }
-    header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
-    header span { font-size: 12px; color: #aaa; }
+    .header-home-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      color: inherit;
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      font-family: inherit;
+    }
+    .header-home-btn:focus-visible {
+      outline: 2px solid rgba(255,255,255,0.5);
+      outline-offset: 4px;
+      border-radius: 2px;
+    }
+    .header-title { font-size: 18px; font-weight: 600; letter-spacing: 0.02em; }
+    .header-subtitle { font-size: 12px; color: #aaa; }
 
     /* Primary nav */
     nav.nav-primary {
@@ -98,11 +118,13 @@
       border: none;
       padding: 12px 10px;
       cursor: pointer;
-      font-size: 16px;
       color: #888;
       line-height: 1;
+      display: flex;
+      align-items: center;
     }
     .nav-settings-btn:hover { color: #1a1a2e; }
+    .nav-settings-btn svg { display: block; }
     .settings-dropdown {
       position: absolute;
       right: 0;
@@ -141,7 +163,7 @@
     .toolbar h2 { font-size: 16px; font-weight: 600; }
     .badge {
       display: inline-block;
-      background: #f0ad4e;
+      background: var(--accent-warn);
       color: #fff;
       border-radius: 10px;
       padding: 2px 8px;
@@ -149,9 +171,9 @@
       font-weight: 600;
       margin-left: 8px;
     }
-    .badge.zero { background: #5cb85c; }
+    .badge.zero { background: var(--accent-ok); }
 
-    button.btn {
+    .btn {
       background: #1a1a2e;
       color: #fff;
       border: none;
@@ -163,7 +185,7 @@
       text-decoration: none;
       display: inline-block;
     }
-    button.btn:hover { background: #2a2a4e; }
+    .btn:hover { background: #2a2a4e; }
     button.btn-danger {
       background: transparent; color: #c0392b; border: 1px solid #c0392b;
       border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 14px; line-height: 1;
@@ -180,19 +202,6 @@
     .ann-row { display: flex; align-items: center; gap: 12px; padding: 3px 0; }
     .ann-line { color: #888; }
     .ann-blame { color: #555; font-style: italic; }
-    a.btn {
-      background: #1a1a2e;
-      color: #fff;
-      border: none;
-      border-radius: 4px;
-      padding: 8px 16px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 500;
-      text-decoration: none;
-      display: inline-block;
-    }
-    a.btn:hover { background: #2a2a4e; }
 
     .card {
       background: #fff;
@@ -200,6 +209,7 @@
       border-radius: 6px;
       overflow: hidden;
     }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
     table { width: 100%; border-collapse: collapse; }
     th {
@@ -226,22 +236,22 @@
 
     .req-id { font-family: var(--font-mono); font-size: 13px; font-weight: 600; white-space: nowrap; }
     .test-id { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
-    .result-pass { color: #2d7a2d; font-weight: 600; }
+    .result-pass { color: var(--accent-ok); font-weight: 600; }
     .result-fail { color: #c0392b; font-weight: 600; }
     .result-pending { color: #888; font-style: italic; }
     .result-missing {
-      color: #885500;
+      color: var(--accent-warn-text);
       font-style: italic;
     }
 
     .empty-state {
       padding: 48px 24px;
       text-align: center;
-      color: #aaa;
+      color: #767676;
       font-size: 13px;
       line-height: 1.6;
     }
-    .empty-state strong { color: #888; display: block; margin-bottom: 4px; font-size: 14px; }
+    .empty-state strong { color: #595959; display: block; margin-bottom: 4px; font-size: 14px; }
 
     .error-banner {
       background: #fde8e8;
@@ -309,7 +319,7 @@
       margin-bottom: 20px;
       outline: none;
     }
-    .lobby-input:focus { border-color: #1a1a2e; }
+    .lobby-input:focus { border-color: #1a1a2e; box-shadow: 0 0 0 3px rgba(26, 26, 46, 0.12); }
     .lobby-input:disabled { background: #f2f2f2; color: #999; }
     .lobby-actions { display: flex; justify-content: flex-end; }
     .lobby-error {
@@ -321,7 +331,7 @@
       margin-bottom: 16px;
       font-size: 13px;
     }
-    .copied-hint { font-size: 11px; color: #2d7a2d; margin-left: 8px; }
+    .copied-hint { font-size: 11px; color: var(--accent-ok); margin-left: 8px; }
     .drop-hint {
       font-size: 12px;
       color: #aaa;
@@ -350,6 +360,7 @@
       position: fixed;
       top: 0; right: -460px;
       width: 460px;
+      max-width: 100vw;
       height: 100vh;
       background: #fff;
       border-left: 1px solid #ddd;
@@ -426,11 +437,17 @@
     /* Inline row expansion */
     .expand-btn {
       background: none; border: none; cursor: pointer;
-      font-size: 10px; color: #bbb; padding: 1px 5px 1px 0;
+      font-size: 10px; color: #767676; padding: 1px 5px 1px 0;
       vertical-align: middle; transition: color 0.1s;
+      min-width: 44px; min-height: 44px;
     }
     .expand-btn:hover { color: #1a1a2e; }
     .expand-btn.open { color: #1a1a2e; }
+    .expand-btn:focus-visible {
+      outline: 2px solid #1a1a2e;
+      outline-offset: 2px;
+      border-radius: 2px;
+    }
     tr.detail-row > td { padding: 0; border-bottom: 1px solid #e0e0f0; }
     .detail-inner {
       padding: 16px 24px 18px 32px;
@@ -439,16 +456,16 @@
     }
     .detail-props { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: flex-start; }
     .dp-row { display: flex; flex-direction: column; gap: 5px; font-size: 13px; }
-    .dp-key { color: #999; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+    .dp-key { color: #767676; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
     .dp-val { color: #1a1a1a; word-break: break-word; max-width: 260px; }
-    .de-none { font-size: 12px; color: #ccc; }
+    .de-none { font-size: 12px; color: #767676; }
     .di-suspect {
-      background: #fff8e1; border: 1px solid #f9a825; border-radius: 4px;
-      padding: 6px 10px; margin-bottom: 10px; font-size: 12px; color: #7a5c00;
+      background: #fff8e1; border: 1px solid var(--accent-warn); border-radius: 4px;
+      padding: 6px 10px; margin-bottom: 10px; font-size: 12px; color: var(--accent-warn-text);
       display: flex; align-items: center; gap: 10px;
     }
     .di-suspect button {
-      background: #f9a825; color: #fff; border: none; border-radius: 3px;
+      background: var(--accent-warn); color: #fff; border: none; border-radius: 3px;
       padding: 3px 8px; font-size: 11px; cursor: pointer;
     }
 
@@ -463,19 +480,19 @@
       font-size: 11px; font-weight: 700; text-transform: uppercase;
       letter-spacing: 0.06em; color: #888;
     }
-    .tree-count { font-size: 11px; color: #bbb; }
+    .tree-count { font-size: 11px; color: #767676; }
     .tree-section-body { padding-left: 14px; margin-top: 4px; }
     .tree-node { margin: 3px 0; }
     .tree-node-header {
       display: flex; align-items: center; gap: 6px; padding: 2px 0;
     }
-    .tree-edge-label { font-size: 10px; color: #bbb; font-family: var(--font-mono); white-space: nowrap; }
+    .tree-edge-label { font-size: 10px; color: #767676; font-family: var(--font-mono); white-space: nowrap; }
     .tree-node-id { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: #1a1a2e; }
     .tree-node-body { padding-left: 18px; margin-top: 4px; }
     .tree-node-props { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 6px; }
     .suspect-banner {
       background: #fff8e1;
-      border: 1px solid #f9a825;
+      border: 1px solid var(--accent-warn);
       border-radius: 5px;
       padding: 10px 14px;
       margin-bottom: 16px;
@@ -484,15 +501,15 @@
       justify-content: space-between;
       gap: 10px;
     }
-    .suspect-banner .suspect-text { font-size: 13px; color: #7a5c00; }
+    .suspect-banner .suspect-text { font-size: 13px; color: var(--accent-warn-text); }
     .suspect-banner .suspect-label { font-weight: 700; margin-right: 6px; }
     .suspect-clear {
-      background: #f9a825; color: #fff; border: none;
+      background: var(--accent-warn); color: #fff; border: none;
       border-radius: 4px; padding: 5px 12px; font-size: 12px;
       font-weight: 600; cursor: pointer; white-space: nowrap;
     }
-    .suspect-clear:hover { background: #f57f17; }
-    tr.suspect td:first-child { border-left: 3px solid #f9a825; }
+    .suspect-clear:hover { background: var(--accent-warn-dark); }
+    tr.suspect td:first-child { border-left: 3px solid var(--accent-warn); }
     tr.suspect { background: #fffde7; }
 
     /* Profile selector */
@@ -504,13 +521,13 @@
     }
     .profile-radio:has(input:checked) { border-color: var(--dark); background: #f0f0f8; }
     .profile-radio input[type=radio] { margin: 0; accent-color: var(--dark); }
-    .profile-desc { color: #888; font-size: 11px; }
+    .profile-desc { color: #595959; font-size: 11px; }
 
     /* Chain gaps tab */
     .gap-badge-sev { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
     .gap-badge-sev.error { background: #fde8e8; color: #c0392b; }
-    .gap-badge-sev.warn  { background: #fff8e1; color: #7a5900; }
-    .gap-badge-sev.info  { background: #e8f4e8; color: #2d5a2d; }
+    .gap-badge-sev.warn  { background: #fff8e1; color: var(--accent-warn-text); }
+    .gap-badge-sev.info  { background: #e8f4e8; color: var(--accent-ok); }
 
     .guide-link {
       color: #1f4b7a;
@@ -658,10 +675,70 @@
       border: 1px solid #ddd;
       border-radius: 6px;
       padding: 24px;
-      max-width: 480px;
     }
     .report-card h3 { font-size: 15px; margin-bottom: 8px; }
     .report-card p { color: #555; margin-bottom: 16px; font-size: 13px; line-height: 1.5; }
+
+    /* Utility: card spacing variants */
+    .card--mb { margin-bottom: 16px; }
+    .card--mt { margin-top: 16px; }
+    .card--padded { padding: 16px; }
+    /* Utility: card-internal toolbar (no top padding) */
+    .card-toolbar { padding: 0 0 12px 0; }
+    /* Utility: card section title */
+    .card-title { font-weight: 600; font-size: 14px; }
+    /* Utility: monospace small — for file paths, hashes */
+    .mono-sm { font-family: var(--font-mono); font-size: 12px; }
+    /* Utility: text styles */
+    .text-hint { color: var(--muted); font-size: 13px; }
+    .text-sm-muted { font-size: 12px; color: var(--muted); }
+    .text-sm-subtle { font-size: 12px; color: #666; }
+    .text-error-inline { color: #c0392b; font-size: 13px; }
+    .text-suspect { font-size: 12px; color: var(--accent-warn-text); }
+    .text-placeholder { color: #767676; }
+    /* Utility: repo row in block layout (commits, diagnostics) */
+    .repo-row--block { display: block; }
+
+    /* Utility: spacing */
+    .mb-6  { margin-bottom: 6px; }
+    .mb-8  { margin-bottom: 8px; }
+    .mb-10 { margin-bottom: 10px; }
+    .mb-12 { margin-bottom: 12px; }
+    .mb-16 { margin-bottom: 16px; }
+    .mt-8  { margin-top: 8px; }
+    .mt-16 { margin-top: 16px; }
+
+    /* Utility: layout */
+    .btn-group   { display: flex; gap: 10px; flex-wrap: wrap; }
+    .input-row   { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
+    .filter-row  { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    .auto-grid   { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+    .info-grid   { display: grid; grid-template-columns: 220px 1fr; gap: 12px 16px; align-items: start; }
+    .text-center { text-align: center; }
+    .cursor-pointer { cursor: pointer; }
+
+    /* Utility: component helpers */
+    .h3-flush          { margin-top: 0; }
+    .label-bold        { font-weight: 600; margin-bottom: 6px; }
+    .info-label        { font-weight: 600; color: #666; }
+    .mcp-card-body     { margin-bottom: 10px; color: var(--muted); line-height: 1.5; }
+    .header-badge      { margin-left: auto; font-size: 12px; background: var(--accent-warn); color: #fff; border-radius: 10px; padding: 3px 12px; cursor: pointer; }
+    .drop-hint--flush  { margin-top: 0; }
+    .drop-hint--mt8    { margin-top: 8px; }
+    .lobby-input--no-mb { margin-bottom: 0; }
+    .w-input           { max-width: 280px; }
+
+    /* Loading states */
+    @keyframes loading-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    .loading-pulse { animation: loading-pulse 1.4s ease-in-out infinite; }
+    tr.loading-row td {
+      color: #aaa;
+      font-style: italic;
+      animation: loading-pulse 1.4s ease-in-out infinite;
+    }
   </style>
 </head>
 <body>
@@ -670,21 +747,21 @@
 <div class="node-drawer" id="node-drawer">
   <div class="drawer-toolbar">
     <button class="drawer-back" id="drawer-back" onclick="drawerBack()">← Back</button>
-    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+    <button class="drawer-close" aria-label="Close" onclick="closeDrawer()">✕</button>
   </div>
-  <div id="drawer-content"></div>
+  <div id="drawer-content" tabindex="-1"></div>
 </div>
 
-<div id="lobby">
+<div id="lobby" role="dialog" aria-modal="true" aria-labelledby="lobby-title">
   <div class="lobby-card" id="lobby-card"
       ondragover="onSaDragOver(event)"
       ondragleave="onSaDragLeave(event)"
       ondrop="onSaDrop(event)">
-    <h2>RTMify Live</h2>
+    <h2 id="lobby-title">RTMify Live</h2>
     <p class="lobby-subtitle">Connect your compliance workspace</p>
     <div id="lobby-error" class="lobby-error" style="display:none"></div>
     <div class="lobby-step"><span class="step-num">1</span><span class="step-label">Choose provider</span></div>
-    <div class="profile-radios" style="margin-bottom:16px">
+    <div class="profile-radios mb-16">
       <label class="profile-radio">
         <input type="radio" name="provider" value="google" checked onchange="setProvider('google')">
         <span>Google Sheets</span>
@@ -697,26 +774,27 @@
     <input type="file" id="sa-file-input" accept=".json,application/json" style="display:none">
     <div id="lobby-sa-section">
       <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Upload credentials</span></div>
-      <p class="drop-hint" style="margin-top:0">
+      <p class="drop-hint drop-hint--flush">
         Drop `service-account.json` anywhere in this panel to update credentials.
         <a href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer">How to create a Google service account JSON key</a>
       </p>
       <p class="lobby-label">Loaded Google service account:</p>
       <div class="lobby-email" id="lobby-email" onclick="copyEmail()" title="Click to copy"></div>
       <span class="copied-hint" id="copy-hint" style="display:none">Copied!</span>
-      <p class="drop-hint" id="lobby-share-hint" style="margin-top:8px;display:none">
+      <p class="drop-hint drop-hint--mt8" id="lobby-share-hint" style="display:none">
         Copy this email address by clicking it. Then you must <strong>share</strong> the RTM sheet with this email address.
       </p>
     </div>
     <div id="lobby-excel-section" style="display:none">
       <div class="lobby-step"><span class="step-num">2</span><span class="step-label">Enter Excel app credentials</span></div>
-      <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" oninput="updateProvisionPreview()">
-      <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" oninput="updateProvisionPreview()">
-      <input id="excel-client-secret" class="lobby-input" type="password" placeholder="Azure client secret" oninput="updateProvisionPreview()">
+      <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" aria-label="Azure tenant ID" oninput="updateProvisionPreviewDebounced()">
+      <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" aria-label="Azure client ID" oninput="updateProvisionPreviewDebounced()">
+      <input id="excel-client-secret" class="lobby-input" type="password" placeholder="Azure client secret" aria-label="Azure client secret" oninput="updateProvisionPreviewDebounced()">
     </div>
     <div class="lobby-step"><span class="step-num">3</span><span class="step-label">Paste workbook URL</span></div>
     <input id="lobby-url" class="lobby-input" type="text"
-      oninput="updateProvisionPreview()"
+      aria-label="Workbook URL"
+      oninput="updateProvisionPreviewDebounced()"
       placeholder="https://docs.google.com/spreadsheets/d/…" />
     <div class="lobby-step"><span class="step-num">4</span><span class="step-label">Choose profile</span></div>
     <div class="profile-radios">
@@ -737,18 +815,20 @@
         <span>Automotive <span class="profile-desc">— ISO 26262 / ASPICE</span></span>
       </label>
     </div>
-    <div id="provision-preview" style="font-size:12px;color:#555;margin-bottom:12px;display:none"></div>
+    <div id="provision-preview" class="text-sm-muted mb-12" style="display:none"></div>
     <div class="lobby-actions">
       <button id="lobby-btn" class="btn" onclick="connectSheet()">Connect</button>
     </div>
   </div>
 </div>
 
-<header onclick="showLobby()" style="cursor:pointer" title="Back to setup">
-  <h1>RTMify</h1>
-  <span>Requirements Traceability</span>
-  <span id="suspect-header-badge" style="display:none; margin-left:auto; font-size:12px; background:#f9a825; color:#fff; border-radius:10px; padding:3px 12px; cursor:pointer;"
-    onclick="event.stopPropagation(); showTab('review')"></span>
+<header>
+  <button class="header-home-btn" onclick="showLobby()" aria-label="Back to setup">
+    <span class="header-title">RTMify</span>
+    <span class="header-subtitle">Requirements Traceability</span>
+  </button>
+  <span id="suspect-header-badge" class="header-badge" style="display:none"
+    onclick="showTab('review')"></span>
 </header>
 
 <!-- Primary nav -->
@@ -761,7 +841,12 @@
   <button data-group="code" onclick="showGroup('code')">Code</button>
   <button data-group="reports" onclick="showGroup('reports')">Reports</button>
   <div class="nav-settings-wrap">
-    <button class="nav-settings-btn" title="Settings" onclick="toggleSettings(event)">⚙</button>
+    <button class="nav-settings-btn" title="Settings" onclick="toggleSettings(event)">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="8" cy="8" r="2.5"/>
+        <path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/>
+      </svg>
+    </button>
     <div class="settings-dropdown" id="settings-panel" style="display:none">
       <button onclick="showSettingsTab('info')">System Info</button>
     </div>
@@ -863,21 +948,23 @@
     </div>
     <div id="rtm-error" class="error-banner" style="display:none"></div>
     <div class="card">
-      <table>
-        <thead>
-          <tr>
-            <th>Req ID</th>
-            <th>Parent Need</th>
-            <th>Requirement Statement</th>
-            <th>Test Group</th>
-            <th>Test ID</th>
-            <th>Type</th>
-            <th>Method</th>
-            <th>Result</th>
-          </tr>
-        </thead>
-        <tbody id="rtm-body"></tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Req ID</th>
+              <th>Parent Need</th>
+              <th style="min-width:240px">Requirement Statement</th>
+              <th>Test Group</th>
+              <th>Test ID</th>
+              <th>Type</th>
+              <th>Method</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody id="rtm-body"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -886,32 +973,31 @@
     <div class="toolbar"><h2>Risk Register</h2></div>
     <div id="risks-error" class="error-banner" style="display:none"></div>
     <div class="card">
-      <table>
-        <thead>
-          <tr>
-            <th>Risk ID</th>
-            <th>Description</th>
-            <th>Init Sev</th>
-            <th>Init Lik</th>
-            <th>Score</th>
-            <th>Mitigation</th>
-            <th>Mitigated By</th>
-            <th>Res Sev</th>
-            <th>Res Lik</th>
-            <th>Res Score</th>
-          </tr>
-        </thead>
-        <tbody id="risks-body"></tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Risk ID</th>
+              <th style="min-width:180px">Description</th>
+              <th>Init Sev</th>
+              <th>Init Lik</th>
+              <th>Score</th>
+              <th style="min-width:160px">Mitigation</th>
+              <th>Mitigated By</th>
+            </tr>
+          </thead>
+          <tbody id="risks-body"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
   <!-- Impact tab -->
   <section id="tab-impact">
     <div class="toolbar"><h2>Impact Analysis</h2></div>
-    <div style="display:flex; gap:12px; align-items:center; margin-bottom:20px;">
-      <input id="impact-input" class="lobby-input" style="max-width:280px; margin:0;"
-        type="text" placeholder="Node ID (e.g. REQ-002)"
+    <div class="input-row">
+      <input id="impact-input" class="lobby-input lobby-input--no-mb w-input"
+        type="text" placeholder="Node ID (e.g. REQ-002)" aria-label="Node ID for impact analysis"
         onkeydown="if(event.key==='Enter') runImpact()">
       <button class="btn" onclick="runImpact()">Analyze</button>
     </div>
@@ -936,13 +1022,13 @@
       <button class="btn" onclick="loadChainGaps()">Refresh</button>
     </div>
     <div id="gaps-error" class="error-banner" style="display:none"></div>
-    <div class="card" style="margin-bottom:16px">
-      <div class="toolbar" style="padding:0 0 12px 0">
-        <span style="font-weight:600;font-size:14px">Industry Profile</span>
+    <div class="card card--mb">
+      <div class="toolbar card-toolbar">
+        <span class="card-title">Industry Profile</span>
         <span id="chain-gap-count" class="badge" style="display:none"></span>
       </div>
-      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-        <select id="profile-select" class="lobby-input" style="max-width:280px;margin-bottom:0" onchange="changeProfile()">
+      <div class="filter-row">
+        <select id="profile-select" class="lobby-input lobby-input--no-mb w-input" aria-label="Industry profile" onchange="changeProfile()">
           <option value="generic">Generic</option>
           <option value="medical">Medical</option>
           <option value="aerospace">Aerospace</option>
@@ -950,8 +1036,8 @@
         </select>
         <button id="profile-provision-btn" class="btn" onclick="provisionMissingTabs()" style="display:none">Create Missing Tabs</button>
       </div>
-      <div id="profile-desc" style="font-size:12px;color:#666;margin-bottom:6px"></div>
-      <div id="profile-preview" style="font-size:12px;color:#555;display:none"></div>
+      <div id="profile-desc" class="text-sm-subtle mb-6"></div>
+      <div id="profile-preview" class="text-sm-muted" style="display:none"></div>
     </div>
     <div class="card">
       <table>
@@ -982,7 +1068,7 @@
     <div class="guide-shell">
       <div id="guide-errors-index" class="card guide-index">
         <h3>Index</h3>
-        <div><em style="color:var(--muted);font-size:13px">Loading guide index…</em></div>
+        <div><em class="text-hint">Loading guide index…</em></div>
       </div>
       <div id="guide-errors-body" class="guide-groups">
         <div class="card">
@@ -995,23 +1081,23 @@
   <!-- Code tab -->
   <section id="tab-code">
     <div class="toolbar"><h2>Code Traceability</h2></div>
-    <div class="card" style="margin-bottom:16px">
+    <div class="card card--mb">
       <p class="lobby-label">Add repository path:</p>
       <div class="code-add-row">
-        <input id="repo-path-input" class="lobby-input" style="margin-bottom:0" type="text" placeholder="/path/to/repository" />
+        <input id="repo-path-input" class="lobby-input lobby-input--no-mb" type="text" placeholder="/path/to/repository" aria-label="Repository path" />
         <button class="btn" onclick="addRepo()">Add Repo</button>
       </div>
-      <div id="repo-error" style="color:#c0392b;font-size:13px;display:none"></div>
+      <div id="repo-error" class="text-error-inline" style="display:none"></div>
     </div>
-    <div class="card" style="margin-bottom:16px">
-      <div class="toolbar" style="padding:0 0 8px 0">
-        <span style="font-weight:600;font-size:14px">Runtime Diagnostics</span>
+    <div class="card card--mb">
+      <div class="toolbar card-toolbar">
+        <span class="card-title">Runtime Diagnostics</span>
       </div>
-      <div id="diagnostics-list"><em style="color:var(--muted);font-size:13px">No diagnostics.</em></div>
+      <div id="diagnostics-list"><em class="text-hint">No diagnostics.</em></div>
     </div>
-    <div class="card" style="margin-bottom:16px" id="repos-card">
-      <div class="toolbar" style="padding:0 0 8px 0">
-        <span style="font-weight:600;font-size:14px">Repo Status</span>
+    <div class="card card--mb" id="repos-card">
+      <div class="toolbar card-toolbar">
+        <span class="card-title">Repo Status</span>
       </div>
       <table>
         <thead>
@@ -1030,79 +1116,79 @@
         </tbody>
       </table>
     </div>
-    <div class="card" style="margin-bottom:16px">
-      <div class="toolbar" style="padding:0 0 12px 0">
-        <span style="font-weight:600;font-size:14px">Files by Repo</span>
+    <div class="card card--mb">
+      <div class="toolbar card-toolbar">
+        <span class="card-title">Files by Repo</span>
         <button class="btn" id="code-scan-btn" onclick="scanAndLoadCodeTraceability()">Scan Now</button>
       </div>
-      <div id="code-scan-status" style="font-size:12px;color:var(--muted);margin-bottom:12px">Last completed scan: never</div>
-      <div id="code-body"><em style="color:var(--muted);font-size:13px">Click Scan Now to run a repository scan and load current results.</em></div>
+      <div id="code-scan-status" class="text-hint mb-12">Last completed scan: never</div>
+      <div id="code-body"><em class="text-hint">Click Scan Now to run a repository scan and load current results.</em></div>
     </div>
-    <div class="card" style="margin-bottom:16px">
-      <div class="toolbar" style="padding:0 0 12px 0">
-        <span style="font-weight:600;font-size:14px">Coverage Gaps</span>
+    <div class="card card--mb">
+      <div class="toolbar card-toolbar">
+        <span class="card-title">Coverage Gaps</span>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div class="auto-grid">
         <div>
-          <h3 style="margin-top:0">Unimplemented Requirements</h3>
-          <div id="unimplemented-list"><em style="color:var(--muted);font-size:13px">Run Scan Now to see unimplemented requirements.</em></div>
+          <h3 class="h3-flush">Unimplemented Requirements</h3>
+          <div id="unimplemented-list"><em class="text-hint">Run Scan Now to see unimplemented requirements.</em></div>
         </div>
         <div>
-          <h3 style="margin-top:0">Untested Source Files</h3>
-          <div id="untested-files-list"><em style="color:var(--muted);font-size:13px">Run Scan Now to see untested source files.</em></div>
+          <h3 class="h3-flush">Untested Source Files</h3>
+          <div id="untested-files-list"><em class="text-hint">Run Scan Now to see untested source files.</em></div>
         </div>
       </div>
     </div>
     <div class="card">
-      <div class="toolbar" style="padding:0 0 12px 0">
-        <span style="font-weight:600;font-size:14px">Recent Commits</span>
+      <div class="toolbar card-toolbar">
+        <span class="card-title">Recent Commits</span>
       </div>
-      <div id="recent-commits"><em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run Scan Now.</em></div>
+      <div id="recent-commits"><em class="text-hint">No recent commits. Add a repo and run Scan Now.</em></div>
     </div>
   </section>
 
   <!-- MCP & AI tab -->
   <section id="tab-mcp-ai">
     <div class="toolbar"><h2>MCP &amp; AI</h2></div>
-    <div class="card" style="margin-bottom:16px;padding:16px">
-      <div style="font-weight:600;margin-bottom:8px">Local MCP Endpoint</div>
+    <div class="card card--mb card--padded">
+      <div class="card-title mb-8">Local MCP Endpoint</div>
       <div id="mcp-endpoint" class="mcp-endpoint">Loading…</div>
-      <div style="font-size:12px;color:#666;margin-top:8px">
+      <div class="text-sm-subtle mt-8">
         RTMify Live serves MCP over Streamable HTTP at <code>/mcp</code>. Keep the local server running while your AI client is connected.
       </div>
     </div>
     <div class="mcp-grid">
-      <div class="card" style="padding:16px">
-        <h3 style="margin-bottom:10px">Claude Code / Cowork</h3>
-        <p style="margin-bottom:10px;color:#555;line-height:1.5">
+      <div class="card card--padded">
+        <h3 class="mb-10">Claude Code / Cowork</h3>
+        <p class="mcp-card-body">
           Add RTMify Live as an HTTP MCP server. For Cowork or any Claude-compatible MCP client, use the same MCP URL.
         </p>
         <div id="mcp-claude-cmd" class="mcp-code"></div>
       </div>
-      <div class="card" style="padding:16px">
-        <h3 style="margin-bottom:10px">Codex</h3>
-        <p style="margin-bottom:10px;color:#555;line-height:1.5">
+      <div class="card card--padded">
+        <h3 class="mb-10">Codex</h3>
+        <p class="mcp-card-body">
           Add the current RTMify dashboard as a streamable HTTP MCP server.
         </p>
         <div id="mcp-codex-cmd" class="mcp-code"></div>
       </div>
-      <div class="card" style="padding:16px">
-        <h3 style="margin-bottom:10px">Gemini</h3>
-        <p style="margin-bottom:10px;color:#555;line-height:1.5">
+      <div class="card card--padded">
+        <h3 class="mb-10">Gemini</h3>
+        <p class="mcp-card-body">
           Add this server to your Gemini CLI MCP settings.
         </p>
         <div id="mcp-gemini-json" class="mcp-code"></div>
       </div>
     </div>
-    <div class="card" style="margin-top:16px;padding:16px">
-      <h3 style="margin-bottom:10px">What RTMify Exposes</h3>
-      <p style="margin-bottom:10px;color:#555;line-height:1.5">
+    <div class="card card--mt card--padded">
+      <h3 class="mb-10">What RTMify Exposes</h3>
+      <p class="mcp-card-body">
         RTMify now exposes MCP <strong>tools</strong>, <strong>resources</strong>, and <strong>prompts</strong>.
         Tools are best for filtered queries. Resources are stable read models. Prompts are curated workflows.
       </p>
-      <div class="mcp-grid" style="margin-bottom:12px">
+      <div class="mcp-grid mb-12">
         <div>
-          <div style="font-weight:600;margin-bottom:6px">Example Resources</div>
+          <div class="label-bold">Example Resources</div>
           <div class="mcp-code">requirement://REQ-001
 gap://1203/REQ-001
 design-history://REQ-001
@@ -1110,14 +1196,14 @@ impact://UN-001
 report://status</div>
         </div>
         <div>
-          <div style="font-weight:600;margin-bottom:6px">Example Prompts</div>
+          <div class="label-bold">Example Prompts</div>
           <div class="mcp-code">trace_requirement(id="REQ-001")
 impact_of_change(id="UN-001")
 explain_gap(code=1203,node_id="REQ-001")
 audit_readiness_summary(profile="aerospace")</div>
         </div>
       </div>
-      <h3 style="margin-bottom:10px">What You Can Ask</h3>
+      <h3 class="mb-10">What You Can Ask</h3>
       <ul class="mcp-help-list">
         <li>Which requirements have no verification coverage?</li>
         <li>Show the full traceability chain for <code>REQ-014</code>.</li>
@@ -1135,15 +1221,15 @@ audit_readiness_summary(profile="aerospace")</div>
       <button class="btn" onclick="loadInfo()">Refresh</button>
     </div>
     <div id="info-error" class="error-banner" style="display:none"></div>
-    <div class="card" style="padding:16px">
-      <div style="display:grid;grid-template-columns:220px 1fr;gap:12px 16px;align-items:start">
-        <div style="font-weight:600;color:#666">Tray App Version</div>
+    <div class="card card--padded">
+      <div class="info-grid">
+        <div class="info-label">Tray App Version</div>
         <div id="info-tray-version" class="req-id">Loading…</div>
-        <div style="font-weight:600;color:#666">rtmify-live Version</div>
+        <div class="info-label">rtmify-live Version</div>
         <div id="info-live-version" class="req-id">Loading…</div>
-        <div style="font-weight:600;color:#666">Database Path</div>
+        <div class="info-label">Database Path</div>
         <div id="info-db-path" class="req-id">Loading…</div>
-        <div style="font-weight:600;color:#666">Log File Path</div>
+        <div class="info-label">Log File Path</div>
         <div id="info-log-path" class="req-id">Loading…</div>
       </div>
     </div>
@@ -1152,37 +1238,39 @@ audit_readiness_summary(profile="aerospace")</div>
   <!-- Reports tab -->
   <section id="tab-reports">
     <div class="toolbar"><h2>Reports</h2></div>
-    <div class="report-card">
-      <h3>Requirements Traceability Matrix</h3>
-      <p>
-        Full RTM with requirement statements, verification tests, and result
-        status. Includes User Needs, Tests, and Risk Register.
-      </p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <a class="btn" href="/report/rtm" target="_blank">PDF</a>
-        <a class="btn" href="/report/rtm.md" download="rtm.md">Markdown</a>
-        <a class="btn" href="/report/rtm.docx" download="rtm.docx">Word (.docx)</a>
+    <div class="auto-grid">
+      <div class="report-card">
+        <h3>Requirements Traceability Matrix</h3>
+        <p>
+          Full RTM with requirement statements, verification tests, and result
+          status. Includes User Needs, Tests, and Risk Register.
+        </p>
+        <div class="btn-group">
+          <a class="btn" href="/report/rtm" target="_blank">PDF</a>
+          <a class="btn" href="/report/rtm.md" download="rtm.md">Markdown</a>
+          <a class="btn" href="/report/rtm.docx" download="rtm.docx">Word (.docx)</a>
+        </div>
       </div>
-    </div>
-    <div class="report-card" style="margin-top:16px">
-      <h3>Design History Record (DHR)</h3>
-      <p>
-        Full design history per User Need, tracing through requirements,
-        design inputs/outputs, and configuration items.
-      </p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <a class="btn" href="/report/dhr/pdf" target="_blank">PDF</a>
-        <a class="btn" href="/report/dhr/md" download="dhr.md">Markdown</a>
+      <div class="report-card">
+        <h3>Design History Record (DHR)</h3>
+        <p>
+          Full design history per User Need, tracing through requirements,
+          design inputs/outputs, and configuration items.
+        </p>
+        <div class="btn-group">
+          <a class="btn" href="/report/dhr/pdf" target="_blank">PDF</a>
+          <a class="btn" href="/report/dhr/md" download="dhr.md">Markdown</a>
+        </div>
       </div>
-    </div>
-    <div class="report-card" style="margin-top:16px">
-      <h3>Code Coverage Report</h3>
-      <p>
-        Implementation coverage: requirements with code annotations, orphan source files,
-        and verification status derived from live repository scans.
-      </p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <a class="btn" href="/report/coverage.md" download="coverage.md">Markdown</a>
+      <div class="report-card">
+        <h3>Code Coverage Report</h3>
+        <p>
+          Implementation coverage: requirements with code annotations, orphan source files,
+          and verification status derived from live repository scans.
+        </p>
+        <div class="btn-group">
+          <a class="btn" href="/report/coverage.md" download="coverage.md">Markdown</a>
+        </div>
       </div>
     </div>
   </section>
@@ -1215,6 +1303,12 @@ audit_readiness_summary(profile="aerospace")</div>
   let guideLookupByAnchor = new Map();
   let guideLookupByKey = new Map();
   let pendingGuideAnchor = null;
+
+  let _provisionPreviewTimer = null;
+  function updateProvisionPreviewDebounced() {
+    clearTimeout(_provisionPreviewTimer);
+    _provisionPreviewTimer = setTimeout(updateProvisionPreview, 500);
+  }
 
   function showGroup(name) {
     document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
@@ -1268,6 +1362,12 @@ audit_readiness_summary(profile="aerospace")</div>
   document.addEventListener('click', () => {
     const p = document.getElementById('settings-panel');
     if (p) p.style.display = 'none';
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('node-drawer').classList.contains('open')) {
+      closeDrawer();
+    }
   });
 
   function guideKeyForEntry(entry) {
@@ -1399,7 +1499,7 @@ audit_readiness_summary(profile="aerospace")</div>
     } catch (e) {
       errEl.textContent = 'Failed to load guide entries: ' + e.message;
       errEl.style.display = 'block';
-      indexEl.innerHTML = '<h3>Index</h3><div><em style="color:var(--muted);font-size:13px">Guide unavailable.</em></div>';
+      indexEl.innerHTML = '<h3>Index</h3><div><em class="text-hint">Guide unavailable.</em></div>';
       bodyEl.innerHTML = `<div class="card"><div class="empty-state">Failed to load guide entries: ${esc(e.message)}</div></div>`;
     }
   }
@@ -1489,6 +1589,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const errEl = document.getElementById('req-error');
     const tbody = document.getElementById('req-body');
     errEl.style.display = 'none';
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="5" class="empty-state">Loading…</td></tr>';
 
     let rows;
     try {
@@ -1529,7 +1630,7 @@ audit_readiness_summary(profile="aerospace")</div>
         : '<span class="result-missing">No test linked</span>';
       const resultCell = resultBadge(r.result, !!r.test_group_id);
       return `<tr${rowClass}>
-        <td><button class="expand-btn" onclick="toggleRow('${esc(r.req_id)}',this,5)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,5)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${esc(r.statement || '—')}</td>
         <td>${esc(status)}</td>
         <td>${tgCell}</td>
@@ -1542,6 +1643,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const errEl = document.getElementById('un-error');
     const tbody = document.getElementById('un-body');
     errEl.style.display = 'none';
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="4" class="empty-state">Loading…</td></tr>';
     let rows;
     try {
       const res = await fetch('/query/user-needs');
@@ -1561,7 +1663,7 @@ audit_readiness_summary(profile="aerospace")</div>
     tbody.innerHTML = rows.map(r => {
       const rowClass = r.suspect ? ' class="suspect"' : '';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" onclick="toggleRow('${esc(r.id)}',this,4)">▶</button><span class="req-id">${esc(r.id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.id)}" aria-expanded="false" onclick="toggleRow('${esc(r.id)}',this,4)">▶</button><span class="req-id">${esc(r.id)}</span></td>
         <td>${esc(r.properties.statement || '—')}</td>
         <td>${esc(r.properties.source || '—')}</td>
         <td>${esc(r.properties.priority || '—')}</td>
@@ -1573,6 +1675,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const errEl = document.getElementById('tests-error');
     const tbody = document.getElementById('tests-body');
     errEl.style.display = 'none';
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="5" class="empty-state">Loading…</td></tr>';
     let rows;
     try {
       const res = await fetch('/query/tests');
@@ -1592,9 +1695,9 @@ audit_readiness_summary(profile="aerospace")</div>
       const rowClass = r.suspect ? ' class="suspect"' : '';
       const reqCell = r.req_id
         ? `<span class="req-id">${esc(r.req_id)}</span>`
-        : '<span style="color:#aaa">—</span>';
+        : '<span class="text-placeholder">—</span>';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" onclick="toggleRow('${esc(r.test_id || r.test_group_id)}',this,5)">▶</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.test_id || r.test_group_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.test_id || r.test_group_id)}',this,5)">▶</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
         <td><span class="test-id">${esc(r.test_id || '—')}</span></td>
         <td>${esc(r.test_type || '—')}</td>
         <td>${esc(r.test_method || '—')}</td>
@@ -1607,6 +1710,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const errEl = document.getElementById('rtm-error');
     const tbody = document.getElementById('rtm-body');
     errEl.style.display = 'none';
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="8" class="empty-state">Loading…</td></tr>';
 
     let rows;
     try {
@@ -1628,7 +1732,7 @@ audit_readiness_summary(profile="aerospace")</div>
     tbody.innerHTML = rows.map(r => {
       const parentCell = r.user_need_id
         ? `<span class="test-id">${esc(r.user_need_id)}</span>`
-        : '<span style="color:#aaa">—</span>';
+        : '<span class="text-placeholder">—</span>';
       const tgCell = r.test_group_id
         ? `<span class="test-id">${esc(r.test_group_id)}</span>`
         : '<span class="result-missing">UNTESTED</span>';
@@ -1637,7 +1741,7 @@ audit_readiness_summary(profile="aerospace")</div>
       const severity = rowSeverity(r);
       const rowClass = r.suspect ? 'suspect' : (severity || '');
       return `<tr${rowClass ? ` class="${rowClass}"` : ''}>
-        <td><button class="expand-btn" onclick="toggleRow('${esc(r.req_id)}',this,8)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,8)">▶</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${parentCell}</td>
         <td>${esc(r.statement || '—')}</td>
         <td>${tgCell}</td>
@@ -1653,6 +1757,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const errEl = document.getElementById('risks-error');
     const tbody = document.getElementById('risks-body');
     errEl.style.display = 'none';
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="7" class="empty-state">Loading…</td></tr>';
 
     let rows;
     try {
@@ -1667,29 +1772,25 @@ audit_readiness_summary(profile="aerospace")</div>
     }
 
     if (rows.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty-state"><strong>No risks</strong>Check your sheet\'s Risks tab.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state"><strong>No risks</strong>Check your sheet\'s Risks tab.</td></tr>';
       return;
     }
 
     tbody.innerHTML = rows.map(r => {
       const initScore = (parseInt(r.initial_severity) || 0) * (parseInt(r.initial_likelihood) || 0);
-      const resScore  = (parseInt(r.residual_severity) || 0) * (parseInt(r.residual_likelihood) || 0);
       const scoreClass = s => s >= 12 ? 'result-fail' : s >= 6 ? 'result-missing' : '';
       const reqCell = r.req_id
         ? `<span class="test-id">${esc(r.req_id)}</span>`
-        : '<span style="color:#aaa">—</span>';
+        : '<span class="text-placeholder">—</span>';
       const rowClass = !r.req_id ? ' class="warning"' : '';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" onclick="toggleRow('${esc(r.risk_id)}',this,10)">▶</button><span class="req-id">${esc(r.risk_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.risk_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.risk_id)}',this,7)">▶</button><span class="req-id">${esc(r.risk_id)}</span></td>
         <td>${esc(r.description || '—')}</td>
-        <td style="text-align:center">${esc(r.initial_severity || '—')}</td>
-        <td style="text-align:center">${esc(r.initial_likelihood || '—')}</td>
-        <td style="text-align:center"><span class="${scoreClass(initScore)}">${initScore || '—'}</span></td>
+        <td class="text-center">${esc(r.initial_severity || '—')}</td>
+        <td class="text-center">${esc(r.initial_likelihood || '—')}</td>
+        <td class="text-center"><span class="${scoreClass(initScore)}">${initScore || '—'}</span></td>
         <td>${esc(r.mitigation || '—')}</td>
         <td>${reqCell}</td>
-        <td style="text-align:center">${esc(r.residual_severity || '—')}</td>
-        <td style="text-align:center">${esc(r.residual_likelihood || '—')}</td>
-        <td style="text-align:center"><span class="${scoreClass(resScore)}">${resScore || '—'}</span></td>
       </tr>`;
     }).join('');
   }
@@ -1719,7 +1820,8 @@ audit_readiness_summary(profile="aerospace")</div>
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function propsObj(value) {
@@ -1800,6 +1902,7 @@ audit_readiness_summary(profile="aerospace")</div>
 
   async function showLobby() {
     document.getElementById('lobby').classList.add('visible');
+    _trapLobby();
     try {
       const res = await fetch('/api/status');
       const status = await res.json();
@@ -1918,12 +2021,15 @@ audit_readiness_summary(profile="aerospace")</div>
   // --- Node drawer ---
 
   let _drawerHistory = [];
+  let _drawerOpener = null;
 
   async function openNode(id) {
+    _drawerOpener = document.activeElement;
     _drawerHistory = [id];
     await _renderDrawerNode(id);
     document.getElementById('node-drawer').classList.add('open');
     document.getElementById('drawer-overlay').classList.add('visible');
+    document.getElementById('drawer-content')?.focus();
   }
 
   async function drawerNav(id) {
@@ -1941,6 +2047,8 @@ audit_readiness_summary(profile="aerospace")</div>
     document.getElementById('node-drawer').classList.remove('open');
     document.getElementById('drawer-overlay').classList.remove('visible');
     _drawerHistory = [];
+    _drawerOpener?.focus();
+    _drawerOpener = null;
   }
 
   async function _renderDrawerNode(id) {
@@ -2004,11 +2112,11 @@ audit_readiness_summary(profile="aerospace")</div>
         ${suspectBanner}
         <div class="prop-section">${props}</div>
         <div class="edge-section">
-          <div class="edge-section-title">Out (${edges_out.length})</div>
+          <div class="edge-section-title">Downstream (${edges_out.length})</div>
           ${edgeRows(edges_out, 'out')}
         </div>
         <div class="edge-section">
-          <div class="edge-section-title">In (${edges_in.length})</div>
+          <div class="edge-section-title">Upstream (${edges_in.length})</div>
           ${edgeRows(edges_in, 'in')}
         </div>`;
     } catch (e) {
@@ -2034,14 +2142,16 @@ audit_readiness_summary(profile="aerospace")</div>
       _expanded.delete(id);
       btn.textContent = '▶';
       btn.classList.remove('open');
+      btn.setAttribute('aria-expanded', 'false');
       return;
     }
     btn.textContent = '▼';
     btn.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
 
     const detailTr = document.createElement('tr');
     detailTr.className = 'detail-row';
-    detailTr.innerHTML = `<td colspan="${colspan}"><div class="detail-inner"><span style="color:#aaa;font-size:13px">Loading…</span></div></td>`;
+    detailTr.innerHTML = `<td colspan="${colspan}"><div class="detail-inner"><span class="text-hint">Loading…</span></div></td>`;
     btn.closest('tr').after(detailTr);
     _expanded.set(id, detailTr);
 
@@ -2056,14 +2166,14 @@ audit_readiness_summary(profile="aerospace")</div>
       if (!res.ok) throw new Error('HTTP ' + res.status);
       data = await res.json();
     } catch (e) {
-      container.innerHTML = `<span style="color:#c0392b;font-size:13px">Error: ${esc(e.message)}</span>`;
+      container.innerHTML = `<span class="text-error-inline">Error: ${esc(e.message)}</span>`;
       return;
     }
 
     try {
       const { node, edges_out, edges_in } = data;
       if (!node || !Array.isArray(edges_out) || !Array.isArray(edges_in)) {
-        container.innerHTML = '<span style="color:#c0392b;font-size:13px">Error: invalid node payload</span>';
+        container.innerHTML = '<span class="text-error-inline">Error: invalid node payload</span>';
         console.error('invalid node payload', data);
         return;
       }
@@ -2085,12 +2195,12 @@ audit_readiness_summary(profile="aerospace")</div>
         ${suspect}
         ${showProps ? `<div class="detail-props">${props}</div>` : ''}
         <div class="tree-sections">
-          ${_treeSection(node.type, 'OUT', edges_out, 'out')}
-          ${_treeSection(node.type, 'IN', edges_in, 'in')}
+          ${_treeSection(node.type, 'Downstream', edges_out, 'out')}
+          ${_treeSection(node.type, 'Upstream', edges_in, 'in')}
         </div>`;
     } catch (e) {
       console.error('inline detail render failure', e, data);
-      container.innerHTML = `<span style="color:#c0392b;font-size:13px">Error: render failure: ${esc(e.message)}</span>`;
+      container.innerHTML = `<span class="text-error-inline">Error: render failure: ${esc(e.message)}</span>`;
     }
   }
 
@@ -2099,7 +2209,7 @@ audit_readiness_summary(profile="aerospace")</div>
     return `
       <div class="tree-section">
         <div class="tree-section-header" onclick="toggleTreeSection(this)">
-          <button class="expand-btn">▶</button>
+          <button class="expand-btn" aria-label="Expand ${label}" aria-expanded="false">▶</button>
           <span class="tree-section-label">${label}</span>
           <span class="tree-count">${edges.length}</span>
         </div>
@@ -2114,7 +2224,7 @@ audit_readiness_summary(profile="aerospace")</div>
     return `
       <div class="tree-node">
         <div class="tree-node-header">
-          <button class="expand-btn" onclick="toggleTreeNode(this,'${esc(e.node.id)}')">▶</button>
+          <button class="expand-btn" aria-label="Expand ${esc(e.node.id)}" aria-expanded="false" onclick="toggleTreeNode(this,'${esc(e.node.id)}')">▶</button>
           <span class="tree-edge-label">${esc(relation)}</span>
           <span class="tree-node-id">${esc(e.node.id)}</span>
           <span class="node-type-badge">${esc(e.node.type)}</span>
@@ -2130,6 +2240,7 @@ audit_readiness_summary(profile="aerospace")</div>
     body.style.display = opening ? '' : 'none';
     btn.textContent = opening ? '▼' : '▶';
     btn.classList.toggle('open', opening);
+    btn.setAttribute('aria-expanded', String(opening));
   }
 
   async function toggleTreeNode(btn, id) {
@@ -2139,15 +2250,16 @@ audit_readiness_summary(profile="aerospace")</div>
     body.style.display = opening ? '' : 'none';
     btn.textContent = opening ? '▼' : '▶';
     btn.classList.toggle('open', opening);
+    btn.setAttribute('aria-expanded', String(opening));
     if (opening && !body.dataset.loaded) {
       body.dataset.loaded = '1';
-      body.innerHTML = '<span style="color:#aaa;font-size:12px">Loading…</span>';
+      body.innerHTML = '<span class="text-hint">Loading…</span>';
       await _fillNodeDetail(body, id);
       // Auto-expand OUT and IN sections for nested nodes
       body.querySelectorAll('.tree-section-body').forEach(sec => {
         sec.style.display = '';
-        const btn = sec.previousElementSibling.querySelector('.expand-btn');
-        if (btn) { btn.textContent = '▼'; btn.classList.add('open'); }
+        const innerBtn = sec.previousElementSibling.querySelector('.expand-btn');
+        if (innerBtn) { innerBtn.textContent = '▼'; innerBtn.classList.add('open'); innerBtn.setAttribute('aria-expanded', 'true'); }
       });
     }
   }
@@ -2165,7 +2277,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const result = document.getElementById('impact-result');
     errEl.style.display = 'none';
     if (!id) return;
-    result.innerHTML = '<div class="empty-state">Analyzing…</div>';
+    result.innerHTML = '<div class="empty-state loading-pulse">Analyzing…</div>';
 
     let data;
     try {
@@ -2210,7 +2322,7 @@ audit_readiness_summary(profile="aerospace")</div>
     }
 
     result.innerHTML = `
-      <p style="font-size:13px; color:#555; margin-bottom:12px;">
+      <p class="text-sm-muted mb-12">
         Changing <strong>${esc(id)}</strong> would affect <strong>${data.length}</strong> node${data.length === 1 ? '' : 's'}:
       </p>
       <div class="card">
@@ -2218,7 +2330,7 @@ audit_readiness_summary(profile="aerospace")</div>
           <thead><tr><th>Node ID</th><th>Type</th><th>Via</th></tr></thead>
           <tbody>
             ${data.map(n => `<tr>
-              <td><button class="expand-btn" onclick="toggleRow('${esc(n.id)}',this,3)">▶</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,3)">▶</button><span class="req-id">${esc(n.id)}</span></td>
               <td><span class="node-type-badge">${esc(n.type)}</span></td>
               <td><span class="tree-edge-label">${esc(n.dir)} ${esc(n.via)}</span></td>
             </tr>`).join('')}
@@ -2233,6 +2345,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const errEl = document.getElementById('review-error');
     const result = document.getElementById('review-result');
     errEl.style.display = 'none';
+    result.innerHTML = '<div class="empty-state loading-pulse">Loading…</div>';
 
     let data;
     try {
@@ -2258,9 +2371,9 @@ audit_readiness_summary(profile="aerospace")</div>
           <thead><tr><th>Node ID</th><th>Type</th><th>Reason</th><th></th></tr></thead>
           <tbody>
             ${data.map(n => `<tr class="suspect">
-              <td><button class="expand-btn" onclick="toggleRow('${esc(n.id)}',this,4)">▶</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,4)">▶</button><span class="req-id">${esc(n.id)}</span></td>
               <td><span class="node-type-badge">${esc(n.type)}</span></td>
-              <td style="font-size:12px; color:#7a5c00;">${esc(n.suspect_reason || '')}</td>
+              <td class="text-suspect">${esc(n.suspect_reason || '')}</td>
               <td><button class="suspect-clear" onclick="clearSuspect('${esc(n.id)}')">Mark Reviewed</button></td>
             </tr>`).join('')}
           </tbody>
@@ -2300,6 +2413,22 @@ audit_readiness_summary(profile="aerospace")</div>
 
   // --- Lobby ---
 
+  function _trapLobby() {
+    document.querySelector('main').inert = true;
+    document.querySelector('header').inert = true;
+    document.querySelector('nav.nav-primary').inert = true;
+    document.querySelectorAll('.nav-sub').forEach(n => { n.inert = true; });
+    const first = document.querySelector('#lobby input[name=provider]');
+    if (first) first.focus();
+  }
+
+  function _releaseLobby() {
+    document.querySelector('main').inert = false;
+    document.querySelector('header').inert = false;
+    document.querySelector('nav.nav-primary').inert = false;
+    document.querySelectorAll('.nav-sub').forEach(n => { n.inert = false; });
+  }
+
   async function initApp() {
     let status;
     try {
@@ -2321,6 +2450,7 @@ audit_readiness_summary(profile="aerospace")</div>
     // Show lobby
     const lobby = document.getElementById('lobby');
     lobby.classList.add('visible');
+    _trapLobby();
 
     applyStatus(status);
   }
@@ -2429,6 +2559,7 @@ audit_readiness_summary(profile="aerospace")</div>
     }
 
     document.getElementById('lobby').classList.remove('visible');
+    _releaseLobby();
     await loadData();
     await handleGuideHash();
   }
@@ -2511,6 +2642,7 @@ audit_readiness_summary(profile="aerospace")</div>
     const tbody = document.getElementById('chain-gaps-body');
     const badge = document.getElementById('chain-gap-count');
     errEl.style.display = 'none';
+    tbody.innerHTML = '<tr class="loading-row"><td colspan="6" class="empty-state">Loading…</td></tr>';
 
     let gaps;
     try {
@@ -2624,7 +2756,7 @@ audit_readiness_summary(profile="aerospace")</div>
       codeBody.innerHTML = '<div class="empty-state">Scanning configured repositories…</div>';
     }
     if (commitsEl) {
-      commitsEl.innerHTML = '<em style="color:var(--muted);font-size:13px">Scanning configured repositories…</em>';
+      commitsEl.innerHTML = '<em class="text-hint">Scanning configured repositories…</em>';
     }
     try {
       const res = await fetch('/api/repos/scan', { method: 'POST' });
@@ -2659,7 +2791,7 @@ audit_readiness_summary(profile="aerospace")</div>
         return;
       }
       el.innerHTML = repos.map((r) => `<tr>
-        <td style="font-family:var(--font-mono);font-size:12px">${esc(r.path)}</td>
+        <td class="mono-sm">${esc(r.path)}</td>
         <td>${esc(formatUnixTimestamp(r.last_scan))}</td>
         <td>${esc(String(r.source_file_count || 0))}</td>
         <td>${esc(String(r.test_file_count || 0))}</td>
@@ -2679,13 +2811,13 @@ audit_readiness_summary(profile="aerospace")</div>
       const data = await res.json();
       const diagnostics = data.diagnostics || [];
       if (diagnostics.length === 0) {
-        el.innerHTML = '<em style="color:var(--muted);font-size:13px">No diagnostics.</em>';
+        el.innerHTML = '<em class="text-hint">No diagnostics.</em>';
         return;
       }
-      el.innerHTML = diagnostics.map(d => `<div class="repo-row" style="display:block">
+      el.innerHTML = diagnostics.map(d => `<div class="repo-row repo-row--block">
         <div><a href="#" class="guide-link" data-guide-code="E${esc(String(d.code))}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode)"><strong>E${esc(String(d.code))}</strong></a> ${esc(d.title || '')} <span class="gap-badge-sev ${(d.severity || 'info').toLowerCase()}">${esc((d.severity || '').toLowerCase())}</span></div>
-        <div style="font-size:12px;color:#555">${esc(d.message || '')}</div>
-        ${d.subject ? `<div style="font-family:var(--font-mono);font-size:12px;color:#666">${esc(d.subject)}</div>` : ''}
+        <div class="text-sm-muted">${esc(d.message || '')}</div>
+        ${d.subject ? `<div class="mono-sm text-sm-subtle">${esc(d.subject)}</div>` : ''}
       </div>`).join('');
     } catch (e) {
       el.innerHTML = `<div class="empty-state">Failed to load diagnostics: ${esc(e.message)}</div>`;
@@ -2693,8 +2825,9 @@ audit_readiness_summary(profile="aerospace")</div>
   }
 
   async function loadCodeTraceability() {
-    await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits(), loadCodeScanStatus()]);
     const container = document.getElementById('code-body');
+    container.innerHTML = '<div class="empty-state loading-pulse">Loading…</div>';
+    await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits(), loadCodeScanStatus()]);
 
     let files;
     try {
@@ -2724,14 +2857,14 @@ audit_readiness_summary(profile="aerospace")</div>
       const rows = entries.map(({node, props}) => {
         const filePath = props.path || node.id;
         return `<tr data-expanded="0" data-file-path="${esc(filePath)}">
-          <td><button class="expand-btn" onclick="expandFile(this.closest('tr'), this.closest('tr').dataset.filePath)">▶</button></td>
+          <td><button class="expand-btn" aria-label="Expand ${esc(filePath)}" aria-expanded="false" onclick="expandFile(this.closest('tr'), this.closest('tr').dataset.filePath)">▶</button></td>
           <td>${esc(node.type || '')}</td>
-          <td style="font-family:var(--font-mono);font-size:12px">${esc(filePath)}</td>
+          <td class="mono-sm">${esc(filePath)}</td>
           <td>${esc(String(props.annotation_count || 0))}</td>
         </tr>`;
       }).join('');
-      return `<div class="card" style="margin-bottom:12px">
-        <div style="font-weight:600;font-size:13px;margin-bottom:8px;font-family:var(--font-mono)">${esc(repo)}</div>
+      return `<div class="card card--mb">
+        <div class="mono-sm card-title mb-8">${esc(repo)}</div>
         <table>
           <thead><tr><th></th><th>Type</th><th>Path</th><th>Annotations</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -2745,7 +2878,7 @@ audit_readiness_summary(profile="aerospace")</div>
     if (row.dataset.expanded === '1') {
       row.nextElementSibling?.remove();
       row.dataset.expanded = '0';
-      if (btn) btn.textContent = '▶';
+      if (btn) { btn.textContent = '▶'; btn.setAttribute('aria-expanded', 'false'); }
       return;
     }
     let anns = [];
@@ -2764,11 +2897,11 @@ audit_readiness_summary(profile="aerospace")</div>
             <span class="ann-blame">${esc(p.blame_author || '')} ${esc(p.short_hash || '')}</span>
           </div>`;
         }).join('')
-      : '<em style="color:var(--muted)">No annotations found.</em>';
+      : '<em class="text-hint">No annotations found.</em>';
     detail.innerHTML = `<td colspan="4"><div class="file-annotations">${annHtml}</div></td>`;
     row.parentNode.insertBefore(detail, row.nextSibling);
     row.dataset.expanded = '1';
-    if (btn) btn.textContent = '▼';
+    if (btn) { btn.textContent = '▼'; btn.setAttribute('aria-expanded', 'true'); }
   }
 
   async function loadCoverageGaps() {
@@ -2791,15 +2924,15 @@ audit_readiness_summary(profile="aerospace")</div>
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const commits = await res.json();
       if (!commits.length) {
-        el.innerHTML = '<em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run Scan Now.</em>';
+        el.innerHTML = '<em class="text-hint">No recent commits. Add a repo and run Scan Now.</em>';
         return;
       }
       el.innerHTML = commits.map(c => {
         const p = propsObj(c.properties);
-        return `<div class="repo-row" style="display:block">
+        return `<div class="repo-row repo-row--block">
           <div><strong>${esc(p.short_hash || c.id)}</strong> ${esc(p.date || '')} ${esc(p.author || '')}</div>
-          <div style="font-size:12px;color:#555">${esc(p.message || '')}</div>
-          <div style="font-size:12px;color:#666">${esc((p.req_ids || []).join(', '))}</div>
+          <div class="text-sm-muted">${esc(p.message || '')}</div>
+          <div class="text-sm-subtle">${esc((p.req_ids || []).join(', '))}</div>
         </div>`;
       }).join('');
     } catch (e) {
@@ -2809,11 +2942,11 @@ audit_readiness_summary(profile="aerospace")</div>
 
   function renderSimpleNodeList(nodes, emptyMessage) {
     if (!nodes || nodes.length === 0) {
-      return `<em style="color:var(--muted);font-size:13px">${esc(emptyMessage)}</em>`;
+      return `<em class="text-hint">${esc(emptyMessage)}</em>`;
     }
-    return nodes.map(n => `<div class="repo-row" style="display:block">
+    return nodes.map(n => `<div class="repo-row repo-row--block">
       <div><strong>${esc(n.id || '')}</strong></div>
-      <div style="font-size:12px;color:#666">${esc(n.type || '')}</div>
+      <div class="text-sm-subtle">${esc(n.type || '')}</div>
     </div>`).join('');
   }
 
