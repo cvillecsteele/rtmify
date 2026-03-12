@@ -1,7 +1,7 @@
 /// routes.zig — HTTP route handlers for rtmify-live.
 ///
 /// Each handler takes a GraphDb + alloc, returns an allocated JSON string.
-/// Report handlers use adapter.zig to build an ephemeral in-memory Graph.
+/// RTM report handlers use adapter.zig to build an ephemeral in-memory Graph.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -20,6 +20,9 @@ const connection_mod = @import("connection.zig");
 const online_provider = @import("online_provider.zig");
 const json_util = @import("json_util.zig");
 const guide_catalog = @import("guide_catalog.zig");
+const design_history = @import("design_history.zig");
+const design_history_md = @import("design_history_md.zig");
+const design_history_pdf = @import("design_history_pdf.zig");
 
 pub const index_html = @embedFile("static/index.html");
 
@@ -1370,106 +1373,40 @@ pub fn handleBlameForRequirement(db: *graph_live.GraphDb, req_id: []const u8, al
 // ---------------------------------------------------------------------------
 
 pub fn handleDesignHistory(db: *graph_live.GraphDb, req_id: []const u8, alloc: Allocator) ![]const u8 {
-    const requirement = try db.getNode(req_id, alloc);
-    defer if (requirement) |n| freeNode(n, alloc);
-
-    var user_needs: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&user_needs, alloc);
-    var risks: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&risks, alloc);
-    var design_inputs: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&design_inputs, alloc);
-    var design_outputs: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&design_outputs, alloc);
-    var configuration_items: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&configuration_items, alloc);
-    var source_files: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&source_files, alloc);
-    var test_files: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&test_files, alloc);
-    var annotations: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&annotations, alloc);
-    var commits: std.ArrayList(graph_live.Node) = .empty;
-    defer freeNodeList(&commits, alloc);
-
-    try collectNodesViaOutgoingEdge(db, req_id, "DERIVES_FROM", "UserNeed", alloc, &user_needs);
-    try collectNodesViaIncomingEdge(db, req_id, "MITIGATED_BY", "Risk", alloc, &risks);
-    try collectNodesViaOutgoingEdge(db, req_id, "ALLOCATED_TO", "DesignInput", alloc, &design_inputs);
-    try collectNodesViaOutgoingEdge(db, req_id, "IMPLEMENTED_IN", "SourceFile", alloc, &source_files);
-    try collectNodesViaOutgoingEdge(db, req_id, "VERIFIED_BY_CODE", "TestFile", alloc, &test_files);
-    try collectNodesViaOutgoingEdge(db, req_id, "ANNOTATED_AT", "CodeAnnotation", alloc, &annotations);
-    try collectNodesViaOutgoingEdge(db, req_id, "COMMITTED_IN", "Commit", alloc, &commits);
-
-    for (design_inputs.items) |di| {
-        try collectNodesViaOutgoingEdge(db, di.id, "SATISFIED_BY", "DesignOutput", alloc, &design_outputs);
-    }
-    for (design_outputs.items) |do_node| {
-        try collectNodesViaOutgoingEdge(db, do_node.id, "CONTROLLED_BY", "ConfigurationItem", alloc, &configuration_items);
-        try collectNodesViaOutgoingEdge(db, do_node.id, "IMPLEMENTED_IN", "SourceFile", alloc, &source_files);
-    }
-    for (source_files.items) |src| {
-        try collectNodesViaOutgoingEdge(db, src.id, "VERIFIED_BY_CODE", "TestFile", alloc, &test_files);
-    }
-
-    const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer alloc.free(prof_name);
-    const pid = profile_mod.fromString(prof_name) orelse .generic;
-    const prof = profile_mod.get(pid);
-
-    const edge_gaps = try chain_mod.walkChain(db, prof, alloc);
-    defer freeGapSlice(edge_gaps, alloc);
-    const special_gaps = try chain_mod.walkSpecialGaps(db, prof, alloc);
-    defer freeGapSlice(special_gaps, alloc);
-
-    var related_ids = std.StringHashMap(void).init(alloc);
-    defer {
-        var it = related_ids.keyIterator();
-        while (it.next()) |k| alloc.free(k.*);
-        related_ids.deinit();
-    }
-    try relatedIdsPut(&related_ids, req_id, alloc);
-    if (requirement) |n| try relatedIdsPut(&related_ids, n.id, alloc);
-    try addNodeIdsToSet(user_needs.items, &related_ids, alloc);
-    try addNodeIdsToSet(risks.items, &related_ids, alloc);
-    try addNodeIdsToSet(design_inputs.items, &related_ids, alloc);
-    try addNodeIdsToSet(design_outputs.items, &related_ids, alloc);
-    try addNodeIdsToSet(configuration_items.items, &related_ids, alloc);
-    try addNodeIdsToSet(source_files.items, &related_ids, alloc);
-    try addNodeIdsToSet(test_files.items, &related_ids, alloc);
-    try addNodeIdsToSet(annotations.items, &related_ids, alloc);
-    try addNodeIdsToSet(commits.items, &related_ids, alloc);
-
-    var filtered_gaps: std.ArrayList(chain_mod.Gap) = .empty;
-    defer freeGapList(&filtered_gaps, alloc);
-    try appendMatchingGaps(edge_gaps, &related_ids, alloc, &filtered_gaps);
-    try appendMatchingGaps(special_gaps, &related_ids, alloc, &filtered_gaps);
+    var history = (try design_history.buildRequirementHistory(db, req_id, alloc)) orelse {
+        const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
+        defer alloc.free(prof_name);
+        const pid = profile_mod.fromString(prof_name) orelse .generic;
+        return std.fmt.allocPrint(alloc, "{{\"profile\":\"{s}\",\"requirement\":null,\"user_needs\":[],\"risks\":[],\"design_inputs\":[],\"design_outputs\":[],\"configuration_items\":[],\"source_files\":[],\"test_files\":[],\"annotations\":[],\"commits\":[],\"chain_gaps\":[]}}", .{@tagName(pid)});
+    };
+    defer design_history.deinitRequirementHistory(&history, alloc);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "{\"profile\":");
-    try appendJsonStr(&buf, @tagName(prof.id), alloc);
+    try appendJsonStr(&buf, @tagName(history.profile), alloc);
     try buf.appendSlice(alloc, ",\"requirement\":");
-    try appendNodeObjectOpt(&buf, requirement, alloc);
+    try appendNodeObjectOpt(&buf, history.requirement, alloc);
     try buf.appendSlice(alloc, ",\"user_needs\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(user_needs.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.user_needs, alloc));
     try buf.appendSlice(alloc, ",\"risks\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(risks.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.risks, alloc));
     try buf.appendSlice(alloc, ",\"design_inputs\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(design_inputs.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.design_inputs, alloc));
     try buf.appendSlice(alloc, ",\"design_outputs\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(design_outputs.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.design_outputs, alloc));
     try buf.appendSlice(alloc, ",\"configuration_items\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(configuration_items.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.configuration_items, alloc));
     try buf.appendSlice(alloc, ",\"source_files\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(source_files.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.source_files, alloc));
     try buf.appendSlice(alloc, ",\"test_files\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(test_files.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.test_files, alloc));
     try buf.appendSlice(alloc, ",\"annotations\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(annotations.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.annotations, alloc));
     try buf.appendSlice(alloc, ",\"commits\":");
-    try buf.appendSlice(alloc, try jsonNodeArray(commits.items, alloc));
+    try buf.appendSlice(alloc, try jsonNodeArray(history.commits, alloc));
     try buf.appendSlice(alloc, ",\"chain_gaps\":");
-    try buf.appendSlice(alloc, try chain_mod.gapsToJson(filtered_gaps.items, alloc));
+    try buf.appendSlice(alloc, try chain_mod.gapsToJson(history.chain_gaps, alloc));
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
 }
@@ -1479,11 +1416,11 @@ pub fn handleDesignHistory(db: *graph_live.GraphDb, req_id: []const u8, alloc: A
 // ---------------------------------------------------------------------------
 
 pub fn handleReportDhrMd(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    var g = try adapter.buildGraphFromSqlite(db, alloc);
-    defer g.deinit();
+    var report = try design_history.buildDhrReport(db, alloc);
+    defer design_history.deinitDhrReport(&report, alloc);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    try render_md.renderDhr(&g, buf.writer(alloc));
+    try design_history_md.renderReport(&report, buf.writer(alloc), alloc);
     return alloc.dupe(u8, buf.items);
 }
 
@@ -1492,11 +1429,11 @@ pub fn handleReportDhrMd(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 
 // ---------------------------------------------------------------------------
 
 pub fn handleReportDhrPdf(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    var g = try adapter.buildGraphFromSqlite(db, alloc);
-    defer g.deinit();
+    var report = try design_history.buildDhrReport(db, alloc);
+    defer design_history.deinitDhrReport(&report, alloc);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    try render_pdf.renderDhrPdf(&g, buf.writer(alloc));
+    try design_history_pdf.renderReport(&report, buf.writer(alloc), alloc);
     return alloc.dupe(u8, buf.items);
 }
 
@@ -2020,6 +1957,36 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 
 const testing = std.testing;
 
+fn seedDhrFixture(db: *graph_live.GraphDb) !void {
+    try db.storeConfig("profile", "medical");
+
+    try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need GPS\",\"source\":\"Customer\",\"priority\":\"High\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Detect GPS loss\",\"status\":\"Approved\"}", null);
+    try db.addNode("REQ-999", "Requirement", "{\"statement\":\"Standalone maintenance mode\",\"status\":\"Draft\"}", null);
+    try db.addNode("RSK-001", "Risk", "{\"description\":\"Clock drift\"}", null);
+    try db.addNode("DI-001", "DesignInput", "{\"description\":\"Timing spec\"}", null);
+    try db.addNode("DO-001", "DesignOutput", "{\"description\":\"GPS firmware\"}", null);
+    try db.addNode("DO-002", "DesignOutput", "{\"description\":\"Fallback logging\"}", null);
+    try db.addNode("CI-001", "ConfigurationItem", "{\"description\":\"Main ECU\"}", null);
+    try db.addNode("src/gps.c", "SourceFile", "{\"path\":\"src/gps.c\",\"repo\":\"/tmp/repo\"}", null);
+    try db.addNode("test/gps_test.c", "TestFile", "{\"path\":\"test/gps_test.c\",\"repo\":\"/tmp/repo\"}", null);
+    try db.addNode("src/gps.c:10", "CodeAnnotation", "{\"req_id\":\"REQ-001\",\"file_path\":\"src/gps.c\",\"line_number\":10,\"blame_author\":\"Casey\",\"short_hash\":\"abc123\"}", null);
+    try db.addNode("abc123", "Commit", "{\"hash\":\"abc123\",\"short_hash\":\"abc123\",\"date\":\"2026-03-09T00:00:00Z\",\"message\":\"Implement GPS trace\"}", null);
+
+    try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+    try db.addEdge("RSK-001", "REQ-001", "MITIGATED_BY");
+    try db.addEdge("REQ-001", "DI-001", "ALLOCATED_TO");
+    try db.addEdge("DI-001", "DO-001", "SATISFIED_BY");
+    try db.addEdge("DI-001", "DO-002", "SATISFIED_BY");
+    try db.addEdge("DO-001", "CI-001", "CONTROLLED_BY");
+    try db.addEdge("REQ-001", "src/gps.c", "IMPLEMENTED_IN");
+    try db.addEdge("DO-001", "src/gps.c", "IMPLEMENTED_IN");
+    try db.addEdge("REQ-001", "test/gps_test.c", "VERIFIED_BY_CODE");
+    try db.addEdge("src/gps.c", "test/gps_test.c", "VERIFIED_BY_CODE");
+    try db.addEdge("REQ-001", "src/gps.c:10", "ANNOTATED_AT");
+    try db.addEdge("REQ-001", "abc123", "COMMITTED_IN");
+}
+
 test "handleIngest node payload inserts node" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2262,41 +2229,91 @@ test "handleDesignHistory returns structured chain with filtered gaps" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
-    try db.storeConfig("profile", "medical");
-
-    try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need GPS\"}", null);
-    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Detect GPS loss\"}", null);
-    try db.addNode("RSK-001", "Risk", "{\"description\":\"Clock drift\"}", null);
-    try db.addNode("DI-001", "DesignInput", "{\"description\":\"Timing spec\"}", null);
-    try db.addNode("DO-001", "DesignOutput", "{\"description\":\"GPS firmware\"}", null);
-    try db.addNode("src/gps.c", "SourceFile", "{\"path\":\"src/gps.c\"}", null);
-    try db.addNode("test/gps_test.c", "TestFile", "{\"path\":\"test/gps_test.c\"}", null);
-    try db.addNode("src/gps.c:10", "CodeAnnotation", "{\"req_id\":\"REQ-001\",\"file_path\":\"src/gps.c\",\"line_number\":10}", null);
-    try db.addNode("abc123", "Commit", "{\"hash\":\"abc123\",\"short_hash\":\"abc123\",\"date\":\"2026-03-09T00:00:00Z\"}", null);
-
-    try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
-    try db.addEdge("RSK-001", "REQ-001", "MITIGATED_BY");
-    try db.addEdge("REQ-001", "DI-001", "ALLOCATED_TO");
-    try db.addEdge("DI-001", "DO-001", "SATISFIED_BY");
-    try db.addEdge("REQ-001", "src/gps.c", "IMPLEMENTED_IN");
-    try db.addEdge("REQ-001", "test/gps_test.c", "VERIFIED_BY_CODE");
-    try db.addEdge("src/gps.c", "test/gps_test.c", "VERIFIED_BY_CODE");
-    try db.addEdge("REQ-001", "src/gps.c:10", "ANNOTATED_AT");
-    try db.addEdge("src/gps.c", "src/gps.c:10", "CONTAINS");
-    try db.addEdge("REQ-001", "abc123", "COMMITTED_IN");
+    try seedDhrFixture(&db);
 
     const resp = try handleDesignHistory(&db, "REQ-001", alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "\"requirement\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"user_needs\":") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"risks\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"design_inputs\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"design_outputs\":") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"configuration_items\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"source_files\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"test_files\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"annotations\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"commits\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"chain_gaps\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "DO-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "CI-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "design_output_without_config_control") != null);
+}
+
+test "handleReportDhrMd includes downstream design history artifacts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedDhrFixture(&db);
+
+    const resp = try handleReportDhrMd(&db, alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "# Design History Record") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Profile: medical") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "## UN-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "### Requirement REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Risks") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Clock drift") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Design Inputs") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Timing spec") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Design Outputs") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "GPS firmware") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Configuration Items") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Main ECU") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Source Files") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "src/gps.c") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Test Files") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "test/gps_test.c") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Annotations") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "src/gps.c:10") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Commits") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Implement GPS trace") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "#### Open Chain Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "design_output_without_config_control") != null);
+}
+
+test "handleReportDhrMd includes unlinked requirements appendix when needed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedDhrFixture(&db);
+
+    const resp = try handleReportDhrMd(&db, alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "## Requirements Without User Needs") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "### Requirement REQ-999") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Standalone maintenance mode") != null);
+}
+
+test "handleReportDhrPdf includes downstream design history artifacts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedDhrFixture(&db);
+
+    const resp = try handleReportDhrPdf(&db, alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "Design History Record") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "UN-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Requirement REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Design Inputs") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Timing spec") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Requirements Without User Needs") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "REQ-999") != null);
 }
 
 test "handleNode returns node wrapper plus edge arrays" {
@@ -2670,7 +2687,7 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "${arrow} ${esc(e.label)}") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\"") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\" style=\"margin-top:8px;display:none\"") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "class=\"drop-hint drop-hint--mt8\" id=\"lobby-share-hint\" style=\"display:none\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "shareHintEl.style.display = 'block'") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "shareHintEl.style.display = 'none'") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "document.getElementById('lobby-share-hint').style.display = 'block'") != null);
