@@ -23,6 +23,13 @@ function runSql(dbPath: string, sql: string): void {
   execFileSync('sqlite3', [dbPath, sql], { stdio: 'pipe' });
 }
 
+export function setConfig(dbPath: string, key: string, value: string): void {
+  runSql(dbPath, `
+INSERT OR REPLACE INTO config (key, value)
+VALUES (${sqlQuote(key)}, ${sqlQuote(value)});
+`);
+}
+
 export function initSchema(dbPath: string): void {
   runSql(dbPath, `
 CREATE TABLE IF NOT EXISTS nodes (
@@ -91,6 +98,33 @@ export function insertEdge(dbPath: string, fromId: string, toId: string, label: 
   runSql(dbPath, `
 INSERT OR REPLACE INTO edges (id, from_id, to_id, label, properties, created_at)
 VALUES (${sqlQuote(edgeId(fromId, toId, label))}, ${sqlQuote(fromId)}, ${sqlQuote(toId)}, ${sqlQuote(label)}, NULL, ${ts});
+`);
+}
+
+export function insertRuntimeDiagnostic(dbPath: string, input: {
+  dedupeKey: string;
+  code: number;
+  severity: 'info' | 'warn' | 'err';
+  title: string;
+  message: string;
+  source: string;
+  subject?: string | null;
+  detailsJson?: string;
+}): void {
+  const ts = nowTs();
+  runSql(dbPath, `
+INSERT OR REPLACE INTO runtime_diagnostics (dedupe_key, code, severity, title, message, source, subject, details_json, updated_at)
+VALUES (
+  ${sqlQuote(input.dedupeKey)},
+  ${input.code},
+  ${sqlQuote(input.severity)},
+  ${sqlQuote(input.title)},
+  ${sqlQuote(input.message)},
+  ${sqlQuote(input.source)},
+  ${input.subject == null ? 'NULL' : sqlQuote(input.subject)},
+  ${sqlQuote(input.detailsJson || '{}')},
+  ${ts}
+);
 `);
 }
 

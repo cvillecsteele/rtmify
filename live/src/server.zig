@@ -215,6 +215,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/guide/errors")) {
+            const body = try routes.handleGuideErrors(alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/coverage.md")) {
             const body = try routes.handleCoverageReport(ctx.db, alloc);
             response_status = .ok;

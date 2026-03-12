@@ -511,36 +511,111 @@
     .gap-badge-sev.error { background: #fde8e8; color: #c0392b; }
     .gap-badge-sev.warn  { background: #fff8e1; color: #7a5900; }
     .gap-badge-sev.info  { background: #e8f4e8; color: #2d5a2d; }
-    .gap-help-btn {
-      border: 1px solid #d7dde5;
-      background: #fff;
-      color: #2d4b6a;
-      border-radius: 999px;
-      padding: 4px 10px;
+
+    .guide-link {
+      color: #1f4b7a;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .guide-link:hover { text-decoration: underline; }
+    .guide-shell {
+      display: grid;
+      grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+      gap: 16px;
+    }
+    .guide-index {
+      padding: 16px;
+      position: sticky;
+      top: 24px;
+      align-self: start;
+    }
+    .guide-index h3 {
       font-size: 12px;
-      cursor: pointer;
-      white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #666;
+      margin-bottom: 12px;
     }
-    .gap-help-btn:hover { background: #f3f7fb; }
-    .gap-help-row td { background: #fafbfd; padding: 0; }
-    .gap-help-box {
-      padding: 14px 16px;
-      border-top: 1px solid #e8edf2;
-      font-size: 13px;
-      line-height: 1.45;
-    }
-    .gap-help-title {
+    .guide-index-group { margin-bottom: 16px; }
+    .guide-index-group-title {
       font-weight: 600;
       margin-bottom: 8px;
       color: #1f2e3b;
     }
-    .gap-help-grid {
+    .guide-index a {
+      display: block;
+      color: #44505b;
+      text-decoration: none;
+      font-size: 13px;
+      line-height: 1.4;
+      margin-bottom: 6px;
+    }
+    .guide-index a:hover { color: #1f4b7a; }
+    .guide-groups { display: flex; flex-direction: column; gap: 16px; }
+    .guide-group-card { padding: 16px; }
+    .guide-group-card h3 { margin-bottom: 12px; font-size: 15px; }
+    .guide-entries { display: flex; flex-direction: column; gap: 12px; }
+    .guide-entry {
+      border: 1px solid #e2e6ec;
+      border-radius: 6px;
+      padding: 14px 16px;
+      scroll-margin-top: 24px;
+    }
+    .guide-entry-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .guide-entry-code {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: #1a1a2e;
+      background: #eef2f7;
+      border-radius: 999px;
+      padding: 4px 10px;
+      white-space: nowrap;
+    }
+    .guide-entry-title {
+      font-weight: 600;
+      color: #1f2e3b;
+      flex: 1;
+    }
+    .guide-entry-summary {
+      color: #44505b;
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+    .guide-entry-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
+      font-size: 13px;
+      line-height: 1.45;
     }
-    .gap-help-block strong { display: block; margin-bottom: 4px; color: #44505b; }
-    .gap-help-block { color: #33414f; }
+    .guide-entry-block strong {
+      display: block;
+      margin-bottom: 6px;
+      color: #44505b;
+    }
+    .guide-entry-block ul {
+      padding-left: 18px;
+    }
+    .guide-entry-block li + li { margin-top: 4px; }
+    .guide-entry.active-guide {
+      border-color: #1f4b7a;
+      box-shadow: 0 0 0 2px rgba(31, 75, 122, 0.12);
+    }
+    @media (max-width: 960px) {
+      .guide-shell {
+        grid-template-columns: 1fr;
+      }
+      .guide-index {
+        position: static;
+      }
+    }
     .mcp-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -682,12 +757,12 @@
   <button data-group="analysis" onclick="showGroup('analysis')">
     Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
   </button>
+  <button data-group="guide" onclick="showGroup('guide')">Guide</button>
   <button data-group="code" onclick="showGroup('code')">Code</button>
   <button data-group="reports" onclick="showGroup('reports')">Reports</button>
   <div class="nav-settings-wrap">
     <button class="nav-settings-btn" title="Settings" onclick="toggleSettings(event)">⚙</button>
     <div class="settings-dropdown" id="settings-panel" style="display:none">
-      <button onclick="showSettingsTab('mcp-ai')">MCP &amp; AI</button>
       <button onclick="showSettingsTab('info')">System Info</button>
     </div>
   </div>
@@ -709,6 +784,12 @@
   <button id="nav-review" data-tab="review" onclick="showTab('review')">
     Suspects <span id="suspect-nav-badge" class="badge" style="display:none"></span>
   </button>
+</div>
+
+<!-- Guide sub-nav -->
+<div class="nav-sub" data-group="guide">
+  <button class="active" data-tab="guide-errors" onclick="showTab('guide-errors')">Error Codes Explained</button>
+  <button data-tab="mcp-ai" onclick="showTab('mcp-ai')">MCP &amp; AI</button>
 </div>
 
 <main>
@@ -888,6 +969,26 @@
           <tr><td colspan="6" class="empty-state">Select a profile and click Refresh to check for gaps.</td></tr>
         </tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- Guide tab -->
+  <section id="tab-guide-errors">
+    <div class="toolbar">
+      <h2>Error Codes Explained</h2>
+      <button class="btn" onclick="loadGuideErrors(true)">Refresh</button>
+    </div>
+    <div id="guide-errors-error" class="error-banner" style="display:none"></div>
+    <div class="guide-shell">
+      <div id="guide-errors-index" class="card guide-index">
+        <h3>Index</h3>
+        <div><em style="color:var(--muted);font-size:13px">Loading guide index…</em></div>
+      </div>
+      <div id="guide-errors-body" class="guide-groups">
+        <div class="card">
+          <div class="empty-state">Loading guide entries…</div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -1096,17 +1197,24 @@ audit_readiness_summary(profile="aerospace")</div>
     'requirements': 'data', 'user-needs': 'data', 'tests': 'data',
     'risks': 'data', 'rtm': 'data',
     'chain-gaps': 'analysis', 'impact': 'analysis', 'review': 'analysis',
+    'guide-errors': 'guide', 'mcp-ai': 'guide',
     'code': 'code', 'reports': 'reports',
-    'mcp-ai': 'settings', 'info': 'settings',
+    'info': 'settings',
   };
 
   // Default sub-tab per group
   const GROUP_DEFAULTS = {
     data: 'requirements',
     analysis: 'chain-gaps',
+    guide: 'guide-errors',
     code: 'code',
     reports: 'reports',
   };
+
+  let guideErrorsCache = null;
+  let guideLookupByAnchor = new Map();
+  let guideLookupByKey = new Map();
+  let pendingGuideAnchor = null;
 
   function showGroup(name) {
     document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
@@ -1135,6 +1243,7 @@ audit_readiness_summary(profile="aerospace")</div>
 
     if (name === 'review') loadSuspects();
     if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
+    if (name === 'guide-errors') loadGuideErrors();
     if (name === 'code') loadCodeTraceability();
     if (name === 'mcp-ai') loadMcpHelp();
     if (name === 'info') loadInfo();
@@ -1147,7 +1256,6 @@ audit_readiness_summary(profile="aerospace")</div>
     document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
       b.classList.remove('active'));
     document.querySelectorAll('.nav-sub').forEach(sn => sn.classList.remove('active'));
-    if (name === 'mcp-ai') loadMcpHelp();
     if (name === 'info') loadInfo();
   }
 
@@ -1161,6 +1269,164 @@ audit_readiness_summary(profile="aerospace")</div>
     const p = document.getElementById('settings-panel');
     if (p) p.style.display = 'none';
   });
+
+  function guideKeyForEntry(entry) {
+    if (entry.surface === 'runtime_diagnostic') return `diag:${entry.code_label}`;
+    return entry.variant ? `gap:${entry.code}:${entry.variant}` : `gap:${entry.code}`;
+  }
+
+  function updateGuideHash(anchor) {
+    if (window.location.hash === `#${anchor}`) return;
+    history.replaceState(null, '', `#${anchor}`);
+  }
+
+  function activateGuideEntry(anchor) {
+    document.querySelectorAll('.guide-entry.active-guide').forEach(el => el.classList.remove('active-guide'));
+    const el = document.getElementById(anchor);
+    if (!el) return;
+    el.classList.add('active-guide');
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function consumePendingGuideAnchor() {
+    if (!pendingGuideAnchor) return;
+    const anchor = pendingGuideAnchor;
+    pendingGuideAnchor = null;
+    requestAnimationFrame(() => activateGuideEntry(anchor));
+  }
+
+  function renderGuideErrors(data) {
+    const indexEl = document.getElementById('guide-errors-index');
+    const bodyEl = document.getElementById('guide-errors-body');
+    if (!indexEl || !bodyEl) return;
+
+    const groups = data.groups || [];
+    indexEl.innerHTML = `<h3>Index</h3>${groups.map(group => `
+      <div class="guide-index-group">
+        <div class="guide-index-group-title">${esc(group.title || '')}</div>
+        ${(group.entries || []).map(entry => `
+          <a href="#${esc(entry.anchor || '')}" data-guide-code="${esc(entry.code_label || entry.code || '')}" data-guide-variant="${esc(entry.variant || '')}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode, this.dataset.guideVariant ? { variant: this.dataset.guideVariant } : {})">
+            ${esc(entry.code_label || '')} ${esc(entry.title || '')}
+          </a>
+        `).join('')}
+      </div>
+    `).join('')}`;
+
+    bodyEl.innerHTML = groups.map(group => `
+      <div class="card guide-group-card">
+        <h3>${esc(group.title || '')}</h3>
+        <div class="guide-entries">
+          ${(group.entries || []).map(entry => `
+            <article id="${esc(entry.anchor || '')}" class="guide-entry">
+              <div class="guide-entry-head">
+                <span class="guide-entry-code">${esc(entry.code_label || '')}</span>
+                <span class="guide-entry-title">${esc(entry.title || '')}</span>
+              </div>
+              <div class="guide-entry-summary">${esc(entry.summary || '')}</div>
+              <div class="guide-entry-grid">
+                <div class="guide-entry-block">
+                  <strong>What RTMify Checked</strong>
+                  <div>${esc(entry.what_checked || '')}</div>
+                </div>
+                <div class="guide-entry-block">
+                  <strong>Common Causes</strong>
+                  <ul>${(entry.common_causes || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul>
+                </div>
+                <div class="guide-entry-block">
+                  <strong>What To Inspect Next</strong>
+                  <ul>${(entry.what_to_inspect || []).map(item => `<li>${esc(item)}</li>`).join('')}</ul>
+                </div>
+                <div class="guide-entry-block">
+                  <strong>Evidence Type</strong>
+                  <div>${esc(entry.evidence_kind || '')}</div>
+                </div>
+              </div>
+            </article>
+          `).join('')}
+        </div>
+      </div>
+    `).join('');
+
+    consumePendingGuideAnchor();
+  }
+
+  async function loadGuideErrors(force = false) {
+    const errEl = document.getElementById('guide-errors-error');
+    const indexEl = document.getElementById('guide-errors-index');
+    const bodyEl = document.getElementById('guide-errors-body');
+    if (!errEl || !indexEl || !bodyEl) return;
+
+    errEl.style.display = 'none';
+    if (guideErrorsCache && !force) {
+      renderGuideErrors(guideErrorsCache);
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/guide/errors', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      guideLookupByAnchor = new Map();
+      guideLookupByKey = new Map();
+      const chainCodeCounts = new Map();
+
+      (data.groups || []).forEach(group => {
+        (group.entries || []).forEach(entry => {
+          if (entry.surface === 'chain_gap') {
+            chainCodeCounts.set(entry.code, (chainCodeCounts.get(entry.code) || 0) + 1);
+          }
+        });
+      });
+
+      (data.groups || []).forEach(group => {
+        group.entries = (group.entries || []).sort((a, b) => {
+          const codeDiff = Number(a.code || 0) - Number(b.code || 0);
+          if (codeDiff !== 0) return codeDiff;
+          return String(a.title || '').localeCompare(String(b.title || ''));
+        });
+        group.entries.forEach(entry => {
+          guideLookupByAnchor.set(entry.anchor, entry);
+          guideLookupByKey.set(guideKeyForEntry(entry), entry);
+          if (entry.surface === 'chain_gap' && (chainCodeCounts.get(entry.code) || 0) === 1) {
+            guideLookupByKey.set(`gap:${entry.code}`, entry);
+          }
+        });
+      });
+
+      guideErrorsCache = data;
+      renderGuideErrors(data);
+    } catch (e) {
+      errEl.textContent = 'Failed to load guide entries: ' + e.message;
+      errEl.style.display = 'block';
+      indexEl.innerHTML = '<h3>Index</h3><div><em style="color:var(--muted);font-size:13px">Guide unavailable.</em></div>';
+      bodyEl.innerHTML = `<div class="card"><div class="empty-state">Failed to load guide entries: ${esc(e.message)}</div></div>`;
+    }
+  }
+
+  async function openGuideForCode(codeLabelOrNumber, options = {}) {
+    const value = String(codeLabelOrNumber || '').trim();
+    const key = value.startsWith('E')
+      ? `diag:${value}`
+      : (options.variant ? `gap:${value}:${options.variant}` : `gap:${value}`);
+
+    showTab('guide-errors');
+    await loadGuideErrors();
+
+    const entry = guideLookupByKey.get(key);
+    if (!entry) return;
+    pendingGuideAnchor = entry.anchor;
+    updateGuideHash(entry.anchor);
+    consumePendingGuideAnchor();
+  }
+
+  async function handleGuideHash() {
+    const anchor = window.location.hash.startsWith('#guide-code-') ? window.location.hash.slice(1) : null;
+    if (!anchor) return;
+    pendingGuideAnchor = anchor;
+    showTab('guide-errors');
+    await loadGuideErrors();
+  }
 
   // --- Data loading ---
 
@@ -2041,12 +2307,14 @@ audit_readiness_summary(profile="aerospace")</div>
       status = await res.json();
     } catch (e) {
       // Server unreachable — show main app and let loadData handle errors
-      loadData();
+      await loadData();
+      await handleGuideHash();
       return;
     }
 
     if (status.configured) {
-      loadData();
+      await loadData();
+      await handleGuideHash();
       return;
     }
 
@@ -2161,7 +2429,8 @@ audit_readiness_summary(profile="aerospace")</div>
     }
 
     document.getElementById('lobby').classList.remove('visible');
-    loadData();
+    await loadData();
+    await handleGuideHash();
   }
 
   // --- Chain Gaps tab ---
@@ -2264,168 +2533,17 @@ audit_readiness_summary(profile="aerospace")</div>
       return;
     }
 
-    tbody.innerHTML = gaps.map((g, idx) => {
+    tbody.innerHTML = gaps.map((g) => {
       const sev = (g.severity || 'info').toLowerCase();
-      const helpId = `gap-help-${idx}`;
       return `<tr>
-        <td>${esc(String(g.code || ''))}</td>
-        <td>${esc(g.title || '')}</td>
+        <td><a href="#" class="guide-link" data-guide-code="${esc(String(g.code || ''))}" data-guide-variant="${esc(g.gap_type || '')}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode, this.dataset.guideVariant ? { variant: this.dataset.guideVariant } : {})">${esc(String(g.code || ''))}</a></td>
+        <td><a href="#" class="guide-link" data-guide-code="${esc(String(g.code || ''))}" data-guide-variant="${esc(g.gap_type || '')}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode, this.dataset.guideVariant ? { variant: this.dataset.guideVariant } : {})">${esc(g.title || '')}</a></td>
         <td>${esc(g.gap_type || '')}</td>
         <td>${esc(g.node_id || '')}</td>
         <td><span class="gap-badge-sev ${sev}">${esc(sev)}</span></td>
-        <td>
-          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
-            <span>${esc(g.message || '')}</span>
-            <button class="gap-help-btn" onclick="toggleGapHelp('${helpId}', this)">Explain</button>
-          </div>
-        </td>
-      </tr>
-      <tr id="${helpId}" class="gap-help-row" style="display:none">
-        <td colspan="6">${renderGapHelp(g)}</td>
+        <td>${esc(g.message || '')}</td>
       </tr>`;
     }).join('');
-  }
-
-  function toggleGapHelp(id, btn) {
-    const row = document.getElementById(id);
-    if (!row) return;
-    const open = row.style.display !== 'none';
-    row.style.display = open ? 'none' : '';
-    if (btn) btn.textContent = open ? 'Explain' : 'Hide';
-  }
-
-  function renderGapHelp(gap) {
-    const info = explainGap(gap);
-    return `<div class="gap-help-box">
-      <div class="gap-help-title">${esc(info.headline)}</div>
-      <div class="gap-help-grid">
-        <div class="gap-help-block">
-          <strong>What RTMify Checked</strong>
-          <div>${esc(info.check)}</div>
-        </div>
-        <div class="gap-help-block">
-          <strong>Why You’re Seeing It</strong>
-          <div>${esc(info.why)}</div>
-        </div>
-        <div class="gap-help-block">
-          <strong>What To Inspect</strong>
-          <div>${esc(info.inspect)}</div>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  function explainGap(gap) {
-    const profile = document.getElementById('profile-select')?.value || 'generic';
-    const id = gap.node_id || 'this node';
-    switch (gap.gap_type) {
-      case 'orphan_requirement':
-        if (String(id).startsWith('UN-')) {
-          return {
-            headline: `No requirement currently derives from ${id}.`,
-            check: 'RTMify looked for downstream Requirements linked to this User Need.',
-            why: `In the ${profile} profile, a user need is expected to have at least one derived requirement. None is present in the current graph.`,
-            inspect: 'Check the Requirements tab for a row whose User Need ID cell contains this exact user-need ID. Look for typos, missing links, or references skipped during ingest.'
-          };
-        }
-        return {
-          headline: `${id} is missing a required traceability step.`,
-          check: 'RTMify checked for the next required edge in the active profile chain.',
-          why: 'That edge is absent in the current graph, so this node is orphaned at that stage of the chain.',
-          inspect: 'Open the source tab for this artifact and verify the expected upstream or downstream ID link is present and valid.'
-        };
-      case 'hlr_without_llr':
-        return {
-          headline: `${id} has no downstream lower-level Requirements.`,
-          check: 'RTMify identified this requirement as derived from a User Need, then looked for downstream lower-level Requirements.',
-          why: `Under the ${profile} profile, high-level requirements are expected to decompose into lower-level requirements. None are linked downstream from this requirement.`,
-          inspect: 'If this is truly a high-level requirement, add one or more lower-level requirements and link them. If you intentionally use one requirement level, this profile is stricter than your current data model.'
-        };
-      case 'llr_without_source':
-        return {
-          headline: `${id} looks like a lower-level requirement with no current source implementation evidence.`,
-          check: 'RTMify found this requirement as part of a decomposition chain and then looked for current source implementation evidence.',
-          why: 'The decomposition exists, but RTMify cannot see code that currently implements this lower-level requirement.',
-          inspect: 'Check whether code traceability has been captured yet. If implementation exists, confirm repo scanning and code annotations are linking this requirement to the right source files.'
-        };
-      case 'source_without_structural_coverage':
-        return {
-          headline: `${id} has implementation evidence but no current test evidence.`,
-          check: 'RTMify found this source file as current implementation evidence and then looked for current test evidence tied to it.',
-          why: 'RTMify can see code that appears to implement the requirement, but it cannot see tests that currently verify that code.',
-          inspect: 'Check test-file annotations, repo scan coverage, and whether the matching verification artifact is represented as a TestFile in the graph.'
-        };
-      case 'unimplemented_requirement':
-        return {
-          headline: `${id} has no current source implementation evidence.`,
-          check: 'RTMify looked for current source implementation evidence linked to this requirement.',
-          why: 'RTMify cannot see code that currently appears to implement this requirement.',
-          inspect: 'If implementation exists, check repo scanning, code annotations, and whether the requirement ID is referenced exactly in code comments.'
-        };
-      case 'uncommitted_requirement':
-        return {
-          headline: `${id} has implementation evidence but no explicit commit-message trace.`,
-          check: 'RTMify found current implementation evidence for this requirement and then looked for commits whose messages explicitly referenced it.',
-          why: 'RTMify can see code linked to this requirement, but no commit message explicitly names that requirement.',
-          inspect: 'Check whether commit messages reference the requirement ID and whether git log scanning is working for the configured repositories.'
-        };
-      case 'unattributed_annotation':
-        return {
-          headline: `${id} has no git blame data.`,
-          check: 'RTMify found a requirement tag in code and then asked git who last changed that line.',
-          why: 'The requirement tag exists, but git did not provide usable blame data for that line.',
-          inspect: 'Check repo scan diagnostics for git blame failures, untracked files, or path mismatches.'
-        };
-      case 'req_without_design_input':
-        return {
-          headline: `${id} has no linked design input.`,
-          check: 'RTMify looked for an ALLOCATED_TO edge from this Requirement to a DesignInput.',
-          why: 'The requirement is present, but the design-input allocation step is absent.',
-          inspect: 'Check the Design Inputs tab and the Source Requirement column for this requirement ID.'
-        };
-      case 'design_input_without_design_output':
-        return {
-          headline: `${id} has no linked design output.`,
-          check: 'RTMify looked for a SATISFIED_BY edge from this DesignInput to a DesignOutput.',
-          why: 'The design input exists, but no downstream design output is linked to it.',
-          inspect: 'Check the Design Outputs tab and the Design Input ID column for this design-input ID.'
-        };
-      case 'design_output_without_source':
-        return {
-          headline: `${id} has no implementation link.`,
-          check: 'RTMify looked for current source implementation evidence linked to this design output.',
-          why: 'The design output exists in the graph, but no source implementation evidence is linked.',
-          inspect: 'Check repo/code traceability or add the implementation mapping if this design output is already realized in code.'
-        };
-      case 'design_output_without_config_control':
-        return {
-          headline: `${id} has no configuration-control link.`,
-          check: 'RTMify looked for a CONTROLLED_BY edge from this DesignOutput to a ConfigurationItem.',
-          why: 'The design output exists, but no controlled configuration item is linked to it.',
-          inspect: 'Check the Configuration Items tab and the Design Output ID column for this design output ID.'
-        };
-      case 'missing_asil':
-        return {
-          headline: `${id} is missing ASIL classification.`,
-          check: 'RTMify looked for an asil property on this Requirement under the automotive profile.',
-          why: 'No ASIL value is stored for this requirement.',
-          inspect: 'Add the ASIL value in the requirement data or adjust the model if this requirement is intentionally non-safety-relevant.'
-        };
-      case 'asil_inheritance':
-        return {
-          headline: `${id} violates ASIL inheritance expectations.`,
-          check: 'RTMify compared parent and child requirement ASIL values across a REFINED_BY relationship.',
-          why: 'A child requirement has a lower ASIL than its parent, which breaks the configured inheritance rule.',
-          inspect: 'Review the parent and child ASIL values and confirm whether the decomposition was entered correctly.'
-        };
-      default:
-        return {
-          headline: `${gap.title || 'Gap'} detected for ${id}.`,
-          check: 'RTMify evaluated the active profile rules against the current graph and found a missing or inconsistent traceability condition.',
-          why: gap.message || 'The graph does not satisfy one of the active profile checks.',
-          inspect: 'Inspect the linked node, its expected upstream and downstream relationships, and the source sheet cells that should create those edges.'
-        };
-    }
   }
 
   // --- Code Traceability tab ---
@@ -2565,7 +2683,7 @@ audit_readiness_summary(profile="aerospace")</div>
         return;
       }
       el.innerHTML = diagnostics.map(d => `<div class="repo-row" style="display:block">
-        <div><strong>E${esc(String(d.code))}</strong> ${esc(d.title || '')} <span class="gap-badge-sev ${(d.severity || 'info').toLowerCase()}">${esc((d.severity || '').toLowerCase())}</span></div>
+        <div><a href="#" class="guide-link" data-guide-code="E${esc(String(d.code))}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode)"><strong>E${esc(String(d.code))}</strong></a> ${esc(d.title || '')} <span class="gap-badge-sev ${(d.severity || 'info').toLowerCase()}">${esc((d.severity || '').toLowerCase())}</span></div>
         <div style="font-size:12px;color:#555">${esc(d.message || '')}</div>
         ${d.subject ? `<div style="font-family:var(--font-mono);font-size:12px;color:#666">${esc(d.subject)}</div>` : ''}
       </div>`).join('');
@@ -2723,6 +2841,9 @@ audit_readiness_summary(profile="aerospace")</div>
   }
 
   // --- Init ---
+  window.addEventListener('hashchange', () => {
+    handleGuideHash();
+  });
   initApp();
 </script>
 

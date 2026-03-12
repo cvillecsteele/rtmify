@@ -99,19 +99,19 @@ pub fn walkSpecialGaps(db: *GraphDb, profile: Profile, alloc: Allocator) ![]Gap 
 
 fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gaps: *std.ArrayList(Gap)) !void {
     switch (check.kind) {
-        .unimplemented_requirement => try appendMissingEdgeGap(db, "Requirement", "IMPLEMENTED_IN", check, "unimplemented_requirement", "Requirement '{s}' has no current source implementation evidence", alloc, gaps),
-        .untested_source_file => try appendMissingEdgeGap(db, "SourceFile", "VERIFIED_BY_CODE", check, "untested_source_file", "SourceFile '{s}' has no VERIFIED_BY_CODE edge to a test file", alloc, gaps),
-        .req_without_design_input => try appendMissingEdgeGap(db, "Requirement", "ALLOCATED_TO", check, "req_without_design_input", "Requirement '{s}' has no ALLOCATED_TO edge to a design input", alloc, gaps),
-        .design_input_without_design_output => try appendMissingEdgeGap(db, "DesignInput", "SATISFIED_BY", check, "design_input_without_design_output", "DesignInput '{s}' has no SATISFIED_BY edge to a design output", alloc, gaps),
-        .design_output_without_source => try appendMissingEdgeGap(db, "DesignOutput", "IMPLEMENTED_IN", check, "design_output_without_source", "DesignOutput '{s}' has no IMPLEMENTED_IN edge to a source file", alloc, gaps),
-        .design_output_without_config_control => try appendMissingEdgeGap(db, "DesignOutput", "CONTROLLED_BY", check, "design_output_without_config_control", "DesignOutput '{s}' has no CONTROLLED_BY edge to a configuration item", alloc, gaps),
+        .unimplemented_requirement => try appendMissingEdgeGap(db, "Requirement", "IMPLEMENTED_IN", check, "Requirement '{s}' has no current source implementation evidence", alloc, gaps),
+        .untested_source_file => try appendMissingEdgeGap(db, "SourceFile", "VERIFIED_BY_CODE", check, "SourceFile '{s}' has no VERIFIED_BY_CODE edge to a test file", alloc, gaps),
+        .req_without_design_input => try appendMissingEdgeGap(db, "Requirement", "ALLOCATED_TO", check, "Requirement '{s}' has no ALLOCATED_TO edge to a design input", alloc, gaps),
+        .design_input_without_design_output => try appendMissingEdgeGap(db, "DesignInput", "SATISFIED_BY", check, "DesignInput '{s}' has no SATISFIED_BY edge to a design output", alloc, gaps),
+        .design_output_without_source => try appendMissingEdgeGap(db, "DesignOutput", "IMPLEMENTED_IN", check, "DesignOutput '{s}' has no IMPLEMENTED_IN edge to a source file", alloc, gaps),
+        .design_output_without_config_control => try appendMissingEdgeGap(db, "DesignOutput", "CONTROLLED_BY", check, "DesignOutput '{s}' has no CONTROLLED_BY edge to a configuration item", alloc, gaps),
         .uncommitted_requirement => try appendQueryGaps(db,
             \\SELECT n.id FROM nodes n
             \\WHERE n.type='Requirement'
             \\  AND EXISTS (SELECT 1 FROM edges e WHERE e.from_id=n.id AND e.label='IMPLEMENTED_IN')
             \\  AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id=n.id AND e.label='COMMITTED_IN')
             \\ORDER BY n.id
-        , check, "uncommitted_requirement", "Requirement '{s}' has implementation evidence but no explicit commit-message trace", alloc, gaps),
+        , check, "Requirement '{s}' has implementation evidence but no explicit commit-message trace", alloc, gaps),
         .unattributed_annotation => try appendQueryGaps(db,
             \\SELECT id FROM nodes
             \\WHERE type='CodeAnnotation'
@@ -122,7 +122,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      json_extract(properties,'$.author_time') = 0
             \\  )
             \\ORDER BY id
-        , check, "unattributed_annotation", "RTMify found a requirement tag at {s}, but could not determine who last changed that line", alloc, gaps),
+        , check, "RTMify found a requirement tag at {s}, but could not determine who last changed that line", alloc, gaps),
         .hlr_without_llr => try appendQueryGaps(db,
             \\SELECT n.id FROM nodes n
             \\WHERE n.type='Requirement'
@@ -135,7 +135,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      WHERE e.from_id = n.id AND e.label='REFINED_BY' AND child.type='Requirement'
             \\  )
             \\ORDER BY n.id
-        , check, "hlr_without_llr", "Requirement '{s}' has no downstream lower-level Requirements", alloc, gaps),
+        , check, "Requirement '{s}' has no downstream lower-level Requirements", alloc, gaps),
         .llr_without_source => try appendQueryGaps(db,
             \\SELECT child.id FROM nodes child
             \\WHERE child.type='Requirement'
@@ -147,7 +147,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      SELECT 1 FROM edges e WHERE e.from_id = child.id AND e.label='IMPLEMENTED_IN'
             \\  )
             \\ORDER BY child.id
-        , check, "llr_without_source", "Requirement '{s}' is decomposed but has no current source implementation evidence", alloc, gaps),
+        , check, "Requirement '{s}' is decomposed but has no current source implementation evidence", alloc, gaps),
         .source_without_structural_coverage => try appendQueryGaps(db,
             \\SELECT s.id FROM nodes s
             \\WHERE s.type='SourceFile'
@@ -157,7 +157,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\  )
             \\  AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id=s.id AND e.label='VERIFIED_BY_CODE')
             \\ORDER BY s.id
-        , check, "source_without_structural_coverage", "SourceFile '{s}' has implementation evidence but no current test evidence", alloc, gaps),
+        , check, "SourceFile '{s}' has implementation evidence but no current test evidence", alloc, gaps),
         .missing_asil => try appendQueryGaps(db,
             \\SELECT id FROM nodes
             \\WHERE type='Requirement'
@@ -166,7 +166,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      json_extract(properties,'$.asil') = ''
             \\  )
             \\ORDER BY id
-        , check, "missing_asil", "Requirement '{s}' is missing required property 'asil'", alloc, gaps),
+        , check, "Requirement '{s}' is missing required property 'asil'", alloc, gaps),
         .asil_inheritance => try appendAsilInheritanceGaps(db, check, alloc, gaps),
     }
 }
@@ -176,7 +176,6 @@ fn appendMissingEdgeGap(
     node_type: []const u8,
     edge_label: []const u8,
     check: SpecialGapCheck,
-    gap_type: []const u8,
     comptime fmt: []const u8,
     alloc: Allocator,
     gaps: *std.ArrayList(Gap),
@@ -199,7 +198,7 @@ fn appendMissingEdgeGap(
         try gaps.append(alloc, .{
             .code = check.code,
             .title = try alloc.dupe(u8, check.title),
-            .gap_type = try alloc.dupe(u8, gap_type),
+            .gap_type = try alloc.dupe(u8, check.gap_type),
             .node_id = try alloc.dupe(u8, node_id),
             .severity = check.severity,
             .message = message,
@@ -211,7 +210,6 @@ fn appendQueryGaps(
     db: *GraphDb,
     sql: [:0]const u8,
     check: SpecialGapCheck,
-    gap_type: []const u8,
     comptime fmt: []const u8,
     alloc: Allocator,
     gaps: *std.ArrayList(Gap),
@@ -224,7 +222,7 @@ fn appendQueryGaps(
         try gaps.append(alloc, .{
             .code = check.code,
             .title = try alloc.dupe(u8, check.title),
-            .gap_type = try alloc.dupe(u8, gap_type),
+            .gap_type = try alloc.dupe(u8, check.gap_type),
             .node_id = try alloc.dupe(u8, node_id),
             .severity = check.severity,
             .message = message,
@@ -259,7 +257,7 @@ fn appendAsilInheritanceGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Alloca
             try gaps.append(alloc, .{
                 .code = check.code,
                 .title = try alloc.dupe(u8, check.title),
-                .gap_type = try alloc.dupe(u8, "asil_inheritance"),
+                .gap_type = try alloc.dupe(u8, check.gap_type),
                 .node_id = try alloc.dupe(u8, child_id),
                 .severity = check.severity,
                 .message = message,
@@ -345,7 +343,7 @@ test "walk special gaps finds uncommitted requirement" {
         .id = .aerospace,
         .name = "Aerospace",
         .chain_steps = &.{},
-        .special_checks = &.{.{ .kind = .uncommitted_requirement, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" }},
+        .special_checks = &.{.{ .kind = .uncommitted_requirement, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "uncommitted_requirement" }},
         .tabs = &.{},
     }, alloc);
     try testing.expectEqual(@as(usize, 1), gaps.len);
@@ -365,7 +363,7 @@ test "walk special gaps finds unattributed annotation" {
         .id = .aerospace,
         .name = "Aerospace",
         .chain_steps = &.{},
-        .special_checks = &.{.{ .kind = .unattributed_annotation, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" }},
+        .special_checks = &.{.{ .kind = .unattributed_annotation, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "unattributed_annotation" }},
         .tabs = &.{},
     }, alloc);
     try testing.expectEqual(@as(usize, 1), gaps.len);

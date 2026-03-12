@@ -55,6 +55,7 @@ pub const SpecialGapCheck = struct {
     severity: GapSeverity,
     code: u16,
     title: []const u8,
+    gap_type: []const u8,
 };
 
 pub const Profile = struct {
@@ -85,28 +86,28 @@ const automotive_chain = &[_]ChainStep{
 const generic_chain = &[_]ChainStep{};
 
 const medical_special_checks = &[_]SpecialGapCheck{
-    .{ .kind = .req_without_design_input, .severity = .err, .code = 1201, .title = "Requirement without design input" },
-    .{ .kind = .design_input_without_design_output, .severity = .err, .code = 1202, .title = "Design input without design output" },
-    .{ .kind = .design_output_without_source, .severity = .err, .code = 1206, .title = "Traceability chain incomplete" },
-    .{ .kind = .design_output_without_config_control, .severity = .err, .code = 1206, .title = "Traceability chain incomplete" },
-    .{ .kind = .unimplemented_requirement, .severity = .warn, .code = 1201, .title = "Requirement missing in required chain" },
+    .{ .kind = .req_without_design_input, .severity = .err, .code = 1201, .title = "Requirement without design input", .gap_type = "req_without_design_input" },
+    .{ .kind = .design_input_without_design_output, .severity = .err, .code = 1202, .title = "Design input without design output", .gap_type = "design_input_without_design_output" },
+    .{ .kind = .design_output_without_source, .severity = .err, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "design_output_without_source" },
+    .{ .kind = .design_output_without_config_control, .severity = .err, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "design_output_without_config_control" },
+    .{ .kind = .unimplemented_requirement, .severity = .warn, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "unimplemented_requirement" },
 };
 
 const aerospace_special_checks = &[_]SpecialGapCheck{
-    .{ .kind = .hlr_without_llr, .severity = .err, .code = 1203, .title = "High-level requirement without low-level decomposition" },
-    .{ .kind = .llr_without_source, .severity = .err, .code = 1206, .title = "Traceability chain incomplete" },
-    .{ .kind = .source_without_structural_coverage, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" },
-    .{ .kind = .unimplemented_requirement, .severity = .warn, .code = 1201, .title = "Requirement missing in required chain" },
-    .{ .kind = .uncommitted_requirement, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" },
-    .{ .kind = .unattributed_annotation, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" },
+    .{ .kind = .hlr_without_llr, .severity = .err, .code = 1203, .title = "High-level requirement without low-level decomposition", .gap_type = "hlr_without_llr" },
+    .{ .kind = .llr_without_source, .severity = .err, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "llr_without_source" },
+    .{ .kind = .source_without_structural_coverage, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "source_without_structural_coverage" },
+    .{ .kind = .unimplemented_requirement, .severity = .warn, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "unimplemented_requirement" },
+    .{ .kind = .uncommitted_requirement, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "uncommitted_requirement" },
+    .{ .kind = .unattributed_annotation, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "unattributed_annotation" },
 };
 
 const automotive_special_checks = &[_]SpecialGapCheck{
-    .{ .kind = .missing_asil, .severity = .err, .code = 1204, .title = "ASIL not specified for safety requirement" },
-    .{ .kind = .asil_inheritance, .severity = .err, .code = 1205, .title = "ASIL inheritance violation" },
-    .{ .kind = .unimplemented_requirement, .severity = .warn, .code = 1201, .title = "Requirement missing in required chain" },
-    .{ .kind = .uncommitted_requirement, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" },
-    .{ .kind = .unattributed_annotation, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete" },
+    .{ .kind = .missing_asil, .severity = .err, .code = 1204, .title = "ASIL not specified for safety requirement", .gap_type = "missing_asil" },
+    .{ .kind = .asil_inheritance, .severity = .err, .code = 1205, .title = "ASIL inheritance violation", .gap_type = "asil_inheritance" },
+    .{ .kind = .unimplemented_requirement, .severity = .warn, .code = 1201, .title = "Requirement missing in required chain", .gap_type = "unimplemented_requirement" },
+    .{ .kind = .uncommitted_requirement, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "uncommitted_requirement" },
+    .{ .kind = .unattributed_annotation, .severity = .warn, .code = 1206, .title = "Traceability chain incomplete", .gap_type = "unattributed_annotation" },
 };
 
 const generic_special_checks = &[_]SpecialGapCheck{};

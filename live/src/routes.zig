@@ -19,6 +19,7 @@ const provision_mod = @import("provision.zig");
 const connection_mod = @import("connection.zig");
 const online_provider = @import("online_provider.zig");
 const json_util = @import("json_util.zig");
+const guide_catalog = @import("guide_catalog.zig");
 
 pub const index_html = @embedFile("static/index.html");
 
@@ -944,6 +945,14 @@ pub fn handleDiagnostics(db: *graph_live.GraphDb, source_filter: ?[]const u8, al
         null;
     try db.listRuntimeDiagnostics(source, alloc, &diags);
     return runtimeDiagnosticsJson(diags.items, alloc);
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/guide/errors
+// ---------------------------------------------------------------------------
+
+pub fn handleGuideErrors(alloc: Allocator) ![]const u8 {
+    return guide_catalog.guideErrorsJson(alloc);
 }
 
 // ---------------------------------------------------------------------------
@@ -2624,7 +2633,10 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "/query/chain-gaps") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/api/repos") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/api/diagnostics") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "/api/guide/errors") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/query/recent-commits") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, ">Guide<") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "Error Codes Explained") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "MCP &amp; AI") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, ">Info<") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "/api/info") != null);
@@ -2646,8 +2658,9 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "const { node, edges_out, edges_in } = data;") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "function humanEdgeLabel(") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "function explainGap(") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "toggleGapHelp(") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "openGuideForCode(") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "function explainGap(") == null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "toggleGapHelp(") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "What RTMify Checked") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(f.properties") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "JSON.parse(a.properties") == null);
@@ -2661,6 +2674,18 @@ test "index_html smoke covers onboarding profile and code traceability flows" {
     try testing.expect(std.mem.indexOf(u8, index_html, "shareHintEl.style.display = 'block'") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "shareHintEl.style.display = 'none'") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "document.getElementById('lobby-share-hint').style.display = 'block'") != null);
+}
+
+test "handleGuideErrors returns grouped guide catalog" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const resp = try handleGuideErrors(alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"groups\"") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"code_label\":\"E901\"") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"anchor\":\"guide-code-E901\"") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"surface\":\"chain_gap\"") != null);
 }
 
 test "buildProvisionPreviewJson closes tabs array before summary fields" {

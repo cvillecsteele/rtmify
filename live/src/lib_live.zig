@@ -19,6 +19,7 @@ pub const git = @import("git.zig");
 pub const profile = @import("profile.zig");
 pub const chain = @import("chain.zig");
 pub const provision = @import("provision.zig");
+pub const guide_catalog = @import("guide_catalog.zig");
 pub const adapter = @import("adapter.zig");
 pub const server = @import("server.zig");
 pub const main_live = @import("main_live.zig");
@@ -41,6 +42,7 @@ test {
     _ = profile;
     _ = chain;
     _ = provision;
+    _ = guide_catalog;
     _ = adapter;
     _ = server;
     _ = main_live;
