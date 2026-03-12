@@ -2,6 +2,8 @@
 
 This directory contains the native Windows tray shell for RTMify Live.
 
+For the overall Live architecture, including the boundary between the native shell, the local `rtmify-live` process, and the browser dashboard, see [architecture.md](/Users/colinsteele/Projects/rtmify/sys/live/docs/architecture.md).
+
 ## Portable Bundle Layout
 
 The supported v1 Windows distribution is a portable directory containing:

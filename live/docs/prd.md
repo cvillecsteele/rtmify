@@ -2,6 +2,8 @@
 ## Product Requirements Document
 ### Version 0.1
 
+For the current implementation architecture, including the `native shim + embedded webserver + browser UI` split, see [architecture.md](/Users/colinsteele/Projects/rtmify/sys/live/docs/architecture.md).
+
 ---
 
 ## 1. What This Is
