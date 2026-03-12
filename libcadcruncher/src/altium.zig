@@ -626,7 +626,7 @@ test "buildEvidenceRecord classifies component and matches IDs" {
         .{ .key = "Pattern", .value = "LQFP64" },
         .{ .key = "Requirement", .value = "REQ-893" },
     };
-    const ids = [_][]const u8{ "REQ-893" };
+    const ids = [_][]const u8{"REQ-893"};
     const rec = try buildEvidenceRecord("board.PcbDoc", .altium_pcbdoc, .altium_pipe_record, "Components6", "Data", 0, &props, .component, &ids, alloc);
     defer freeEvidenceRecord(rec, alloc);
 
@@ -688,7 +688,7 @@ test "schdoc component classification and exact known-id matching work" {
         .{ .key = "DESIGNITEMID", .value = "Stamp" },
         .{ .key = "Comment", .value = "REQ-893" },
     };
-    const ids = [_][]const u8{ "REQ-893" };
+    const ids = [_][]const u8{"REQ-893"};
     const rec = try buildEvidenceRecord("sheet.SchDoc", .altium_schdoc, .altium_schdoc_file_header_record, "", "FileHeader", 4, &props, classifySchDocScope(&props, 4), &ids, alloc);
     defer freeEvidenceRecord(rec, alloc);
 
@@ -703,7 +703,7 @@ test "repo fixture extraction yields structured records" {
     const sample = try sample_probe.fixturePath(alloc, &.{ "altium", "STM32_PCB_Design.PcbDoc" });
     defer alloc.free(sample);
 
-    const ids = [_][]const u8{ "REQ-893" };
+    const ids = [_][]const u8{"REQ-893"};
     const records = try extractPcbDoc(sample, .{ .known_ids = &ids }, alloc);
     defer {
         for (records) |rec| freeEvidenceRecord(rec, alloc);

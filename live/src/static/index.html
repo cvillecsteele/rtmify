@@ -932,9 +932,10 @@
     <div class="card" style="margin-bottom:16px">
       <div class="toolbar" style="padding:0 0 12px 0">
         <span style="font-weight:600;font-size:14px">Files by Repo</span>
-        <button class="btn" onclick="loadCodeTraceability()">Refresh</button>
+        <button class="btn" id="code-scan-btn" onclick="scanAndLoadCodeTraceability()">Scan Now</button>
       </div>
-      <div id="code-body"><em style="color:var(--muted);font-size:13px">Click Refresh to scan repository files.</em></div>
+      <div id="code-scan-status" style="font-size:12px;color:var(--muted);margin-bottom:12px">Last completed scan: never</div>
+      <div id="code-body"><em style="color:var(--muted);font-size:13px">Click Scan Now to run a repository scan and load current results.</em></div>
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="toolbar" style="padding:0 0 12px 0">
@@ -943,11 +944,11 @@
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
         <div>
           <h3 style="margin-top:0">Unimplemented Requirements</h3>
-          <div id="unimplemented-list"><em style="color:var(--muted);font-size:13px">Run a repo scan to see unimplemented requirements.</em></div>
+          <div id="unimplemented-list"><em style="color:var(--muted);font-size:13px">Run Scan Now to see unimplemented requirements.</em></div>
         </div>
         <div>
           <h3 style="margin-top:0">Untested Source Files</h3>
-          <div id="untested-files-list"><em style="color:var(--muted);font-size:13px">Run a repo scan to see untested source files.</em></div>
+          <div id="untested-files-list"><em style="color:var(--muted);font-size:13px">Run Scan Now to see untested source files.</em></div>
         </div>
       </div>
     </div>
@@ -955,7 +956,7 @@
       <div class="toolbar" style="padding:0 0 12px 0">
         <span style="font-weight:600;font-size:14px">Recent Commits</span>
       </div>
-      <div id="recent-commits"><em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run a scan.</em></div>
+      <div id="recent-commits"><em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run Scan Now.</em></div>
     </div>
   </section>
 
@@ -2445,7 +2446,7 @@ audit_readiness_summary(profile="aerospace")</div>
       const data = await res.json();
       if (!res.ok || data.ok === false) throw new Error(formatDiagnosticsError(data));
       input.value = '';
-      loadCodeTraceability();
+      await scanAndLoadCodeTraceability();
     } catch (e) {
       errEl.textContent = e.message;
       errEl.style.display = 'block';
@@ -2455,6 +2456,76 @@ audit_readiness_summary(profile="aerospace")</div>
   async function deleteRepo(slot) {
     await fetch('/api/repos/' + slot, { method: 'DELETE' });
     loadCodeTraceability();
+  }
+
+  function formatUnixTimestamp(ts) {
+    if (!ts || Number(ts) <= 0) return 'never';
+    try {
+      return new Date(Number(ts) * 1000).toLocaleString();
+    } catch (_) {
+      return String(ts);
+    }
+  }
+
+  async function loadCodeScanStatus() {
+    const el = document.getElementById('code-scan-status');
+    if (!el) return;
+    try {
+      const res = await fetch('/api/status');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const status = await res.json();
+      if (status.repo_scan_in_progress) {
+        const started = formatUnixTimestamp(status.repo_scan_last_started_at);
+        el.textContent = `Scan in progress${started !== 'never' ? ` — started ${started}` : ''}`;
+        return;
+      }
+
+      const finished = formatUnixTimestamp(status.repo_scan_last_finished_at);
+      const fallback = formatUnixTimestamp(status.last_scan_at);
+      const completed = finished !== 'never' ? finished : fallback;
+      el.textContent = `Last completed scan: ${completed}`;
+    } catch (e) {
+      el.textContent = `Scan status unavailable: ${e.message}`;
+    }
+  }
+
+  async function scanAndLoadCodeTraceability() {
+    const btn = document.getElementById('code-scan-btn');
+    const codeBody = document.getElementById('code-body');
+    const commitsEl = document.getElementById('recent-commits');
+    const statusEl = document.getElementById('code-scan-status');
+    const prev = btn ? btn.textContent : '';
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Scanning...';
+    }
+    if (statusEl) {
+      statusEl.textContent = 'Scan in progress...';
+    }
+    if (codeBody) {
+      codeBody.innerHTML = '<div class="empty-state">Scanning configured repositories…</div>';
+    }
+    if (commitsEl) {
+      commitsEl.innerHTML = '<em style="color:var(--muted);font-size:13px">Scanning configured repositories…</em>';
+    }
+    try {
+      const res = await fetch('/api/repos/scan', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      await loadCodeTraceability();
+    } catch (e) {
+      if (statusEl) {
+        statusEl.textContent = `Scan failed: ${e.message}`;
+      }
+      if (codeBody) {
+        codeBody.innerHTML = `<div class="empty-state">Scan failed: ${esc(e.message)}</div>`;
+      }
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = prev || 'Scan Now';
+      }
+    }
   }
 
   async function loadRepos() {
@@ -2471,7 +2542,7 @@ audit_readiness_summary(profile="aerospace")</div>
       }
       el.innerHTML = repos.map((r) => `<tr>
         <td style="font-family:var(--font-mono);font-size:12px">${esc(r.path)}</td>
-        <td>${esc(String(r.last_scan || '0'))}</td>
+        <td>${esc(formatUnixTimestamp(r.last_scan))}</td>
         <td>${esc(String(r.source_file_count || 0))}</td>
         <td>${esc(String(r.test_file_count || 0))}</td>
         <td>${esc(String(r.annotation_count || 0))}</td>
@@ -2504,7 +2575,7 @@ audit_readiness_summary(profile="aerospace")</div>
   }
 
   async function loadCodeTraceability() {
-    await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits()]);
+    await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits(), loadCodeScanStatus()]);
     const container = document.getElementById('code-body');
 
     let files;
@@ -2602,7 +2673,7 @@ audit_readiness_summary(profile="aerospace")</div>
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const commits = await res.json();
       if (!commits.length) {
-        el.innerHTML = '<em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run a scan.</em>';
+        el.innerHTML = '<em style="color:var(--muted);font-size:13px">No recent commits. Add a repo and run Scan Now.</em>';
         return;
       }
       el.innerHTML = commits.map(c => {

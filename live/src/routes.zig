@@ -390,6 +390,9 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc:
     const has_error = state.has_error.load(.seq_cst);
     const sync_count = state.sync_count.load(.seq_cst);
     const license_valid = state.license_valid.load(.seq_cst);
+    const repo_scan_in_progress = state.repo_scan_in_progress.load(.seq_cst);
+    const repo_scan_last_started_at = state.repo_scan_last_started_at.load(.seq_cst);
+    const repo_scan_last_finished_at = state.repo_scan_last_finished_at.load(.seq_cst);
 
     var err_buf: [256]u8 = undefined;
     const err_len = state.getError(&err_buf);
@@ -419,6 +422,11 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc:
     defer alloc.free(last_scan);
     try buf.appendSlice(alloc, ",\"last_scan_at\":");
     try appendJsonStr(&buf, last_scan, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"repo_scan_in_progress\":{s},\"repo_scan_last_started_at\":{d},\"repo_scan_last_finished_at\":{d}", .{
+        if (repo_scan_in_progress) "true" else "false",
+        repo_scan_last_started_at,
+        repo_scan_last_finished_at,
+    });
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
 }
@@ -977,6 +985,8 @@ pub fn handleCodeTraceability(db: *graph_live.GraphDb, alloc: Allocator) ![]cons
     }
     try db.nodesByTypePresent("SourceFile", alloc, &src_nodes);
     try db.nodesByTypePresent("TestFile", alloc, &tst_nodes);
+    try refreshAnnotationCounts(db, src_nodes.items, alloc);
+    try refreshAnnotationCounts(db, tst_nodes.items, alloc);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -986,6 +996,28 @@ pub fn handleCodeTraceability(db: *graph_live.GraphDb, alloc: Allocator) ![]cons
     try buf.appendSlice(alloc, try jsonNodeArray(tst_nodes.items, alloc));
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+fn refreshAnnotationCounts(db: *graph_live.GraphDb, nodes: []graph_live.Node, alloc: Allocator) !void {
+    for (nodes) |*node| {
+        const count = try countAnnotationsForFile(db, node.id);
+        const updated = try replaceAnnotationCount(node.properties, count, alloc);
+        alloc.free(node.properties);
+        node.properties = updated;
+    }
+}
+
+fn replaceAnnotationCount(props_json: []const u8, count: i64, alloc: Allocator) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, props_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return alloc.dupe(u8, props_json);
+
+    try parsed.value.object.put("annotation_count", std.json.Value{ .integer = count });
+
+    var out: std.io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    try std.json.Stringify.value(parsed.value, .{}, &out.writer);
+    return alloc.dupe(u8, out.written());
 }
 
 const ImplementationChangesGroup = struct {
@@ -1888,6 +1920,18 @@ fn countAnnotationsForRepo(db: *graph_live.GraphDb, repo_path: []const u8) !i64 
     return st.columnInt(0);
 }
 
+fn countAnnotationsForFile(db: *graph_live.GraphDb, file_path: []const u8) !i64 {
+    var st = try db.db.prepare(
+        \\SELECT COUNT(*)
+        \\FROM nodes
+        \\WHERE type='CodeAnnotation' AND json_extract(properties,'$.file_path')=?
+    );
+    defer st.finalize();
+    try st.bindText(1, file_path);
+    _ = try st.step();
+    return st.columnInt(0);
+}
+
 fn countCommitsForRepo(db: *graph_live.GraphDb, repo_path: []const u8) !i64 {
     var st = try db.db.prepare(
         \\SELECT COUNT(DISTINCT c.id)
@@ -2062,9 +2106,31 @@ test "gitless mode status is configured and repos list is empty" {
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"platform\":\"google\"") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"credential_display\":\"svc@example.com\"") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_finished_at\":0") != null);
 
     const repos = try handleGetRepos(&db, alloc);
     try testing.expectEqualStrings("{\"repos\":[]}", repos);
+}
+
+test "handleStatus includes repo scan lifecycle fields" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var state: sync_live.SyncState = .{};
+    state.repo_scan_in_progress.store(true, .seq_cst);
+    state.repo_scan_last_started_at.store(123, .seq_cst);
+    state.repo_scan_last_finished_at.store(456, .seq_cst);
+
+    const status = try handleStatus(&db, &state, alloc);
+    try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":123") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_finished_at\":456") != null);
 }
 
 test "handleInfo returns version and path details" {
@@ -2456,6 +2522,22 @@ test "handleCodeTraceability excludes historical only files" {
     try testing.expect(std.mem.indexOf(u8, resp, "tests/current_test.c") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "src/old_deleted.c") == null);
     try testing.expect(std.mem.indexOf(u8, resp, "tests/old_test.c") == null);
+}
+
+test "handleCodeTraceability refreshes stale annotation_count from current annotations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("/repo/src/example.c", "SourceFile", "{\"path\":\"/repo/src/example.c\",\"repo\":\"/repo\",\"annotation_count\":1,\"present\":true}", null);
+
+    const resp = try handleCodeTraceability(&db, alloc);
+    defer alloc.free(resp);
+
+    try testing.expect(std.mem.indexOf(u8, resp, "\"annotation_count\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "\"annotation_count\":1") == null);
 }
 
 test "handleRisks includes score fields used by dashboard" {

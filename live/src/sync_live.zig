@@ -41,10 +41,14 @@ pub const SyncState = struct {
     sync_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Reflects the result of license.check() at startup / activation.
     license_valid: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    repo_scan_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    repo_scan_last_started_at: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
+    repo_scan_last_finished_at: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     // last_error is written under mu
     last_error: [256:0]u8 = .{0} ** 256,
     last_error_len: usize = 0,
     mu: std.Thread.Mutex = .{},
+    repo_scan_mu: std.Thread.Mutex = .{},
 
     pub fn setError(s: *SyncState, msg: []const u8) void {
         s.mu.lock();
@@ -616,12 +620,46 @@ pub fn repoScanThread(ctx: *RepoScanCtx) void {
         defer arena.deinit();
         const a = arena.allocator();
 
-        repoScanCycle(ctx, a) catch |e| {
+        repoScanCycleSerialized(ctx, a) catch |e| {
             std.log.warn("repo scan cycle failed: {s}", .{@errorName(e)});
         };
 
         std.Thread.sleep(60 * std.time.ns_per_s);
     }
+}
+
+pub fn triggerRepoScanNow(db: *GraphDb, state: *SyncState, alloc: Allocator) !void {
+    var idx: usize = 0;
+    while (idx < 64) : (idx += 1) {
+        const repo_key = try std.fmt.allocPrint(alloc, "repo_path_{d}", .{idx});
+        defer alloc.free(repo_key);
+        const repo_path = (try db.getConfig(repo_key, alloc)) orelse continue;
+        const last_scan_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{repo_path});
+        defer alloc.free(last_scan_key);
+        try db.storeConfig(last_scan_key, "0");
+    }
+
+    var ctx = RepoScanCtx{
+        .db = db,
+        .repo_paths = &.{},
+        .state = state,
+        .alloc = alloc,
+    };
+    std.log.info("repo scan: manual scan requested", .{});
+    try repoScanCycleSerialized(&ctx, alloc);
+}
+
+fn repoScanCycleSerialized(ctx: *RepoScanCtx, alloc: Allocator) !void {
+    ctx.state.repo_scan_mu.lock();
+    defer ctx.state.repo_scan_mu.unlock();
+    const started_at = std.time.timestamp();
+    ctx.state.repo_scan_in_progress.store(true, .seq_cst);
+    ctx.state.repo_scan_last_started_at.store(started_at, .seq_cst);
+    defer {
+        ctx.state.repo_scan_in_progress.store(false, .seq_cst);
+        ctx.state.repo_scan_last_finished_at.store(std.time.timestamp(), .seq_cst);
+    }
+    try repoScanCycle(ctx, alloc);
 }
 
 fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
@@ -675,27 +713,28 @@ fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
             continue;
         };
 
-        // Collect existing CodeAnnotation IDs for this repo (for stale removal)
-        var existing_ann_ids = std.StringHashMap(void).init(alloc);
-        defer existing_ann_ids.deinit();
-        {
-            var st = try ctx.db.db.prepare(
-                "SELECT id FROM nodes WHERE type='CodeAnnotation' AND id LIKE ? || '%'"
-            );
-            defer st.finalize();
-            try st.bindText(1, repo_path);
-            while (try st.step()) {
-                const id = try alloc.dupe(u8, st.columnText(0));
-                try existing_ann_ids.put(id, {});
-            }
-        }
-
-        var seen_ann_ids = std.StringHashMap(void).init(alloc);
-        defer seen_ann_ids.deinit();
-
         var blame_count: usize = 0;
 
         for (files) |file| {
+            // Collect existing CodeAnnotation IDs for this rescanned file only.
+            // Incremental scans must not delete annotations for untouched files.
+            var existing_file_ann_ids = std.StringHashMap(void).init(alloc);
+            defer existing_file_ann_ids.deinit();
+            {
+                var st = try ctx.db.db.prepare(
+                    "SELECT id FROM nodes WHERE type='CodeAnnotation' AND id LIKE ? || ':%'"
+                );
+                defer st.finalize();
+                try st.bindText(1, file.path);
+                while (try st.step()) {
+                    const id = try alloc.dupe(u8, st.columnText(0));
+                    try existing_file_ann_ids.put(id, {});
+                }
+            }
+
+            var seen_file_ann_ids = std.StringHashMap(void).init(alloc);
+            defer seen_file_ann_ids.deinit();
+
             // Upsert SourceFile or TestFile node
             const node_type: []const u8 = switch (file.kind) {
                 .source => "SourceFile",
@@ -737,7 +776,7 @@ fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
                     try ap.appendSlice(alloc, "\"}");
                     try ctx.db.upsertNode(ann_id, "CodeAnnotation", ap.items, null);
                 }
-                try seen_ann_ids.put(try alloc.dupe(u8, ann_id), {});
+                try seen_file_ann_ids.put(try alloc.dupe(u8, ann_id), {});
 
                 // PRD edge model:
                 // Requirement → CodeAnnotation via ANNOTATED_AT
@@ -793,6 +832,15 @@ fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
                         try upsertRuntimeDiag(ctx.db, "annotation", diag_code, "warn", title, try std.fmt.allocPrint(alloc, "git blame failed for {s}:{d}: {s}", .{ file.path, ann.line_number, @errorName(e) }), blame_subject, "{}");
                     }
                 }
+            }
+
+            // Remove stale CodeAnnotation nodes only for this rescanned file.
+            var stale_file_it = existing_file_ann_ids.keyIterator();
+            while (stale_file_it.next()) |id| {
+                if (seen_file_ann_ids.contains(id.*)) continue;
+                ctx.db.deleteNode(id.*) catch |e| {
+                    std.log.warn("deleteNode {s}: {s}", .{ id.*, @errorName(e) });
+                };
             }
         }
 
@@ -861,15 +909,6 @@ fn repoScanCycle(ctx: *RepoScanCtx, alloc: Allocator) !void {
                 }
             }
             if (last_hash_new == null) last_hash_new = commit.hash; // most recent
-        }
-
-        // Remove stale CodeAnnotation nodes (annotations removed from source since last scan)
-        var stale_it = existing_ann_ids.keyIterator();
-        while (stale_it.next()) |id| {
-            if (seen_ann_ids.contains(id.*)) continue;
-            ctx.db.deleteNode(id.*) catch |e| {
-                std.log.warn("deleteNode {s}: {s}", .{ id.*, @errorName(e) });
-            };
         }
 
         // Update config: last scan time and git hash
@@ -1372,6 +1411,63 @@ test "repoScanCycle backfills full history first then uses git cursor incrementa
         if (std.mem.eql(u8, e.label, "COMMITTED_IN")) committed_count += 1;
     }
     try testing.expectEqual(@as(usize, 1), committed_count);
+}
+
+test "triggerRepoScanNow forces full file rescan regardless of last_scan cursor" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here
+        \\int main(void) { return 0; }
+        \\
+    );
+    _ = try fixture.commit("REQ-001 initial implementation", "Alice", "alice@example.com", "2026-03-06T12:00:00Z");
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.storeConfig("repo_path_0", fixture.path);
+
+    var state: SyncState = .{};
+    var ctx = RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repoScanCycle(&ctx, alloc);
+
+    const file_path = try std.fs.path.join(alloc, &.{ fixture.path, "src/foo.c" });
+    defer alloc.free(file_path);
+
+    var delete_ann = try db.db.prepare("DELETE FROM nodes WHERE type='CodeAnnotation'");
+    defer delete_ann.finalize();
+    _ = try delete_ann.step();
+
+    const stale_props = try buildFileNodePropsJson(file_path, fixture.path, 0, true, alloc);
+    defer alloc.free(stale_props);
+    try db.upsertNode(file_path, "SourceFile", stale_props, stale_props);
+
+    const last_scan_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{fixture.path});
+    defer alloc.free(last_scan_key);
+    try db.storeConfig(last_scan_key, "9999999999");
+
+    try triggerRepoScanNow(&db, &state, alloc);
+
+    const annotation_id = try std.fmt.allocPrint(alloc, "{s}:1", .{file_path});
+    defer alloc.free(annotation_id);
+    try testing.expect((try db.getNode(annotation_id, alloc)) != null);
+    try testing.expect(try testEdgeExists(&db, "REQ-001", annotation_id, "ANNOTATED_AT", alloc));
 }
 
 test "repoScanCycle real git repo links source annotation commit and file changes" {

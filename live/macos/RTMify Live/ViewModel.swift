@@ -125,10 +125,12 @@ final class ViewModel: ObservableObject {
         let pidPlaceholder = Int32(process.processIdentifier)
 
         process.terminationHandler = { [weak self] proc in
-            appendLogLine("server terminated with code \(proc.terminationStatus)", to: logURL)
+            let termReason = terminationReasonString(proc.terminationReason)
+            appendLogLine("server terminated reason=\(termReason) code=\(proc.terminationStatus)", to: logURL)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let priorState = self.lifecycleStateForCurrentAppState()
+                appendLogLine("termination observed during state=\(priorState)", to: logURL)
                 let disposition = CrashSupervisor.classifyTermination(
                     priorState: priorState,
                     wasIntentionalStop: self.intentionalStopInProgress,
@@ -158,6 +160,7 @@ final class ViewModel: ObservableObject {
                     currentAttempt: self.restartAttempt,
                     policy: self.restartPolicy
                 )
+                appendLogLine("restart decision=\(String(describing: decision))", to: logURL)
 
                 switch decision {
                 case .noRestart(let finalMessage):
@@ -478,4 +481,15 @@ private func appendCrashSnapshot(_ snapshot: CrashSnapshot, to url: URL) {
     lines.append(output)
     lines.append("[shim] recent_output_end")
     appendLogString(lines.joined(separator: "\n") + "\n", to: url)
+}
+
+private func terminationReasonString(_ reason: Process.TerminationReason) -> String {
+    switch reason {
+    case .exit:
+        return "exit"
+    case .uncaughtSignal:
+        return "uncaught_signal"
+    @unknown default:
+        return "unknown"
+    }
 }

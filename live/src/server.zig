@@ -67,10 +67,34 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
 
     // Strip query string for routing
     const path = stripQuery(target);
-    std.log.info("http {s} {s}", .{ @tagName(req.head.method), target });
+    const method_name = @tagName(req.head.method);
+    const started_ns = std.time.nanoTimestamp();
+    var response_status: ?std.http.Status = null;
+    var response_bytes: usize = 0;
+    defer {
+        const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - started_ns, std.time.ns_per_ms);
+        if (response_status) |status| {
+            std.log.info("http done {s} {s} status={d} bytes={d} elapsed_ms={d}", .{
+                method_name,
+                target,
+                @intFromEnum(status),
+                response_bytes,
+                elapsed_ms,
+            });
+        } else {
+            std.log.warn("http unfinished {s} {s} elapsed_ms={d}", .{
+                method_name,
+                target,
+                elapsed_ms,
+            });
+        }
+    }
+    std.log.info("http {s} {s}", .{ method_name, target });
 
     // Route
     if (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html")) {
+        response_status = .ok;
+        response_bytes = routes.index_html.len;
         try sendHtml(req, routes.index_html);
         return;
     }
@@ -79,37 +103,59 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         if (std.mem.eql(u8, path, "/nodes")) {
             const type_filter = try queryParamDecoded(target, "type", alloc);
             const body = try routes.handleNodes(ctx.db, type_filter, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/nodes/types")) {
             const body = try routes.handleNodeTypes(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/edges/labels")) {
             const body = try routes.handleEdgeLabels(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/search")) {
             const q = (try queryParamDecoded(target, "q", alloc)) orelse "";
             const body = try routes.handleSearch(ctx.db, q, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/schema")) {
             const body = try routes.handleSchema(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/gaps")) {
             const body = try routes.handleGaps(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/rtm")) {
             const body = try routes.handleRtm(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/suspects")) {
             const body = try routes.handleSuspects(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/user-needs")) {
             const body = try routes.handleUserNeeds(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/tests")) {
             const body = try routes.handleTests(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/risks")) {
             const body = try routes.handleRisks(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/impact/")) {
             const node_id = try decodePathParam(path["/query/impact/".len..], alloc);
@@ -118,6 +164,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 error.NotFound => {
                     std.log.warn("impact request not found id={s}", .{node_id});
                     const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
+                    response_status = .not_found;
+                    response_bytes = err_body.len;
                     try sendJsonWithStatus(req, err_body, .not_found);
                     return;
                 },
@@ -127,58 +175,90 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 },
             };
             std.log.info("impact request ok id={s} bytes={d}", .{ node_id, body.len });
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/node/")) {
             const node_id = try decodePathParam(path["/query/node/".len..], alloc);
             const body = routes.handleNode(ctx.db, node_id, alloc) catch |e| switch (e) {
                 error.NotFound => {
                     const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
+                    response_status = .not_found;
+                    response_bytes = err_body.len;
                     try sendJsonWithStatus(req, err_body, .not_found);
                     return;
                 },
                 else => return e,
             };
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/status")) {
             const body = try routes.handleStatus(ctx.db, ctx.state, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/info")) {
             const body = try routes.handleInfo(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = try queryParamDecoded(target, "profile", alloc);
             const body = try routes.handleProvisionPreview(ctx.db, qprofile, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/diagnostics")) {
             const qsource = try queryParamDecoded(target, "source", alloc);
             const body = try routes.handleDiagnostics(ctx.db, qsource, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/coverage.md")) {
             const body = try routes.handleCoverageReport(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendText(req, body, "text/plain; charset=utf-8");
         } else if (std.mem.eql(u8, path, "/report/rtm")) {
             const body = try routes.handleReportRtmPdf(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendPdf(req, body);
         } else if (std.mem.eql(u8, path, "/report/rtm.md")) {
             const body = try routes.handleReportRtmMd(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendText(req, body, "text/markdown");
         } else if (std.mem.eql(u8, path, "/report/rtm.docx")) {
             const body = try routes.handleReportRtmDocx(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendDocx(req, body);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
             const body = try routes.handleGetProfile(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/repos")) {
             const body = try routes.handleGetRepos(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/chain-gaps")) {
             const body = try routes.handleChainGaps(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/code-traceability")) {
             const body = try routes.handleCodeTraceability(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/recent-commits")) {
             const body = try routes.handleRecentCommits(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/implementation-changes")) {
             const since = try queryParamDecoded(target, "since", alloc);
@@ -187,48 +267,84 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const limit = try queryParamDecoded(target, "limit", alloc);
             const offset = try queryParamDecoded(target, "offset", alloc);
             const resp = try routes.handleImplementationChangesResponse(ctx.db, since, node_type, repo, limit, offset, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/query/unimplemented-requirements")) {
             const body = try routes.handleUnimplementedRequirements(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/untested-source-files")) {
             const body = try routes.handleUntestedSourceFiles(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/file-annotations")) {
             const file_path = (try queryParamDecoded(target, "file_path", alloc)) orelse "";
             const body = try routes.handleFileAnnotations(ctx.db, file_path, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/commit-history/")) {
             const req_id = try decodePathParam(path["/query/commit-history/".len..], alloc);
             const body = try routes.handleCommitHistory(ctx.db, req_id, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/dhr/md")) {
             const body = try routes.handleReportDhrMd(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendText(req, body, "text/markdown");
         } else if (std.mem.eql(u8, path, "/report/dhr/pdf")) {
             const body = try routes.handleReportDhrPdf(ctx.db, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
             try sendPdf(req, body);
         } else if (std.mem.eql(u8, path, "/mcp")) {
             // SSE endpoint — delegated to mcp.zig (streamed, not a simple response)
+            response_status = .ok;
             try @import("mcp.zig").handleSse(req, ctx.db, alloc);
         } else {
+            response_status = .not_found;
+            response_bytes = "{\"error\":\"not found\"}".len;
             try send404(req);
         }
     } else if (req.head.method == .POST) {
         if (std.mem.eql(u8, path, "/mcp")) {
             const body_bytes = try readBody(req, alloc);
+            response_status = .ok;
             try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.state, alloc);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handlePostProfileResponse(ctx.db, body_bytes, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/repos")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handlePostRepoResponse(ctx.db, body_bytes, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/repos/scan")) {
+            sync_live.triggerRepoScanNow(ctx.db, ctx.state, alloc) catch |e| {
+                const body = try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)});
+                response_status = .internal_server_error;
+                response_bytes = body.len;
+                try sendJsonWithStatus(req, body, .internal_server_error);
+                return;
+            };
+            const body = try alloc.dupe(u8, "{\"ok\":true}");
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/connection/validate")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleConnectionValidateResponse(body_bytes, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/connection")) {
             const body_bytes = try readBody(req, alloc);
@@ -236,35 +352,52 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             if (resp.ok) {
                 if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
             }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision")) {
             const resp = try routes.handleProvisionResponse(ctx.db, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.startsWith(u8, path, "/suspect/") and
             std.mem.endsWith(u8, path, "/clear"))
         {
             const node_id = try decodePathParam(path["/suspect/".len .. path.len - "/clear".len], alloc);
             const resp = try routes.handleClearSuspect(ctx.db, node_id, alloc);
+            response_status = .ok;
+            response_bytes = resp.len;
             try sendJson(req, resp);
         } else if (std.mem.eql(u8, path, "/ingest")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleIngest(ctx.db, body_bytes, alloc);
+            response_status = .ok;
+            response_bytes = resp.len;
             try sendJson(req, resp);
         } else {
+            response_status = .not_found;
+            response_bytes = "{\"error\":\"not found\"}".len;
             try send404(req);
         }
     } else if (req.head.method == .DELETE) {
         if (std.mem.startsWith(u8, path, "/api/repos/")) {
             const idx = path["/api/repos/".len..];
             const resp = try routes.handleDeleteRepoResponse(ctx.db, idx, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else {
+            response_status = .not_found;
+            response_bytes = "{\"error\":\"not found\"}".len;
             try send404(req);
         }
     } else if (req.head.method == .OPTIONS) {
         // Simple CORS preflight
+        response_status = .no_content;
         try sendOptions(req);
     } else {
+        response_status = .not_found;
+        response_bytes = "{\"error\":\"not found\"}".len;
         try send404(req);
     }
 }
