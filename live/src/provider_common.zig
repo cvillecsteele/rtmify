@@ -60,6 +60,27 @@ pub const ActiveConnection = struct {
     }
 };
 
+pub const ConnectionBlockReason = enum {
+    legacy_plaintext_credentials,
+    secure_storage_unsupported,
+    credential_ref_missing,
+    secret_not_found,
+    secret_store_error,
+};
+
+pub const LoadedConnection = union(enum) {
+    none,
+    active: ActiveConnection,
+    blocked: ConnectionBlockReason,
+
+    pub fn deinit(self: *LoadedConnection, alloc: Allocator) void {
+        switch (self.*) {
+            .active => |*active| active.deinit(alloc),
+            else => {},
+        }
+    }
+};
+
 pub const DraftConnection = struct {
     platform: ProviderId,
     profile: ?[]const u8,

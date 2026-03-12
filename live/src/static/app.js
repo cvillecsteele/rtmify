@@ -77,14 +77,74 @@
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
   }
 
-  document.addEventListener('click', () => {
+  function closestActionElement(target, selector = '[data-action]') {
+    return target instanceof Element ? target.closest(selector) : null;
+  }
+
+  function handleActionClick(e) {
+    const actionEl = closestActionElement(e.target);
+    if (!actionEl) return false;
+
+    switch (actionEl.dataset.action) {
+      case 'open-guide':
+        e.preventDefault();
+        void openGuideForCode(actionEl.dataset.guideCode, actionEl.dataset.guideVariant ? { variant: actionEl.dataset.guideVariant } : {});
+        return true;
+      case 'toggle-row':
+        e.preventDefault();
+        void toggleRow(actionEl.dataset.id || '', actionEl, Number(actionEl.dataset.colspan || 0));
+        return true;
+      case 'drawer-nav':
+        e.preventDefault();
+        void drawerNav(actionEl.dataset.id || '');
+        return true;
+      case 'clear-suspect':
+        e.preventDefault();
+        void clearSuspect(actionEl.dataset.id || '');
+        return true;
+      case 'toggle-tree-section':
+        e.preventDefault();
+        toggleTreeSection(actionEl);
+        return true;
+      case 'toggle-tree-node':
+        e.preventDefault();
+        void toggleTreeNode(actionEl, actionEl.dataset.id || '');
+        return true;
+      case 'select-profile':
+        e.preventDefault();
+        selectProfile(actionEl.dataset.profileId || '');
+        return true;
+      case 'delete-repo':
+        e.preventDefault();
+        void deleteRepo(Number(actionEl.dataset.slot || 0));
+        return true;
+      case 'expand-file': {
+        e.preventDefault();
+        const row = actionEl.closest('tr');
+        if (row) void expandFile(row, row.dataset.filePath || actionEl.dataset.filePath || '');
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    const handled = handleActionClick(e);
     const p = document.getElementById('settings-panel');
     if (p) p.style.display = 'none';
+    if (handled) return;
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && document.getElementById('node-drawer').classList.contains('open')) {
       closeDrawer();
+    }
+
+    const profileRow = closestActionElement(e.target, '[data-action="select-profile"]');
+    if (profileRow && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      selectProfile(profileRow.dataset.profileId || '');
     }
   });
 
@@ -120,10 +180,10 @@
 
     const groups = data.groups || [];
     indexEl.innerHTML = `<h3>Index</h3>${groups.map(group => `
-      <div class="guide-index-group">
+        <div class="guide-index-group">
         <div class="guide-index-group-title">${esc(group.title || '')}</div>
         ${(group.entries || []).map(entry => `
-          <a href="#${esc(entry.anchor || '')}" data-guide-code="${esc(entry.code_label || entry.code || '')}" data-guide-variant="${esc(entry.variant || '')}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode, this.dataset.guideVariant ? { variant: this.dataset.guideVariant } : {})">
+          <a href="#${esc(entry.anchor || '')}" data-action="open-guide" data-guide-code="${esc(entry.code_label || entry.code || '')}" data-guide-variant="${esc(entry.variant || '')}">
             ${esc(entry.code_label || '')} ${esc(entry.title || '')}
           </a>
         `).join('')}
@@ -362,7 +422,7 @@
         : '<span class="result-missing">No Test</span>';
       const resultCell = resultBadge(r.result, !!r.test_group_id);
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,5)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.req_id)}" data-colspan="5">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${esc(r.statement || '—')}</td>
         <td>${esc(status)}</td>
         <td>${tgCell}</td>
@@ -395,7 +455,7 @@
     tbody.innerHTML = rows.map(r => {
       const rowClass = r.suspect ? ' class="suspect"' : '';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.id)}" aria-expanded="false" onclick="toggleRow('${esc(r.id)}',this,4)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.id)}" data-colspan="4">${CHEVRON_SVG}</button><span class="req-id">${esc(r.id)}</span></td>
         <td>${esc(r.properties.statement || '—')}</td>
         <td>${esc(r.properties.source || '—')}</td>
         <td>${esc(r.properties.priority || '—')}</td>
@@ -429,7 +489,7 @@
         ? `<span class="req-id">${esc(r.req_id)}</span>`
         : '<span class="text-placeholder">—</span>';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.test_id || r.test_group_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.test_id || r.test_group_id)}',this,5)">${CHEVRON_SVG}</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.test_id || r.test_group_id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.test_id || r.test_group_id)}" data-colspan="5">${CHEVRON_SVG}</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
         <td><span class="test-id">${esc(r.test_id || '—')}</span></td>
         <td>${esc(r.test_type || '—')}</td>
         <td>${esc(r.test_method || '—')}</td>
@@ -473,7 +533,7 @@
       const severity = rowSeverity(r);
       const rowClass = r.suspect ? 'suspect' : (severity || '');
       return `<tr${rowClass ? ` class="${rowClass}"` : ''}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.req_id)}',this,8)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.req_id)}" data-colspan="8">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${parentCell}</td>
         <td>${esc(r.statement || '—')}</td>
         <td>${tgCell}</td>
@@ -516,7 +576,7 @@
         : '<span class="text-placeholder">—</span>';
       const rowClass = !r.req_id ? ' class="warning"' : '';
       return `<tr${rowClass}>
-        <td><button class="expand-btn" aria-label="Expand ${esc(r.risk_id)}" aria-expanded="false" onclick="toggleRow('${esc(r.risk_id)}',this,7)">${CHEVRON_SVG}</button><span class="req-id">${esc(r.risk_id)}</span></td>
+        <td><button class="expand-btn" aria-label="Expand ${esc(r.risk_id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.risk_id)}" data-colspan="7">${CHEVRON_SVG}</button><span class="req-id">${esc(r.risk_id)}</span></td>
         <td>${esc(r.description || '—')}</td>
         <td class="text-center">${esc(r.initial_severity || '—')}</td>
         <td class="text-center">${esc(r.initial_likelihood || '—')}</td>
@@ -647,7 +707,7 @@
       resetLobbyScreens(1);
       lobbyCurrentScreen = 1;
       updateLobbyNav();
-      if (status.workbook_url && status.platform && lobbyState.profileId) {
+      if (!status.connection_block_reason && status.workbook_url && status.platform && lobbyState.profileId) {
         lobbyCurrentScreen = 1;
         showScreen(4, 'forward');
         return;
@@ -706,6 +766,42 @@
       // generic → profileId stays null, user must re-select from the expanded list
     } else {
       clearProfileSelection();
+    }
+    updateLobbyConnectionMessage(status);
+  }
+
+  function connectionBlockMessage(status) {
+    switch (status?.connection_block_reason) {
+      case 'legacy_plaintext_credentials':
+        return 'This workspace was configured before secure credential storage. Reconnect to store provider credentials outside SQLite.';
+      case 'secure_storage_unsupported':
+        return 'Secure credential storage is not available on this platform. RTMify Live cannot save provider credentials here.';
+      case 'secret_not_found':
+      case 'secret_store_error':
+        return 'Stored provider credentials are unavailable. Reconnect to restore access.';
+      case 'credential_ref_missing':
+        return 'Stored provider credentials are incomplete. Reconnect to restore access.';
+      default:
+        return '';
+    }
+  }
+
+  function updateLobbyConnectionMessage(status) {
+    const errEl = document.getElementById('lobby-error');
+    if (!errEl) return;
+    const msg = connectionBlockMessage(status);
+    errEl.textContent = msg;
+    errEl.style.display = msg ? 'block' : 'none';
+  }
+
+  function connectionErrorMessage(code) {
+    switch (code) {
+      case 'secure_storage_unavailable':
+        return 'Secure credential storage is not available on this platform.';
+      case 'failed to persist secure credentials':
+        return 'Provider credentials could not be saved securely.';
+      default:
+        return '';
     }
   }
 
@@ -991,7 +1087,7 @@
               throw new Error('invalid edge payload');
             }
             const label = humanEdgeLabel(node.type, e, dir);
-            return `<div class="edge-row" onclick="drawerNav('${esc(e.node.id)}')">
+            return `<div class="edge-row" data-action="drawer-nav" data-id="${esc(e.node.id)}">
               <span class="edge-label">${esc(label)}</span>
               <span class="node-id-link">${esc(e.node.id)}</span>
               <span class="node-type-badge">${esc(e.node.type)}</span>
@@ -1004,7 +1100,7 @@
           <span class="suspect-text">
             <span class="suspect-label">SUSPECT</span>${node.suspect_reason ? esc(node.suspect_reason) : ''}
           </span>
-          <button class="suspect-clear" onclick="clearSuspect('${esc(node.id)}')">Mark Reviewed</button>
+          <button class="suspect-clear" data-action="clear-suspect" data-id="${esc(node.id)}">Mark Reviewed</button>
         </div>` : '';
 
       content.innerHTML = `
@@ -1089,7 +1185,7 @@
       const suspect = node.suspect ? `
         <div class="di-suspect">
           <span><strong>SUSPECT</strong>${node.suspect_reason ? ' — ' + esc(node.suspect_reason) : ''}</span>
-          <button onclick="clearSuspect('${esc(node.id)}')">Mark Reviewed</button>
+          <button data-action="clear-suspect" data-id="${esc(node.id)}">Mark Reviewed</button>
         </div>` : '';
 
       container.innerHTML = `
@@ -1109,7 +1205,7 @@
     const items = edges.map(e => _treeNodeHtml(currentType, e, dir)).join('');
     return `
       <div class="tree-section">
-        <div class="tree-section-header" onclick="toggleTreeSection(this)">
+        <div class="tree-section-header" data-action="toggle-tree-section">
           <button class="expand-btn" aria-label="Expand ${label}" aria-expanded="false">${CHEVRON_SVG}</button>
           <span class="tree-section-label">${label}</span>
           <span class="tree-count">${edges.length}</span>
@@ -1125,7 +1221,7 @@
     return `
       <div class="tree-node">
         <div class="tree-node-header">
-          <button class="expand-btn" aria-label="Expand ${esc(e.node.id)}" aria-expanded="false" onclick="toggleTreeNode(this,'${esc(e.node.id)}')">${CHEVRON_SVG}</button>
+          <button class="expand-btn" aria-label="Expand ${esc(e.node.id)}" aria-expanded="false" data-action="toggle-tree-node" data-id="${esc(e.node.id)}">${CHEVRON_SVG}</button>
           <span class="tree-edge-label">${esc(relation)}</span>
           <span class="tree-node-id">${esc(e.node.id)}</span>
           <span class="node-type-badge">${esc(e.node.type)}</span>
@@ -1206,7 +1302,7 @@
           <thead><tr><th>Node ID</th><th>Type</th><th>Via</th></tr></thead>
           <tbody>
             ${data.map(n => `<tr>
-              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,3)">${CHEVRON_SVG}</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(n.id)}" data-colspan="3">${CHEVRON_SVG}</button><span class="req-id">${esc(n.id)}</span></td>
               <td><span class="node-type-badge">${esc(n.type)}</span></td>
               <td><span class="tree-edge-label">${esc(n.dir)} ${esc(n.via)}</span></td>
             </tr>`).join('')}
@@ -1247,10 +1343,10 @@
           <thead><tr><th>Node ID</th><th>Type</th><th>Reason</th><th></th></tr></thead>
           <tbody>
             ${data.map(n => `<tr class="suspect">
-              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" onclick="toggleRow('${esc(n.id)}',this,4)">${CHEVRON_SVG}</button><span class="req-id">${esc(n.id)}</span></td>
+              <td><button class="expand-btn" aria-label="Expand ${esc(n.id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(n.id)}" data-colspan="4">${CHEVRON_SVG}</button><span class="req-id">${esc(n.id)}</span></td>
               <td><span class="node-type-badge">${esc(n.type)}</span></td>
               <td class="text-suspect">${esc(n.suspect_reason || '')}</td>
-              <td><button class="suspect-clear" onclick="clearSuspect('${esc(n.id)}')">Mark Reviewed</button></td>
+              <td><button class="suspect-clear" data-action="clear-suspect" data-id="${esc(n.id)}">Mark Reviewed</button></td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -1343,7 +1439,7 @@
   function renderProfileList() {
     const list = document.getElementById('profile-list');
     list.innerHTML = LOBBY_PROFILES.map(p => `
-      <div class="profile-row${p.id === lobbyState.profileId ? ' selected' : ''}" data-profile-id="${p.id}" role="option" aria-selected="${p.id === lobbyState.profileId}" tabindex="0" onclick="selectProfile('${p.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectProfile('${p.id}')}">
+      <div class="profile-row${p.id === lobbyState.profileId ? ' selected' : ''}" data-action="select-profile" data-profile-id="${p.id}" role="option" aria-selected="${p.id === lobbyState.profileId}" tabindex="0">
         <span class="profile-row-icon">${PROFILE_ICONS[p.id]}</span>
         <span class="profile-row-name">${p.label}</span>
         <span class="profile-row-check"><svg width="10" height="8" viewBox="0 0 10 8" fill="none"><polyline points="1,4 4,7 9,1" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
@@ -1635,7 +1731,7 @@
       label.textContent = 'Reading workbook…';
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
-        throw new Error(formatDiagnosticsError(data) || data.detail || `HTTP ${res.status}`);
+        throw new Error(formatDiagnosticsError(data) || connectionErrorMessage(data.error) || data.detail || data.error || `HTTP ${res.status}`);
       }
     } catch (e) {
       errEl.textContent = 'Failed to connect: ' + e.message;
@@ -1758,8 +1854,8 @@
     tbody.innerHTML = gaps.map((g) => {
       const sev = (g.severity || 'info').toLowerCase();
       return `<tr>
-        <td><a href="#" class="guide-link" data-guide-code="${esc(String(g.code || ''))}" data-guide-variant="${esc(g.gap_type || '')}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode, this.dataset.guideVariant ? { variant: this.dataset.guideVariant } : {})">${esc(String(g.code || ''))}</a></td>
-        <td><a href="#" class="guide-link" data-guide-code="${esc(String(g.code || ''))}" data-guide-variant="${esc(g.gap_type || '')}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode, this.dataset.guideVariant ? { variant: this.dataset.guideVariant } : {})">${esc(g.title || '')}</a></td>
+        <td><a href="#" class="guide-link" data-action="open-guide" data-guide-code="${esc(String(g.code || ''))}" data-guide-variant="${esc(g.gap_type || '')}">${esc(String(g.code || ''))}</a></td>
+        <td><a href="#" class="guide-link" data-action="open-guide" data-guide-code="${esc(String(g.code || ''))}" data-guide-variant="${esc(g.gap_type || '')}">${esc(g.title || '')}</a></td>
         <td>${esc(g.gap_type || '')}</td>
         <td>${esc(g.node_id || '')}</td>
         <td><span class="gap-badge-sev ${sev}">${esc(sev)}</span></td>
@@ -1887,7 +1983,7 @@
         <td>${esc(String(r.test_file_count || 0))}</td>
         <td>${esc(String(r.annotation_count || 0))}</td>
         <td>${esc(String(r.commit_count || 0))}</td>
-        <td><button class="btn-danger" onclick="deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})" title="Remove repo">×</button></td>
+        <td><button class="btn-danger" data-action="delete-repo" data-slot="${Number.isInteger(r.slot) ? r.slot : 0}" title="Remove repo">×</button></td>
       </tr>`).join('');
     } catch (_) {}
   }
@@ -1905,7 +2001,7 @@
         return;
       }
       el.innerHTML = diagnostics.map(d => `<div class="repo-row repo-row--block">
-        <div><a href="#" class="guide-link" data-guide-code="E${esc(String(d.code))}" onclick="event.preventDefault(); openGuideForCode(this.dataset.guideCode)"><strong>E${esc(String(d.code))}</strong></a> ${esc(d.title || '')} <span class="gap-badge-sev ${(d.severity || 'info').toLowerCase()}">${esc((d.severity || '').toLowerCase())}</span></div>
+        <div><a href="#" class="guide-link" data-action="open-guide" data-guide-code="E${esc(String(d.code))}"><strong>E${esc(String(d.code))}</strong></a> ${esc(d.title || '')} <span class="gap-badge-sev ${(d.severity || 'info').toLowerCase()}">${esc((d.severity || '').toLowerCase())}</span></div>
         <div class="text-sm-muted">${esc(d.message || '')}</div>
         ${d.subject ? `<div class="mono-sm text-sm-subtle">${esc(d.subject)}</div>` : ''}
       </div>`).join('');
@@ -1947,7 +2043,7 @@
       const rows = entries.map(({node, props}) => {
         const filePath = props.path || node.id;
         return `<tr data-expanded="0" data-file-path="${esc(filePath)}">
-          <td><button class="expand-btn" aria-label="Expand ${esc(filePath)}" aria-expanded="false" onclick="expandFile(this.closest('tr'), this.closest('tr').dataset.filePath)">${CHEVRON_SVG}</button></td>
+          <td><button class="expand-btn" aria-label="Expand ${esc(filePath)}" aria-expanded="false" data-action="expand-file">${CHEVRON_SVG}</button></td>
           <td>${esc(node.type || '')}</td>
           <td class="mono-sm">${esc(filePath)}</td>
           <td>${esc(String(props.annotation_count || 0))}</td>
@@ -2050,7 +2146,7 @@
 
   function formatDiagnosticsError(data) {
     const diagnostics = data.diagnostics || [];
-    if (!diagnostics.length) return data.detail || data.error || 'Request failed';
+    if (!diagnostics.length) return data.detail || '';
     return diagnostics.map(d => `E${d.code}: ${d.message}`).join(' ');
   }
 

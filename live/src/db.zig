@@ -41,29 +41,40 @@ fn checkRc(db_conn: ?*c.sqlite3, rc: c_int) DbError!void {
 
 pub const Stmt = struct {
     st: *c.sqlite3_stmt,
+    db_mu: *std.Thread.Mutex,
 
     pub fn bindText(s: *Stmt, idx: c_int, val: []const u8) DbError!void {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         const rc = c.sqlite3_bind_text(s.st, idx, val.ptr, @intCast(val.len), SQLITE_STATIC);
         if (rc != c.SQLITE_OK) return error.Bind;
     }
 
     pub fn bindTextZ(s: *Stmt, idx: c_int, val: [*:0]const u8) DbError!void {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         const rc = c.sqlite3_bind_text(s.st, idx, val, -1, SQLITE_STATIC);
         if (rc != c.SQLITE_OK) return error.Bind;
     }
 
     pub fn bindInt(s: *Stmt, idx: c_int, val: i64) DbError!void {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         const rc = c.sqlite3_bind_int64(s.st, idx, val);
         if (rc != c.SQLITE_OK) return error.Bind;
     }
 
     pub fn bindNull(s: *Stmt, idx: c_int) DbError!void {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         const rc = c.sqlite3_bind_null(s.st, idx);
         if (rc != c.SQLITE_OK) return error.Bind;
     }
 
     /// Returns true if a row is available, false if done.
     pub fn step(s: *Stmt) DbError!bool {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         const rc = c.sqlite3_step(s.st);
         if (rc == c.SQLITE_ROW) return true;
         if (rc == c.SQLITE_DONE) return false;
@@ -73,6 +84,8 @@ pub const Stmt = struct {
     /// Returns a slice pointing into SQLite's internal buffer.
     /// Valid only until the next step/reset/finalize call.
     pub fn columnText(s: *Stmt, idx: c_int) []const u8 {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         const ptr = c.sqlite3_column_text(s.st, idx);
         if (ptr == null) return "";
         const len = c.sqlite3_column_bytes(s.st, idx);
@@ -80,19 +93,27 @@ pub const Stmt = struct {
     }
 
     pub fn columnInt(s: *Stmt, idx: c_int) i64 {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         return c.sqlite3_column_int64(s.st, idx);
     }
 
     pub fn columnIsNull(s: *Stmt, idx: c_int) bool {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         return c.sqlite3_column_type(s.st, idx) == c.SQLITE_NULL;
     }
 
     pub fn reset(s: *Stmt) void {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         _ = c.sqlite3_reset(s.st);
         _ = c.sqlite3_clear_bindings(s.st);
     }
 
     pub fn finalize(s: *Stmt) void {
+        s.db_mu.lock();
+        defer s.db_mu.unlock();
         _ = c.sqlite3_finalize(s.st);
     }
 };
@@ -105,6 +126,8 @@ pub const Db = struct {
     conn: *c.sqlite3,
     /// Serializes all write operations. WAL mode allows concurrent reads.
     write_mu: std.Thread.Mutex = .{},
+    /// SQLite connection handles are not safe for concurrent prepare/step access.
+    conn_mu: std.Thread.Mutex = .{},
 
     pub fn open(path: [:0]const u8) DbError!Db {
         var conn: ?*c.sqlite3 = null;
@@ -138,13 +161,15 @@ pub const Db = struct {
     }
 
     pub fn prepare(db: *Db, sql: [:0]const u8) DbError!Stmt {
+        db.conn_mu.lock();
+        defer db.conn_mu.unlock();
         var st: ?*c.sqlite3_stmt = null;
         const rc = c.sqlite3_prepare_v2(db.conn, sql.ptr, -1, &st, null);
         if (rc != c.SQLITE_OK or st == null) {
             std.log.err("prepare failed ({d}): {s}", .{ rc, c.sqlite3_errmsg(db.conn) });
             return error.Prepare;
         }
-        return Stmt{ .st = st.? };
+        return Stmt{ .st = st.?, .db_mu = &db.conn_mu };
     }
 
     pub fn initSchema(db: *Db) DbError!void {

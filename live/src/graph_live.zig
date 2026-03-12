@@ -859,6 +859,20 @@ pub const GraphDb = struct {
         return try alloc.dupe(u8, st.columnText(0));
     }
 
+    pub fn hasLegacyCredential(g: *GraphDb) !bool {
+        var st = try g.db.prepare("SELECT 1 FROM credentials LIMIT 1");
+        defer st.finalize();
+        return try st.step();
+    }
+
+    pub fn clearLegacyCredentials(g: *GraphDb) !void {
+        g.db.write_mu.lock();
+        defer g.db.write_mu.unlock();
+        var st = try g.db.prepare("DELETE FROM credentials");
+        defer st.finalize();
+        _ = try st.step();
+    }
+
     pub fn storeConfig(g: *GraphDb, key: []const u8, value: []const u8) !void {
         g.db.write_mu.lock();
         defer g.db.write_mu.unlock();
@@ -1328,6 +1342,17 @@ test "storeCredential and getLatestCredential" {
     const content = try g.getLatestCredential(alloc);
     try testing.expect(content != null);
     try testing.expectEqualStrings("{\"client_email\":\"test@example.com\"}", content.?);
+}
+
+test "hasLegacyCredential and clearLegacyCredentials" {
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+
+    try testing.expect(!(try g.hasLegacyCredential()));
+    try g.storeCredential("{\"client_email\":\"test@example.com\"}");
+    try testing.expect(try g.hasLegacyCredential());
+    try g.clearLegacyCredentials();
+    try testing.expect(!(try g.hasLegacyCredential()));
 }
 
 test "storeConfig and getConfig" {

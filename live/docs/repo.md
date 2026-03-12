@@ -696,7 +696,7 @@ Add by typing a path or using a browse button. Remove with an × button. Validat
 
 ## 12. MCP Extensions
 
-New MCP tools exposed at `localhost:8000/mcp`:
+New MCP tools exposed at `127.0.0.1:8000/mcp`:
 
 | Tool | Description |
 |------|-------------|
@@ -901,7 +901,7 @@ Live supports a second input mode: watching a local XLSX file instead of polling
 rtmify-live --xlsx /path/to/requirements.xlsx
 ```
 
-Or configures the path in the web dashboard lobby (which is served on localhost regardless of network access).
+Or configures the path in the web dashboard lobby (which is served on loopback regardless of network access).
 
 In this mode:
 - The sync thread watches the file's modification timestamp instead of calling the Drive API
@@ -923,7 +923,7 @@ The deployment procedure:
 3. Transfer media to the classified machine per the site's data transfer procedures
 4. Place files on the classified machine's local drive
 5. Run `rtmify-live --xlsx /path/to/requirements.xlsx --no-browser`
-6. Open `http://localhost:8000` in the local browser
+6. Open `http://127.0.0.1:8000` in the local browser
 
 The binary never phones home. The license check reads `license.json` from disk. The 30-day offline grace period (designed for airplane use) covers classified deployments permanently — the tool will never see a network, and the grace period renews each time the license.json is valid on disk. For perpetual licenses (`expires_at: null`), there is no grace period concern at all. It runs forever.
 

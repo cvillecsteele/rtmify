@@ -15,7 +15,7 @@ Use this checklist on a clean Windows machine or VM.
 4. Verify the tray icon appears.
 5. Click `Start Server`.
 6. Verify the dashboard opens automatically.
-7. Verify `http://localhost:8000/api/status` is reachable.
+7. Verify `http://127.0.0.1:8000/api/status` is reachable.
 
 ## Data paths
 

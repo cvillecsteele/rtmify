@@ -8,12 +8,12 @@ For the current implementation architecture, including the `native shim + embedd
 
 ## 1. What This Is
 
-RTMify Live is a local server that syncs a Google Sheet to a requirements graph, runs continuous gap analysis and suspect propagation, writes status back to the sheet, serves a web dashboard on localhost, and exposes an MCP endpoint for AI agent integration. One binary. One command. One process.
+RTMify Live is a local server that syncs a Google Sheet to a requirements graph, runs continuous gap analysis and suspect propagation, writes status back to the sheet, serves a web dashboard on loopback (`127.0.0.1`), and exposes an MCP endpoint for AI agent integration. One binary. One command. One process.
 
 ```
 $ rtmify-live
-RTMify Live running at http://localhost:8000
-MCP endpoint: http://localhost:8000/mcp
+RTMify Live running at http://127.0.0.1:8000
+MCP endpoint: http://127.0.0.1:8000/mcp
 Syncing: https://docs.google.com/spreadsheets/d/1abc.../
 ```
 
@@ -335,7 +335,7 @@ Hard errors (network failures, auth failures, API quota) are logged and trigger 
 
 ### 8.1 Implementation
 
-`std.http.Server` from Zig stdlib. Listens on `0.0.0.0:8000` (configurable via `--port`).
+`std.http.Server` from Zig stdlib. Listens on `127.0.0.1:8000` (configurable via `--port`).
 
 Request handling: read the request, match the path against a route table, dispatch to the handler function, write the response. No framework. The route table is a `switch` on the path string (or a small comptime-built hashmap).
 
@@ -418,7 +418,7 @@ If additional static files are needed later (CSS, JS, images), they're embedded 
 
 ### 10.1 Protocol
 
-MCP uses Server-Sent Events (SSE) as its transport. The client (Claude Desktop, Claude Code, Cursor) connects to `http://localhost:8000/mcp` and holds open an HTTP connection. The server sends events as newline-delimited `data:` frames.
+MCP uses Server-Sent Events (SSE) as its transport. The client (Claude Desktop, Claude Code, Cursor) connects to `http://127.0.0.1:8000/mcp` and holds open an HTTP connection. The server sends events as newline-delimited `data:` frames.
 
 SSE in Zig: the HTTP server writes the response headers (`Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`), then writes `data: {json}\n\n` frames as they become available. The connection stays open. This is chunked transfer encoding with a specific content type.
 
@@ -440,8 +440,8 @@ A connected agent should call `GET /schema` first (exposed as the `schema` MCP t
 
 On first launch with no configuration:
 
-1. Binary starts, listens on `localhost:8000`
-2. Opens the user's default browser to `http://localhost:8000`
+1. Binary starts, listens on `127.0.0.1:8000`
+2. Opens the user's default browser to `http://127.0.0.1:8000`
 3. The web UI shows the lobby screen (already implemented in `index.html`):
    - Drag-drop zone for `service-account.json`
    - Service account email display (once uploaded)
@@ -597,7 +597,7 @@ Both `zig build` (Trace+Live default install) and `zig build live` (Live-only st
 ### Phase 5: MCP Server (2-3 days)
 
 - Implement `mcp.zig`: SSE transport, tool definitions, JSON-RPC request parsing, dispatch to route handlers
-- Test: connect Claude Desktop to `localhost:8000/mcp`, verify tool discovery and query execution
+- Test: connect Claude Desktop to `127.0.0.1:8000/mcp`, verify tool discovery and query execution
 - The MCP protocol spec is small. The tool definitions are a JSON structure mapping names to handlers. SSE is chunked HTTP with a specific content type.
 
 ### Phase 6: CLI + Integration + Polish (2-3 days)
@@ -615,7 +615,7 @@ Both `zig build` (Trace+Live default install) and `zig build live` (Live-only st
 ## 18. What This Is Not
 
 - Not a cloud service. Runs on the user's machine. Data never touches a server you control.
-- Not a multi-user server. One process, one sheet, one user (or one team sharing a sheet). No authentication on the HTTP server because it only listens on localhost.
+- Not a multi-user server. One process, one sheet, one user (or one team sharing a sheet). No authentication on the HTTP server because it only listens on loopback (`127.0.0.1`). Cross-origin browser access is intentionally unsupported.
 - Not a replacement for the web UI. The existing `index.html` ships unchanged. No redesign.
 - Not a rewrite of the graph model. Same nodes, same edges, same queries, same schema. Different storage backend (SQLite instead of in-memory).
 - Not an incremental migration. The Python prototype continues to exist for development and testing. The Zig binary is a clean-room reimplementation that produces identical API responses and identical reports.

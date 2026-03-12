@@ -57,6 +57,13 @@ fn addSqlite(compile: *std.Build.Step.Compile, b: *std.Build) void {
     compile.linkLibC();
 }
 
+fn addLiveSecurityDeps(compile: *std.Build.Step.Compile) void {
+    if (compile.rootModuleTarget().os.tag == .macos) {
+        compile.linkFramework("Security");
+        compile.linkFramework("CoreFoundation");
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const version = "20260308-a";
 
@@ -102,6 +109,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addSqlite(live_exe, b);
+    addLiveSecurityDeps(live_exe);
 
     const cadinspect_exe = b.addExecutable(.{
         .name = "rtmify-cadinspect",
@@ -232,6 +240,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addSqlite(live_tests, b);
+    addLiveSecurityDeps(live_tests);
     const run_live_tests = b.addRunArtifact(live_tests);
 
     const cadcruncher_tests = b.addTest(.{
@@ -419,6 +428,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         addSqlite(live_release_exe, b);
+        addLiveSecurityDeps(live_release_exe);
 
         const install_live_release = b.addInstallArtifact(live_release_exe, .{
             .dest_dir = .{ .override = .{ .custom = "release" } },

@@ -9,26 +9,28 @@ const Allocator = std.mem.Allocator;
 const rtmify = @import("rtmify");
 const license = rtmify.license;
 const graph_live = @import("graph_live.zig");
+const secure_store = @import("secure_store.zig");
 const sync_live = @import("sync_live.zig");
 const routes = @import("routes.zig");
 
 pub const ServerCtx = struct {
     db: *graph_live.GraphDb,
+    secure_store: *secure_store.Store,
     state: *sync_live.SyncState,
     license_service: *license.Service,
     alloc: Allocator,
     /// Called after POST /api/connection to (re)start the sync thread if not already running.
     /// Set by main_live.zig; null means auto-start is not configured.
-    startSyncFn: ?*const fn (*graph_live.GraphDb, *sync_live.SyncState, Allocator) void = null,
+    startSyncFn: ?*const fn (*graph_live.GraphDb, *secure_store.Store, *sync_live.SyncState, Allocator) void = null,
 };
 
 /// Listen on `port` and serve HTTP requests forever.
 pub fn listen(port: u16, ctx: ServerCtx) !void {
-    const addr = std.net.Address.initIp4(.{ 0, 0, 0, 0 }, port);
+    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
     var server = try addr.listen(.{ .reuse_address = true });
     defer server.deinit();
 
-    std.log.info("rtmify-live HTTP server listening on http://localhost:{d}", .{port});
+    std.log.info("rtmify-live HTTP server listening on http://127.0.0.1:{d}", .{port});
 
     while (true) {
         const conn = server.accept() catch |e| {
@@ -93,6 +95,31 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         }
     }
     std.log.info("http {s} {s}", .{ method_name, target });
+
+    validateLocalRequest(req) catch |e| switch (e) {
+        error.ForbiddenHost => {
+            const body = "{\"error\":\"forbidden_host\"}";
+            response_status = .forbidden;
+            response_bytes = body.len;
+            try sendJsonWithStatus(req, body, .forbidden);
+            return;
+        },
+        error.ForbiddenOrigin => {
+            const body = "{\"error\":\"forbidden_origin\"}";
+            response_status = .forbidden;
+            response_bytes = body.len;
+            try sendJsonWithStatus(req, body, .forbidden);
+            return;
+        },
+    };
+
+    if (req.head.method == .OPTIONS) {
+        const body = "{\"error\":\"method_not_allowed\"}";
+        response_status = .method_not_allowed;
+        response_bytes = body.len;
+        try sendJsonWithStatus(req, body, .method_not_allowed);
+        return;
+    }
 
     // Route
     if (std.mem.eql(u8, path, "/") or std.mem.eql(u8, path, "/index.html")) {
@@ -218,7 +245,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/status")) {
-            const body = try routes.handleStatus(ctx.db, ctx.state, ctx.license_service, alloc);
+            const body = try routes.handleStatus(ctx.db, ctx.secure_store, ctx.state, ctx.license_service, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -234,7 +261,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = try queryParamDecoded(target, "profile", alloc);
-            const body = try routes.handleProvisionPreview(ctx.db, qprofile, alloc);
+            const body = try routes.handleProvisionPreview(ctx.db, ctx.secure_store, qprofile, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -339,7 +366,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.eql(u8, path, "/mcp")) {
             // SSE endpoint — delegated to mcp.zig (streamed, not a simple response)
             response_status = .ok;
-            try @import("mcp.zig").handleSse(req, ctx.db, alloc);
+            try @import("mcp.zig").handleSse(req, ctx.db, ctx.secure_store, alloc);
         } else {
             response_status = .not_found;
             response_bytes = "{\"error\":\"not found\"}".len;
@@ -349,7 +376,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         if (std.mem.eql(u8, path, "/mcp")) {
             const body_bytes = try readBody(req, alloc);
             response_status = .ok;
-            try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.state, alloc);
+            try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.secure_store, ctx.state, alloc);
         } else if (std.mem.eql(u8, path, "/api/license/activate")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleLicenseActivateResponse(ctx.license_service, body_bytes, alloc);
@@ -358,7 +385,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 defer license_status.deinit(alloc);
                 ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
                 if (license_status.permits_use) {
-                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
                 }
             }
             response_status = resp.status;
@@ -377,7 +404,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 defer license_status.deinit(alloc);
                 ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
                 if (license_status.permits_use) {
-                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
                 }
             }
             response_status = resp.status;
@@ -409,21 +436,21 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/connection/validate")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleConnectionValidateResponse(body_bytes, alloc);
+            const resp = try routes.handleConnectionValidateResponse(ctx.secure_store, body_bytes, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/connection")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleConnectionResponse(ctx.db, body_bytes, alloc);
+            const resp = try routes.handleConnectionResponse(ctx.db, ctx.secure_store, body_bytes, alloc);
             if (resp.ok) {
-                if (ctx.startSyncFn) |f| f(ctx.db, ctx.state, ctx.alloc);
+                if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
             }
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision")) {
-            const resp = try routes.handleProvisionResponse(ctx.db, alloc);
+            const resp = try routes.handleProvisionResponse(ctx.db, ctx.secure_store, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
@@ -458,10 +485,6 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = "{\"error\":\"not found\"}".len;
             try send404(req);
         }
-    } else if (req.head.method == .OPTIONS) {
-        // Simple CORS preflight
-        response_status = .no_content;
-        try sendOptions(req);
     } else {
         response_status = .not_found;
         response_bytes = "{\"error\":\"not found\"}".len;
@@ -482,14 +505,100 @@ fn isLicenseExempt(method: std.http.Method, path: []const u8) bool {
         std.mem.eql(u8, path, "/api/license/refresh");
 }
 
+const RequestValidationError = error{
+    ForbiddenHost,
+    ForbiddenOrigin,
+};
+
+fn requestHeaderValue(req: *const std.http.Server.Request, name: []const u8) ?[]const u8 {
+    var it = req.iterateHeaders();
+    while (it.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) {
+            return std.mem.trim(u8, header.value, " \t");
+        }
+    }
+    return null;
+}
+
+fn requestHost(req: *const std.http.Server.Request) ?[]const u8 {
+    return requestHeaderValue(req, "Host");
+}
+
+fn hostWithoutPort(host: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, host, " \t");
+    if (trimmed.len == 0 or trimmed[0] == '[') return trimmed;
+    if (std.mem.lastIndexOfScalar(u8, trimmed, ':')) |idx| {
+        return trimmed[0..idx];
+    }
+    return trimmed;
+}
+
+fn hostPort(host: []const u8) ?u16 {
+    const trimmed = std.mem.trim(u8, host, " \t");
+    if (trimmed.len == 0 or trimmed[0] == '[') return null;
+    const idx = std.mem.lastIndexOfScalar(u8, trimmed, ':') orelse return null;
+    return std.fmt.parseInt(u16, trimmed[idx + 1 ..], 10) catch null;
+}
+
+fn isAllowedLocalHost(host: []const u8) bool {
+    return std.mem.eql(u8, host, "127.0.0.1") or std.ascii.eqlIgnoreCase(host, "localhost");
+}
+
+fn parseOriginHost(origin_or_referer: []const u8) ?[]const u8 {
+    const uri = std.Uri.parse(origin_or_referer) catch return null;
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "http")) return null;
+    const component = uri.host orelse return null;
+    return switch (component) {
+        .raw => |raw| raw,
+        .percent_encoded => |encoded| if (std.mem.indexOfScalar(u8, encoded, '%') == null) encoded else null,
+    };
+}
+
+fn parseOriginPort(origin_or_referer: []const u8) ?u16 {
+    const uri = std.Uri.parse(origin_or_referer) catch return null;
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "http")) return null;
+    return uri.port;
+}
+
+fn hasAllowedOriginValue(origin_or_referer: []const u8, req_host: []const u8) bool {
+    const origin_host = parseOriginHost(origin_or_referer) orelse return false;
+    if (!isAllowedLocalHost(origin_host)) return false;
+
+    const req_port = hostPort(req_host) orelse return true;
+    const origin_port = parseOriginPort(origin_or_referer) orelse return false;
+    return origin_port == req_port;
+}
+
+fn requestHasAllowedBrowserOrigin(req: *const std.http.Server.Request) bool {
+    const req_host = requestHost(req) orelse return false;
+    if (requestHeaderValue(req, "Origin")) |origin| {
+        return hasAllowedOriginValue(origin, req_host);
+    }
+    if (requestHeaderValue(req, "Referer")) |referer| {
+        return hasAllowedOriginValue(referer, req_host);
+    }
+    return true;
+}
+
+fn requiresBrowserOriginCheck(method: std.http.Method, path: []const u8) bool {
+    return method == .POST or method == .DELETE or (method == .GET and std.mem.eql(u8, path, "/mcp"));
+}
+
+fn validateLocalRequest(req: *const std.http.Server.Request) RequestValidationError!void {
+    const host = requestHost(req) orelse return error.ForbiddenHost;
+    if (!isAllowedLocalHost(hostWithoutPort(host))) return error.ForbiddenHost;
+
+    const path = stripQuery(req.head.target);
+    if (requiresBrowserOriginCheck(req.head.method, path) and !requestHasAllowedBrowserOrigin(req)) {
+        return error.ForbiddenOrigin;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------------
 
-const cors_headers = [_]std.http.Header{
-    .{ .name = "Access-Control-Allow-Origin", .value = "*" },
-    .{ .name = "Access-Control-Allow-Methods", .value = "GET, POST, DELETE, OPTIONS" },
-    .{ .name = "Access-Control-Allow-Headers", .value = "Content-Type" },
+const base_headers = [_]std.http.Header{
     .{ .name = "Connection", .value = "close" },
 };
 
@@ -498,7 +607,7 @@ fn sendJson(req: *std.http.Server.Request, body: []const u8) !void {
 }
 
 fn sendJsonWithStatus(req: *std.http.Server.Request, body: []const u8, status: std.http.Status) !void {
-    const headers = cors_headers ++ [_]std.http.Header{
+    const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = "application/json" },
     };
     try req.respond(body, .{
@@ -513,7 +622,7 @@ fn sendHtml(req: *std.http.Server.Request, body: []const u8) !void {
 }
 
 fn sendStaticText(req: *std.http.Server.Request, body: []const u8, content_type: []const u8) !void {
-    const headers = cors_headers ++ [_]std.http.Header{
+    const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = content_type },
         .{ .name = "Cache-Control", .value = "no-store, no-cache, must-revalidate, max-age=0" },
         .{ .name = "Pragma", .value = "no-cache" },
@@ -526,7 +635,7 @@ fn sendStaticText(req: *std.http.Server.Request, body: []const u8, content_type:
 }
 
 fn sendPdf(req: *std.http.Server.Request, body: []const u8) !void {
-    const headers = cors_headers ++ [_]std.http.Header{
+    const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = "application/pdf" },
         .{ .name = "Content-Disposition", .value = "attachment; filename=\"rtm.pdf\"" },
     };
@@ -538,7 +647,7 @@ fn sendPdf(req: *std.http.Server.Request, body: []const u8) !void {
 }
 
 fn sendText(req: *std.http.Server.Request, body: []const u8, content_type: []const u8) !void {
-    const headers = cors_headers ++ [_]std.http.Header{
+    const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = content_type },
     };
     try req.respond(body, .{
@@ -550,7 +659,7 @@ fn sendText(req: *std.http.Server.Request, body: []const u8, content_type: []con
 
 fn sendDocx(req: *std.http.Server.Request, body: []const u8) !void {
     const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    const headers = cors_headers ++ [_]std.http.Header{
+    const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = mime },
         .{ .name = "Content-Disposition", .value = "attachment; filename=\"rtm.docx\"" },
     };
@@ -562,19 +671,7 @@ fn sendDocx(req: *std.http.Server.Request, body: []const u8) !void {
 }
 
 fn send404(req: *std.http.Server.Request) !void {
-    try req.respond("{\"error\":\"not found\"}", .{
-        .status = .not_found,
-        .extra_headers = &cors_headers,
-        .keep_alive = false,
-    });
-}
-
-fn sendOptions(req: *std.http.Server.Request) !void {
-    try req.respond("", .{
-        .status = .no_content,
-        .extra_headers = &cors_headers,
-        .keep_alive = false,
-    });
+    try sendJsonWithStatus(req, "{\"error\":\"not found\"}", .not_found);
 }
 
 // ---------------------------------------------------------------------------
@@ -690,4 +787,46 @@ test "server source serves app js with javascript content type" {
     const source = @embedFile("server.zig");
     try testing.expect(std.mem.indexOf(u8, source, "\"/app.js\"") != null);
     try testing.expect(std.mem.indexOf(u8, source, "application/javascript; charset=utf-8") != null);
+}
+
+test "hostWithoutPort strips loopback host port and preserves bare host" {
+    try testing.expectEqualStrings("127.0.0.1", hostWithoutPort("127.0.0.1:8000"));
+    try testing.expectEqualStrings("localhost", hostWithoutPort("localhost"));
+}
+
+test "isAllowedLocalHost accepts only loopback aliases" {
+    try testing.expect(isAllowedLocalHost("127.0.0.1"));
+    try testing.expect(isAllowedLocalHost("localhost"));
+    try testing.expect(!isAllowedLocalHost("example.com"));
+    try testing.expect(!isAllowedLocalHost("192.168.1.10"));
+}
+
+test "parseOriginHost extracts host from local origins and rejects foreign schemes" {
+    try testing.expectEqualStrings("127.0.0.1", parseOriginHost("http://127.0.0.1:8000/mcp").?);
+    try testing.expectEqualStrings("localhost", parseOriginHost("http://localhost:8000/app").?);
+    try testing.expect(parseOriginHost("https://evil.test") == null);
+}
+
+test "hasAllowedOriginValue requires local host and matching port" {
+    try testing.expect(hasAllowedOriginValue("http://127.0.0.1:8000", "127.0.0.1:8000"));
+    try testing.expect(hasAllowedOriginValue("http://localhost:8000/dashboard", "127.0.0.1:8000"));
+    try testing.expect(!hasAllowedOriginValue("http://localhost:8001/dashboard", "127.0.0.1:8000"));
+    try testing.expect(!hasAllowedOriginValue("http://192.168.1.10:8000", "127.0.0.1:8000"));
+}
+
+test "requiresBrowserOriginCheck covers unsafe methods and mcp sse" {
+    try testing.expect(requiresBrowserOriginCheck(.POST, "/api/repos"));
+    try testing.expect(requiresBrowserOriginCheck(.DELETE, "/api/repos/1"));
+    try testing.expect(requiresBrowserOriginCheck(.GET, "/mcp"));
+    try testing.expect(!requiresBrowserOriginCheck(.GET, "/api/status"));
+}
+
+test "server source is loopback only and no longer advertises wildcard cors" {
+    const source = @embedFile("server.zig");
+    try testing.expect(std.mem.indexOf(u8, source, "127, 0, 0, 1") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "http://127.0.0.1:{d}") != null);
+    try testing.expectEqual(@as(usize, 1), base_headers.len);
+    try testing.expectEqualStrings("Connection", base_headers[0].name);
+    try testing.expectEqualStrings("close", base_headers[0].value);
+    try testing.expect(!requiresBrowserOriginCheck(.OPTIONS, "/api/status"));
 }

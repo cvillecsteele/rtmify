@@ -11,6 +11,8 @@ pub const provider_google = @import("provider_google.zig");
 pub const provider_excel = @import("provider_excel.zig");
 pub const online_provider = @import("online_provider.zig");
 pub const connection = @import("connection.zig");
+pub const secure_store = @import("secure_store.zig");
+pub const secure_store_test = @import("secure_store_test.zig");
 pub const sync_live = @import("sync_live.zig");
 pub const mcp = @import("mcp.zig");
 pub const repo = @import("repo.zig");
@@ -37,6 +39,8 @@ test {
     _ = provider_excel;
     _ = online_provider;
     _ = connection;
+    _ = secure_store;
+    _ = secure_store_test;
     _ = sync_live;
     _ = mcp;
     _ = repo;

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { secureStoreFilePath } from './db-seed.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sysRoot = path.resolve(here, '..', '..', '..');
@@ -40,6 +41,7 @@ export async function startServer(options: {
   port: number;
   repoPath?: string;
   extraArgs?: string[];
+  env?: Record<string, string>;
 }): Promise<StartedServer> {
   const args = ['--db', options.dbPath, '--port', String(options.port), '--no-browser'];
   if (options.repoPath) args.push('--repo', options.repoPath);
@@ -51,6 +53,9 @@ export async function startServer(options: {
     env: {
       ...process.env,
       RTMIFY_LOG_PATH: logPath,
+      RTMIFY_SECURE_STORE_BACKEND: 'test-memory',
+      RTMIFY_SECURE_STORE_TEST_FILE: secureStoreFilePath(options.dbPath),
+      ...options.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

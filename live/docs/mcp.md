@@ -4,10 +4,14 @@ RTMify Live serves MCP over local Streamable HTTP at `/mcp`.
 
 ## Endpoint
 
-- Local MCP URL: `http://localhost:<port>/mcp`
+- Local MCP URL: `http://127.0.0.1:<port>/mcp`
 - Transport:
   - `POST /mcp` for JSON-RPC requests
   - `GET /mcp` for legacy SSE endpoint discovery
+- Scope:
+  - loopback-only transport
+  - no CORS support
+  - remote/browser-cross-origin access is intentionally unsupported
 
 ## Methods
 

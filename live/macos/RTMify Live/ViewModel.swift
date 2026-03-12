@@ -274,7 +274,7 @@ final class ViewModel: ObservableObject {
 
     func openDashboard() {
         if case .running(let p) = state {
-            let url = "http://localhost:\(p)"
+            let url = "http://127.0.0.1:\(p)"
             lastKnownDashboardURL = url
             NSWorkspace.shared.open(URL(string: url)!)
         }
@@ -313,7 +313,7 @@ final class ViewModel: ObservableObject {
     private func pollStatus() {
         guard case .running(let p) = state else { return }
         Task {
-            guard let url = URL(string: "http://localhost:\(p)/api/status") else { return }
+            guard let url = URL(string: "http://127.0.0.1:\(p)/api/status") else { return }
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -341,7 +341,7 @@ final class ViewModel: ObservableObject {
     private func serverDidStart(openDashboardOnLaunch: Bool) {
         intentionalStopInProgress = false
         state = .running(port: port)
-        lastKnownDashboardURL = "http://localhost:\(port)"
+        lastKnownDashboardURL = "http://127.0.0.1:\(port)"
         startStatusPolling()
         if openDashboardOnLaunch {
             openDashboard()

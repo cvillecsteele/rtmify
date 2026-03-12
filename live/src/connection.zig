@@ -6,6 +6,7 @@ const common = @import("provider_common.zig");
 const online_provider = @import("online_provider.zig");
 const provider_excel = @import("provider_excel.zig");
 const json_util = @import("json_util.zig");
+const secure_store = @import("secure_store.zig");
 
 pub const GraphDb = graph_live.GraphDb;
 
@@ -59,11 +60,23 @@ pub fn validateDraft(draft: common.DraftConnection, alloc: Allocator) !common.Va
     };
 }
 
-pub fn persistActive(db: *GraphDb, draft: common.ValidatedDraft) !void {
-    try db.storeCredential(draft.credential_json);
+pub fn persistActive(db: *GraphDb, store: *secure_store.Store, draft: common.ValidatedDraft, alloc: Allocator) !void {
+    if (!secure_store.backendSupported(store.*)) return error.SecureStorageUnsupported;
+
+    const old_ref = try db.getConfig("credential_ref", alloc);
+    defer if (old_ref) |value| alloc.free(value);
+
+    const credential_ref = try secure_store.generateCredentialRef(alloc);
+    defer alloc.free(credential_ref);
+    try store.put(alloc, credential_ref, draft.credential_json);
+    errdefer store.delete(alloc, credential_ref) catch {};
+
     try db.storeConfig("platform", common.providerIdString(draft.platform));
     try db.storeConfig("workbook_url", draft.workbook_url);
     try db.storeConfig("workbook_label", draft.workbook_label);
+    try db.storeConfig("credential_ref", credential_ref);
+    try db.storeConfig("credential_backend", secure_store.backendName(store.backend));
+    try db.storeConfig("credential_store_version", "1");
     if (draft.credential_display) |v| {
         try db.storeConfig("credential_display", v);
     } else {
@@ -81,45 +94,66 @@ pub fn persistActive(db: *GraphDb, draft: common.ValidatedDraft) !void {
             db.deleteConfig("google_sheet_id") catch {};
         },
     }
+    try db.clearLegacyCredentials();
+
+    if (old_ref) |value| {
+        if (!std.mem.eql(u8, value, credential_ref)) {
+            store.delete(alloc, value) catch {};
+        }
+    }
 }
 
-pub fn loadActive(db: *GraphDb, alloc: Allocator) !?common.ActiveConnection {
-    const platform_str = (try db.getConfig("platform", alloc)) orelse return null;
+pub fn loadActive(db: *GraphDb, store: *secure_store.Store, alloc: Allocator) !common.LoadedConnection {
+    const platform_str = (try db.getConfig("platform", alloc)) orelse return .none;
     defer alloc.free(platform_str);
-    const platform = common.providerIdFromString(platform_str) orelse return null;
-    const credential_json = (try db.getLatestCredential(alloc)) orelse return null;
+    const platform = common.providerIdFromString(platform_str) orelse return .none;
+    const credential_ref = try db.getConfig("credential_ref", alloc);
+    defer if (credential_ref) |value| alloc.free(value);
+
+    if (credential_ref == null) {
+        if (try db.hasLegacyCredential()) return .{ .blocked = .legacy_plaintext_credentials };
+        return .{ .blocked = .credential_ref_missing };
+    }
+
+    const credential_json = store.get(alloc, credential_ref.?) catch |err| switch (err) {
+        error.Unsupported => return .{ .blocked = .secure_storage_unsupported },
+        error.NotFound => return .{ .blocked = .secret_not_found },
+        else => return .{ .blocked = .secret_store_error },
+    };
     errdefer alloc.free(credential_json);
-    const workbook_url = (try db.getConfig("workbook_url", alloc)) orelse return null;
+
+    const workbook_url = (try db.getConfig("workbook_url", alloc)) orelse return .none;
     errdefer alloc.free(workbook_url);
-    const workbook_label = (try db.getConfig("workbook_label", alloc)) orelse return null;
+    const workbook_label = (try db.getConfig("workbook_label", alloc)) orelse return .none;
     errdefer alloc.free(workbook_label);
     const credential_display = try db.getConfig("credential_display", alloc);
     errdefer if (credential_display) |v| alloc.free(v);
 
     const target = switch (platform) {
         .google => blk: {
-            const sheet_id = (try db.getConfig("google_sheet_id", alloc)) orelse (try db.getConfig("sheet_id", alloc)) orelse return null;
+            const sheet_id = (try db.getConfig("google_sheet_id", alloc)) orelse (try db.getConfig("sheet_id", alloc)) orelse return .none;
             break :blk common.Target{ .google = .{ .sheet_id = sheet_id } };
         },
         .excel => blk: {
-            const drive_id = (try db.getConfig("excel_drive_id", alloc)) orelse return null;
+            const drive_id = (try db.getConfig("excel_drive_id", alloc)) orelse return .none;
             errdefer alloc.free(drive_id);
-            const item_id = (try db.getConfig("excel_item_id", alloc)) orelse return null;
+            const item_id = (try db.getConfig("excel_item_id", alloc)) orelse return .none;
             break :blk common.Target{ .excel = .{ .drive_id = drive_id, .item_id = item_id } };
         },
     };
 
-    return .{
+    return .{ .active = .{
         .platform = platform,
         .credential_json = credential_json,
         .workbook_url = workbook_url,
         .workbook_label = workbook_label,
         .credential_display = credential_display,
         .target = target,
-    };
+    } };
 }
 
-pub fn migrateLegacyGoogleConfig(db: *GraphDb, alloc: Allocator) !void {
+pub fn migrateLegacyGoogleConfig(db: *GraphDb, store: *secure_store.Store, alloc: Allocator) !void {
+    _ = store;
     const platform = try db.getConfig("platform", alloc);
     defer if (platform) |v| alloc.free(v);
     if (platform != null) return;
@@ -299,6 +333,8 @@ test "persistActive and loadActive roundtrip excel escaped credential content" {
 
     var db = try GraphDb.init(":memory:");
     defer db.deinit();
+    var store = try secure_store.initTestMemory(alloc);
+    defer store.deinit(alloc);
     const validated = common.ValidatedDraft{
         .platform = .excel,
         .profile = null,
@@ -312,11 +348,12 @@ test "persistActive and loadActive roundtrip excel escaped credential content" {
         var tmp = validated;
         tmp.deinit(alloc);
     }
-    try persistActive(&db, validated);
-    var active = (try loadActive(&db, alloc)).?;
-    defer active.deinit(alloc);
+    try persistActive(&db, &store, validated, alloc);
+    var loaded = try loadActive(&db, &store, alloc);
+    defer loaded.deinit(alloc);
+    try testing.expect(loaded == .active);
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, active.credential_json, .{});
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, loaded.active.credential_json, .{});
     defer parsed.deinit();
     try testing.expectEqualStrings("s3cr\"et\\with\nchars", json_util.getString(parsed.value, "client_secret").?);
 }
@@ -328,6 +365,8 @@ test "persistActive and loadActive roundtrip google" {
 
     var db = try GraphDb.init(":memory:");
     defer db.deinit();
+    var store = try secure_store.initTestMemory(alloc);
+    defer store.deinit(alloc);
     const validated = common.ValidatedDraft{
         .platform = .google,
         .profile = null,
@@ -341,11 +380,17 @@ test "persistActive and loadActive roundtrip google" {
         var tmp = validated;
         tmp.deinit(alloc);
     }
-    try persistActive(&db, validated);
-    var active = (try loadActive(&db, alloc)).?;
-    defer active.deinit(alloc);
-    try testing.expectEqual(common.ProviderId.google, active.platform);
-    try testing.expectEqualStrings("abc", active.target.google.sheet_id);
+    try persistActive(&db, &store, validated, alloc);
+    var loaded = try loadActive(&db, &store, alloc);
+    defer loaded.deinit(alloc);
+    try testing.expect(loaded == .active);
+    try testing.expectEqual(common.ProviderId.google, loaded.active.platform);
+    try testing.expectEqualStrings("abc", loaded.active.target.google.sheet_id);
+
+    try testing.expect((try db.getLatestCredential(alloc)) == null);
+    const credential_ref = (try db.getConfig("credential_ref", alloc)).?;
+    defer alloc.free(credential_ref);
+    try testing.expect(std.mem.startsWith(u8, credential_ref, "cred_"));
 }
 
 test "migrateLegacyGoogleConfig populates provider keys" {
@@ -355,13 +400,51 @@ test "migrateLegacyGoogleConfig populates provider keys" {
 
     var db = try GraphDb.init(":memory:");
     defer db.deinit();
+    var store = try secure_store.initTestMemory(alloc);
+    defer store.deinit(alloc);
     try db.storeCredential("{\"client_email\":\"svc@example.com\",\"private_key\":\"pem\"}");
     try db.storeConfig("sheet_id", "legacy-sheet");
-    try migrateLegacyGoogleConfig(&db, alloc);
+    try migrateLegacyGoogleConfig(&db, &store, alloc);
     const platform = (try db.getConfig("platform", alloc)).?;
     defer alloc.free(platform);
     try testing.expectEqualStrings("google", platform);
     const google_sheet_id = (try db.getConfig("google_sheet_id", alloc)).?;
     defer alloc.free(google_sheet_id);
     try testing.expectEqualStrings("legacy-sheet", google_sheet_id);
+}
+
+test "loadActive blocks on legacy plaintext credentials" {
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+
+    try db.storeConfig("platform", "google");
+    try db.storeConfig("workbook_url", "https://docs.google.com/spreadsheets/d/legacy-sheet/edit");
+    try db.storeConfig("workbook_label", "legacy-sheet");
+    try db.storeConfig("credential_display", "svc@example.com");
+    try db.storeConfig("google_sheet_id", "legacy-sheet");
+    try db.storeCredential("{\"client_email\":\"svc@example.com\",\"private_key\":\"pem\"}");
+
+    const loaded = try loadActive(&db, &store, testing.allocator);
+    try testing.expectEqual(common.LoadedConnection{ .blocked = .legacy_plaintext_credentials }, loaded);
+}
+
+test "loadActive blocks when secure secret is missing" {
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+
+    try db.storeConfig("platform", "google");
+    try db.storeConfig("workbook_url", "https://docs.google.com/spreadsheets/d/secure-sheet/edit");
+    try db.storeConfig("workbook_label", "secure-sheet");
+    try db.storeConfig("credential_display", "svc@example.com");
+    try db.storeConfig("google_sheet_id", "secure-sheet");
+    try db.storeConfig("credential_ref", "cred_missing");
+    try db.storeConfig("credential_backend", "test_memory");
+    try db.storeConfig("credential_store_version", "1");
+
+    const loaded = try loadActive(&db, &store, testing.allocator);
+    try testing.expectEqual(common.LoadedConnection{ .blocked = .secret_not_found }, loaded);
 }

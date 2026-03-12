@@ -18,6 +18,8 @@ const profile_mod = @import("profile.zig");
 const chain_mod = @import("chain.zig");
 const provision_mod = @import("provision.zig");
 const connection_mod = @import("connection.zig");
+const provider_common = @import("provider_common.zig");
+const secure_store_mod = @import("secure_store.zig");
 const online_provider = @import("online_provider.zig");
 const json_util = @import("json_util.zig");
 const guide_catalog = @import("guide_catalog.zig");
@@ -391,7 +393,7 @@ pub fn handleNode(db: *graph_live.GraphDb, node_id: []const u8, alloc: Allocator
 // GET /api/status
 // ---------------------------------------------------------------------------
 
-pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
+pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
     const last_sync = state.last_sync_at.load(.seq_cst);
     const has_error = state.has_error.load(.seq_cst);
     const sync_count = state.sync_count.load(.seq_cst);
@@ -406,10 +408,24 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, licens
     var err_buf: [256]u8 = undefined;
     const err_len = state.getError(&err_buf);
     const err_str = err_buf[0..err_len];
-    const loaded_active = try connection_mod.loadActive(db, alloc);
-    var active = loaded_active;
-    defer if (active) |*a| a.deinit(alloc);
-    const configured = active != null;
+    var loaded = try connection_mod.loadActive(db, secure_store, alloc);
+    defer loaded.deinit(alloc);
+    const configured = loaded == .active;
+    const block_reason: ?provider_common.ConnectionBlockReason = if (loaded == .blocked) loaded.blocked else null;
+
+    const platform_str = if (configured) try alloc.dupe(u8, online_provider.providerIdString(loaded.active.platform)) else blk: {
+        const stored = try db.getConfig("platform", alloc);
+        defer if (stored) |value| alloc.free(value);
+        if (stored) |value| break :blk try alloc.dupe(u8, value);
+        break :blk null;
+    };
+    defer if (platform_str) |value| alloc.free(value);
+    const credential_display = if (configured) if (loaded.active.credential_display) |value| try alloc.dupe(u8, value) else null else try db.getConfig("credential_display", alloc);
+    defer if (credential_display) |value| alloc.free(value);
+    const workbook_label = if (configured) try alloc.dupe(u8, loaded.active.workbook_label) else try db.getConfig("workbook_label", alloc);
+    defer if (workbook_label) |value| alloc.free(value);
+    const workbook_url = if (configured) try alloc.dupe(u8, loaded.active.workbook_url) else try db.getConfig("workbook_url", alloc);
+    defer if (workbook_url) |value| alloc.free(value);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -422,13 +438,17 @@ pub fn handleStatus(db: *graph_live.GraphDb, state: *sync_live.SyncState, licens
     try std.fmt.format(buf.writer(alloc), ",\"sync_count\":{d},\"license_valid\":{s},\"platform\":", .{
         sync_count, if (license_valid) "true" else "false",
     });
-    try appendJsonStrOpt(&buf, if (active) |a| online_provider.providerIdString(a.platform) else null, alloc);
+    try appendJsonStrOpt(&buf, platform_str, alloc);
     try buf.appendSlice(alloc, ",\"credential_display\":");
-    try appendJsonStrOpt(&buf, if (active) |a| a.credential_display else null, alloc);
+    try appendJsonStrOpt(&buf, credential_display, alloc);
     try buf.appendSlice(alloc, ",\"workbook_label\":");
-    try appendJsonStrOpt(&buf, if (active) |a| a.workbook_label else null, alloc);
+    try appendJsonStrOpt(&buf, workbook_label, alloc);
     try buf.appendSlice(alloc, ",\"workbook_url\":");
-    try appendJsonStrOpt(&buf, if (active) |a| a.workbook_url else null, alloc);
+    try appendJsonStrOpt(&buf, workbook_url, alloc);
+    try buf.appendSlice(alloc, ",\"connection_block_reason\":");
+    try appendJsonStrOpt(&buf, if (block_reason) |value| @tagName(value) else null, alloc);
+    try buf.appendSlice(alloc, ",\"secure_storage_backend\":");
+    try appendJsonStr(&buf, secure_store_mod.backendName(secure_store.backend), alloc);
     const profile = try db.getConfig("profile", alloc);
     defer if (profile) |value| alloc.free(value);
     try buf.appendSlice(alloc, ",\"profile\":");
@@ -556,12 +576,15 @@ fn appendJsonIntOpt(buf: *std.ArrayList(u8), value: ?i64, alloc: Allocator) !voi
 // POST /api/connection/validate
 // ---------------------------------------------------------------------------
 
-pub fn handleConnectionValidate(body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handleConnectionValidateResponse(body, alloc);
+pub fn handleConnectionValidate(store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) ![]const u8 {
+    const resp = try handleConnectionValidateResponse(store, body, alloc);
     return resp.body;
 }
 
-pub fn handleConnectionValidateResponse(body: []const u8, alloc: Allocator) !JsonRouteResponse {
+pub fn handleConnectionValidateResponse(store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) !JsonRouteResponse {
+    if (!secure_store_mod.backendSupported(store.*)) {
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
+    }
     var draft = connection_mod.parseDraftFromJson(body, alloc) catch |e| {
         std.log.warn("connection validate parse failed: {s}", .{@errorName(e)});
         return jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)}), false);
@@ -599,12 +622,15 @@ pub fn handleConnectionValidateResponse(body: []const u8, alloc: Allocator) !Jso
 // POST /api/connection
 // ---------------------------------------------------------------------------
 
-pub fn handleConnection(db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handleConnectionResponse(db, body, alloc);
+pub fn handleConnection(db: *graph_live.GraphDb, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) ![]const u8 {
+    const resp = try handleConnectionResponse(db, store, body, alloc);
     return resp.body;
 }
 
-pub fn handleConnectionResponse(db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) !JsonRouteResponse {
+pub fn handleConnectionResponse(db: *graph_live.GraphDb, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) !JsonRouteResponse {
+    if (!secure_store_mod.backendSupported(store.*)) {
+        return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
+    }
     var draft = connection_mod.parseDraftFromJson(body, alloc) catch |e| {
         std.log.warn("connection parse failed: {s}", .{@errorName(e)});
         return jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)}), false);
@@ -617,7 +643,15 @@ pub fn handleConnectionResponse(db: *graph_live.GraphDb, body: []const u8, alloc
     };
     defer validated.deinit(alloc);
 
-    try connection_mod.persistActive(db, validated);
+    connection_mod.persistActive(db, store, validated, alloc) catch |e| switch (e) {
+        error.SecureStorageUnsupported => {
+            return jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
+        },
+        else => {
+            std.log.err("connection persist failed: {s}", .{@errorName(e)});
+            return jsonRouteResponse(.internal_server_error, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"failed to persist secure credentials\"}"), false);
+        },
+    };
     std.log.info("connection persisted platform={s} workbook={s}", .{ online_provider.providerIdString(validated.platform), validated.workbook_label });
     try db.storeConfig("profile", draft.profile orelse "generic");
     db.deleteConfig("rtmify_provisioned") catch {};
@@ -641,6 +675,7 @@ pub fn handleConnectionResponse(db: *graph_live.GraphDb, body: []const u8, alloc
 /// query_profile: optional profile name from URL ?profile= param; overrides DB value.
 pub fn handleProvisionPreview(
     db: *graph_live.GraphDb,
+    secure_store: *secure_store_mod.Store,
     query_profile: ?[]const u8,
     alloc: Allocator,
 ) ![]const u8 {
@@ -649,32 +684,30 @@ pub fn handleProvisionPreview(
     defer if (query_profile == null) alloc.free(prof_name);
     const pid = profile_mod.fromString(prof_name) orelse .generic;
     const prof = profile_mod.get(pid);
-    const loaded_active = try connection_mod.loadActive(db, alloc);
-    var active = loaded_active;
-    defer if (active) |*a| a.deinit(alloc);
-    if (active == null) {
+    var loaded = try connection_mod.loadActive(db, secure_store, alloc);
+    defer loaded.deinit(alloc);
+    if (loaded != .active) {
         return alloc.dupe(u8, "{\"ready\":false,\"reason\":\"missing_credentials_or_sheet\"}");
     }
 
-    const preview = getProvisionPreviewForActive(active.?, prof, alloc) catch {
+    const preview = getProvisionPreviewForActive(loaded.active, prof, alloc) catch {
         return alloc.dupe(u8, "{\"ready\":false,\"reason\":\"preview_failed\"}");
     };
     return preview;
 }
 
-pub fn handleProvision(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    const resp = try handleProvisionResponse(db, alloc);
+pub fn handleProvision(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, alloc: Allocator) ![]const u8 {
+    const resp = try handleProvisionResponse(db, secure_store, alloc);
     return resp.body;
 }
 
-pub fn handleProvisionResponse(db: *graph_live.GraphDb, alloc: Allocator) !JsonRouteResponse {
+pub fn handleProvisionResponse(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, alloc: Allocator) !JsonRouteResponse {
     const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
     defer alloc.free(prof_name);
-    const loaded_active = try connection_mod.loadActive(db, alloc);
-    var active = loaded_active;
-    defer if (active) |*a| a.deinit(alloc);
+    var loaded = try connection_mod.loadActive(db, secure_store, alloc);
+    defer loaded.deinit(alloc);
 
-    if (active == null) {
+    if (loaded != .active) {
         const diag = [_]InlineDiagnostic{
             makeInlineDiagnostic(1207, "info", "Industry profile not configured", "Missing credential or sheet configuration for provisioning", "profile", null, "{}"),
         };
@@ -683,7 +716,7 @@ pub fn handleProvisionResponse(db: *graph_live.GraphDb, alloc: Allocator) !JsonR
 
     const pid = profile_mod.fromString(prof_name) orelse .generic;
     const prof = profile_mod.get(pid);
-    var runtime = try online_provider.ProviderRuntime.init(active.?, alloc);
+    var runtime = try online_provider.ProviderRuntime.init(loaded.active, alloc);
     defer runtime.deinit(alloc);
     const created = try provision_mod.provisionWorkbook(&runtime, prof, alloc);
     defer {
@@ -2145,8 +2178,10 @@ test "handleProvisionPreview returns ready false without credential or sheet" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
 
-    const resp = try handleProvisionPreview(&db, null, alloc);
+    const resp = try handleProvisionPreview(&db, &store, null, alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "\"ready\":false") != null);
 }
 
@@ -2157,25 +2192,31 @@ test "gitless mode status is configured and repos list is empty" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
 
     var state: sync_live.SyncState = .{};
 
-    try db.storeCredential("{\"platform\":\"google\",\"client_email\":\"svc@example.com\",\"private_key\":\"key\"}");
     try db.storeConfig("platform", "google");
     try db.storeConfig("google_sheet_id", "sheet-123");
     try db.storeConfig("workbook_url", "https://docs.google.com/spreadsheets/d/sheet-123/edit");
     try db.storeConfig("workbook_label", "sheet-123");
     try db.storeConfig("credential_display", "svc@example.com");
+    try db.storeConfig("credential_ref", "cred_status");
+    try db.storeConfig("credential_backend", "test_memory");
+    try db.storeConfig("credential_store_version", "1");
+    try store.put(alloc, "cred_status", "{\"platform\":\"google\",\"client_email\":\"svc@example.com\",\"private_key\":\"key\"}");
 
     var license_service = try license.initDefaultStub(alloc, .{});
     defer license_service.deinit(alloc);
     var activation = try license_service.activate(alloc, .{ .license_key = license.DEV_KEY });
     defer activation.deinit(alloc);
 
-    const status = try handleStatus(&db, &state, &license_service, alloc);
+    const status = try handleStatus(&db, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"platform\":\"google\"") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"credential_display\":\"svc@example.com\"") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"secure_storage_backend\":\"test_memory\"") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"license_valid\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":false") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":0") != null);
@@ -2192,6 +2233,8 @@ test "handleStatus includes repo scan lifecycle fields" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
 
     var state: sync_live.SyncState = .{};
     state.repo_scan_in_progress.store(true, .seq_cst);
@@ -2200,11 +2243,52 @@ test "handleStatus includes repo scan lifecycle fields" {
 
     var license_service = try license.initDefaultStub(alloc, .{});
     defer license_service.deinit(alloc);
-    const status = try handleStatus(&db, &state, &license_service, alloc);
+    const status = try handleStatus(&db, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":123") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_finished_at\":456") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"license_valid\":false") != null);
+}
+
+test "handleStatus reports legacy plaintext connection as blocked" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
+    var state: sync_live.SyncState = .{};
+
+    try db.storeConfig("platform", "google");
+    try db.storeConfig("google_sheet_id", "legacy-sheet");
+    try db.storeConfig("workbook_url", "https://docs.google.com/spreadsheets/d/legacy-sheet/edit");
+    try db.storeConfig("workbook_label", "legacy-sheet");
+    try db.storeConfig("credential_display", "svc@example.com");
+    try db.storeCredential("{\"platform\":\"google\",\"client_email\":\"svc@example.com\",\"private_key\":\"pem\"}");
+
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+
+    const status = try handleStatus(&db, &store, &state, &license_service, alloc);
+    try testing.expect(std.mem.indexOf(u8, status, "\"configured\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"connection_block_reason\":\"legacy_plaintext_credentials\"") != null);
+}
+
+test "handleConnectionValidateResponse rejects unsupported secure store" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var store = try @import("secure_store_unsupported.zig").init(alloc);
+    defer store.deinit(alloc);
+
+    const body =
+        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"client_email\\\":\\\"svc@example.com\\\",\\\"private_key\\\":\\\"pem\\\"}\"}}";
+    const resp = try handleConnectionValidateResponse(&store, body, alloc);
+    try testing.expectEqual(std.http.Status.bad_request, resp.status);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"error\":\"secure_storage_unavailable\"") != null);
 }
 
 test "handleLicenseStatus returns structured license JSON" {
@@ -2830,11 +2914,16 @@ test "app_js smoke covers dashboard behavior and moved api bindings" {
     try testing.expect(std.mem.indexOf(u8, app_js, "const { node, edges_out, edges_in } = data;") != null);
     try testing.expect(std.mem.indexOf(u8, app_js, "function humanEdgeLabel(") != null);
     try testing.expect(std.mem.indexOf(u8, app_js, "openGuideForCode(") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "deleteRepo(${Number.isInteger(r.slot) ? r.slot : 0})") != null);
     try testing.expect(std.mem.indexOf(u8, app_js, "uploadSaFile") != null);
     try testing.expect(std.mem.indexOf(u8, app_js, "clearCredential") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"toggle-row\"") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"open-guide\"") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"select-profile\"") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"delete-repo\"") != null);
     try testing.expect(std.mem.indexOf(u8, app_js, "function explainGap(") == null);
     try testing.expect(std.mem.indexOf(u8, app_js, "toggleGapHelp(") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "onclick=") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "onkeydown=") == null);
     try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(f.properties") == null);
     try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(a.properties") == null);
     try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(c.properties") == null);

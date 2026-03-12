@@ -5,6 +5,7 @@ const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
 const server = @import("server.zig");
 const connection_mod = @import("connection.zig");
+const secure_store_mod = @import("secure_store.zig");
 const online_provider = @import("online_provider.zig");
 const log_sink = @import("log_sink.zig");
 const rtmify = @import("rtmify");
@@ -162,7 +163,10 @@ pub fn main() !void {
         try g.storeConfig("log_path", default_log_path);
     }
 
-    try connection_mod.migrateLegacyGoogleConfig(&g, gpa);
+    var secure_store = try secure_store_mod.initDefault(gpa);
+    defer secure_store.deinit(gpa);
+
+    try connection_mod.migrateLegacyGoogleConfig(&g, &secure_store, gpa);
 
     var state: sync_live.SyncState = .{};
 
@@ -173,12 +177,11 @@ pub fn main() !void {
         std.log.warn("license check: {s} — product routes will be gated", .{@tagName(startup_license_status.state)});
     }
 
-    const loaded_active = try connection_mod.loadActive(&g, gpa);
+    var loaded_active = try connection_mod.loadActive(&g, &secure_store, gpa);
+    defer loaded_active.deinit(gpa);
     if (startup_license_status.permits_use) {
-        if (loaded_active) |active_value| {
-            var active = active_value;
-            defer active.deinit(gpa);
-            const started = maybeStartSync(&g, &state, active, gpa) catch |e| blk: {
+        if (loaded_active == .active) {
+            const started = maybeStartSync(&g, &state, loaded_active.active, gpa) catch |e| blk: {
                 std.log.warn("sync thread not started: {s}", .{@errorName(e)});
                 break :blk false;
             };
@@ -236,7 +239,7 @@ pub fn main() !void {
     // Find first available port (8000-8010) via quick probe
     var actual_port = port;
     while (actual_port <= port + 10) : (actual_port += 1) {
-        const probe_addr = try std.net.Address.parseIp("0.0.0.0", actual_port);
+        const probe_addr = try std.net.Address.parseIp("127.0.0.1", actual_port);
         var probe = probe_addr.listen(.{ .reuse_address = true }) catch |e| {
             if (e == error.AddressInUse) {
                 std.log.warn("port {d} in use, trying {d}...", .{ actual_port, actual_port + 1 });
@@ -263,6 +266,7 @@ pub fn main() !void {
     // Start HTTP server (blocks until shutdown)
     const ctx: server.ServerCtx = .{
         .db = &g,
+        .secure_store = &secure_store,
         .state = &state,
         .license_service = &license_service,
         .alloc = gpa,
@@ -279,15 +283,15 @@ fn resolveDbPath(alloc: std.mem.Allocator, db_path: []const u8) ![]u8 {
 }
 
 /// Callback passed to ServerCtx so that POST /api/connection can trigger sync start.
-fn startSyncCallback(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: std.mem.Allocator) void {
+fn startSyncCallback(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, alloc: std.mem.Allocator) void {
     // Guard: only start once
     if (state.sync_started.load(.seq_cst)) return;
 
-    const active = connection_mod.loadActive(db, alloc) catch return;
-    var conn = active orelse return;
-    defer conn.deinit(alloc);
+    var loaded = connection_mod.loadActive(db, secure_store, alloc) catch return;
+    defer loaded.deinit(alloc);
+    if (loaded != .active) return;
 
-    const started = maybeStartSync(db, state, conn, alloc) catch |e| blk: {
+    const started = maybeStartSync(db, state, loaded.active, alloc) catch |e| blk: {
         std.log.warn("POST /api/connection: sync start failed: {s}", .{@errorName(e)});
         break :blk false;
     };
@@ -337,7 +341,7 @@ fn unescapeNewlines(s: []const u8, alloc: std.mem.Allocator) ![]u8 {
 }
 
 fn openBrowser(port: u16, alloc: std.mem.Allocator) !void {
-    const url = try std.fmt.allocPrint(alloc, "http://localhost:{d}", .{port});
+    const url = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}", .{port});
     defer alloc.free(url);
 
     const cmd: []const []const u8 = switch (@import("builtin").os.tag) {

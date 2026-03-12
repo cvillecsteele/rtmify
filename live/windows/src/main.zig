@@ -186,7 +186,7 @@ fn trayIcon(hwnd: HWND, msg: DWORD) void {
 
 fn openDashboard(hwnd: HWND) void {
     var url_buf: [64]u8 = undefined;
-    const url_utf8 = std.fmt.bufPrintZ(&url_buf, "http://localhost:{d}", .{g_port}) catch return;
+    const url_utf8 = std.fmt.bufPrintZ(&url_buf, "http://127.0.0.1:{d}", .{g_port}) catch return;
     var url_wide: [64:0]u16 = std.mem.zeroes([64:0]u16);
     _ = std.unicode.utf8ToUtf16Le(&url_wide, url_utf8) catch return;
     _ = ShellExecuteW(hwnd, W("open"), &url_wide, null, null, 1);

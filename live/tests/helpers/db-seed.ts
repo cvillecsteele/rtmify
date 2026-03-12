@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 
 function sqlQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -21,6 +22,25 @@ function edgeId(fromId: string, toId: string, label: string): string {
 
 function runSql(dbPath: string, sql: string): void {
   execFileSync('sqlite3', [dbPath, sql], { stdio: 'pipe' });
+}
+
+export function secureStoreFilePath(dbPath: string): string {
+  return `${dbPath}.secure-store.json`;
+}
+
+export function writeSecureCredential(dbPath: string, credentialRef: string, secretJson: string): void {
+  const filePath = secureStoreFilePath(dbPath);
+  let current: Record<string, string> = {};
+  if (fs.existsSync(filePath)) {
+    current = JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, string>;
+  }
+  current[credentialRef] = secretJson;
+  fs.writeFileSync(filePath, JSON.stringify(current));
+}
+
+export function clearSecureStoreFile(dbPath: string): void {
+  const filePath = secureStoreFilePath(dbPath);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
 export function setConfig(dbPath: string, key: string, value: string): void {
@@ -135,18 +155,21 @@ export function seedConfiguredGraph(dbPath: string, options?: {
   userNeedStatement?: string;
 }): { requirementId: string; userNeedId: string } {
   initSchema(dbPath);
+  clearSecureStoreFile(dbPath);
   const requirementId = options?.requirementId || 'REQ-001';
   const userNeedId = options?.userNeedId || 'UN-001';
-  const now = nowTs();
+  const credentialRef = 'cred_google_seeded';
+  writeSecureCredential(dbPath, credentialRef, '{"platform":"google","client_email":"svc@example.com","private_key":"pem"}');
   runSql(dbPath, `
-INSERT OR REPLACE INTO credentials (id, content, created_at)
-VALUES ('cred-google', '{"platform":"google","client_email":"svc@example.com","private_key":"pem"}', ${now});
 INSERT OR REPLACE INTO config (key, value) VALUES
 ('platform', 'google'),
 ('workbook_url', 'https://docs.google.com/spreadsheets/d/fake-sheet/edit'),
 ('workbook_label', 'fake-sheet'),
 ('credential_display', 'svc@example.com'),
 ('google_sheet_id', 'fake-sheet'),
+('credential_ref', '${credentialRef}'),
+('credential_backend', 'test_memory'),
+('credential_store_version', '1'),
 ('profile', 'generic');
 `);
   insertNode(dbPath, userNeedId, 'UserNeed', {
@@ -162,4 +185,21 @@ INSERT OR REPLACE INTO config (key, value) VALUES
   });
   insertEdge(dbPath, requirementId, userNeedId, 'DERIVES_FROM');
   return { requirementId, userNeedId };
+}
+
+export function seedLegacyPlaintextConnection(dbPath: string): void {
+  initSchema(dbPath);
+  clearSecureStoreFile(dbPath);
+  const now = nowTs();
+  runSql(dbPath, `
+INSERT OR REPLACE INTO credentials (id, content, created_at)
+VALUES ('cred-google', '{"platform":"google","client_email":"svc@example.com","private_key":"pem"}', ${now});
+INSERT OR REPLACE INTO config (key, value) VALUES
+('platform', 'google'),
+('workbook_url', 'https://docs.google.com/spreadsheets/d/fake-sheet/edit'),
+('workbook_label', 'fake-sheet'),
+('credential_display', 'svc@example.com'),
+('google_sheet_id', 'fake-sheet'),
+('profile', 'generic');
+`);
 }

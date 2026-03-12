@@ -8,6 +8,7 @@ const license = @import("rtmify").license;
 const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
 const routes = @import("routes.zig");
+const secure_store = @import("secure_store.zig");
 const json_util = @import("json_util.zig");
 const profile_mod = @import("profile.zig");
 const chain_mod = @import("chain.zig");
@@ -80,12 +81,12 @@ const initialize_result =
 
 const json_rpc_headers = [_]std.http.Header{
     .{ .name = "Content-Type", .value = "application/json" },
-    .{ .name = "Access-Control-Allow-Origin", .value = "*" },
     .{ .name = "Connection", .value = "close" },
 };
 
-pub fn handleSse(req: *std.http.Server.Request, db: *graph_live.GraphDb, alloc: Allocator) !void {
+pub fn handleSse(req: *std.http.Server.Request, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, alloc: Allocator) !void {
     _ = db;
+    _ = secure_store_ref;
     _ = alloc;
     const body =
         "event: endpoint\r\n" ++
@@ -95,7 +96,6 @@ pub fn handleSse(req: *std.http.Server.Request, db: *graph_live.GraphDb, alloc: 
         .{ .name = "Content-Type", .value = "text/event-stream" },
         .{ .name = "Cache-Control", .value = "no-cache" },
         .{ .name = "Connection", .value = "close" },
-        .{ .name = "Access-Control-Allow-Origin", .value = "*" },
     };
     try req.respond(body, .{ .status = .ok, .extra_headers = &sse_headers, .keep_alive = false });
 }
@@ -104,6 +104,7 @@ pub fn handlePost(
     req: *std.http.Server.Request,
     body: []const u8,
     db: *graph_live.GraphDb,
+    secure_store_ref: *secure_store.Store,
     state: *sync_live.SyncState,
     alloc: Allocator,
 ) !void {
@@ -137,29 +138,29 @@ pub fn handlePost(
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "tools/call")) {
-        try dispatchToolCall(req, root, id_raw, db, state, alloc);
+        try dispatchToolCall(req, root, id_raw, db, secure_store_ref, state, alloc);
     } else if (std.mem.eql(u8, method, "resources/list")) {
         const result = try resourcesListResult(db, alloc);
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "resources/read")) {
-        try dispatchResourceRead(req, root, id_raw, db, state, alloc);
+        try dispatchResourceRead(req, root, id_raw, db, secure_store_ref, state, alloc);
     } else if (std.mem.eql(u8, method, "prompts/list")) {
         const result = try promptsListResult(alloc);
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "prompts/get")) {
-        try dispatchPromptGet(req, root, id_raw, db, state, alloc);
+        try dispatchPromptGet(req, root, id_raw, db, secure_store_ref, state, alloc);
     } else {
         try sendError(req, id_raw, -32601, "Method not found", alloc);
     }
 }
 
-fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) !void {
+fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const name = json_util.getString(params, "name") orelse return sendError(req, id_raw, -32602, "Missing tool name", alloc);
     const args = json_util.getObjectField(params, "arguments");
-    const payload = buildToolPayload(name, args, db, state, alloc) catch |e| switch (e) {
+    const payload = buildToolPayload(name, args, db, secure_store_ref, state, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid arguments", alloc),
         else => return e,
@@ -168,10 +169,10 @@ fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw:
     try sendToolPayload(req, id_raw, payload, alloc);
 }
 
-fn dispatchResourceRead(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) !void {
+fn dispatchResourceRead(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const uri = json_util.getString(params, "uri") orelse return sendError(req, id_raw, -32602, "Missing uri", alloc);
-    const result = resourceReadResult(uri, db, state, alloc) catch |e| switch (e) {
+    const result = resourceReadResult(uri, db, secure_store_ref, state, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Resource not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid resource URI", alloc),
         else => return e,
@@ -180,11 +181,11 @@ fn dispatchResourceRead(req: *std.http.Server.Request, root: std.json.Value, id_
     try sendResult(req, id_raw, result, alloc);
 }
 
-fn dispatchPromptGet(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) !void {
+fn dispatchPromptGet(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const name = json_util.getString(params, "name") orelse return sendError(req, id_raw, -32602, "Missing prompt name", alloc);
     const args = json_util.getObjectField(params, "arguments");
-    const result = promptGetResult(name, args, db, state, alloc) catch |e| switch (e) {
+    const result = promptGetResult(name, args, db, secure_store_ref, state, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Prompt not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid prompt arguments", alloc),
         else => return e,
@@ -193,7 +194,7 @@ fn dispatchPromptGet(req: *std.http.Server.Request, root: std.json.Value, id_raw
     try sendResult(req, id_raw, result, alloc);
 }
 
-fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) !ToolPayload {
+fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !ToolPayload {
     if (std.mem.eql(u8, name, "get_rtm")) {
         const data = try routes.handleRtm(db, alloc);
         defer alloc.free(data);
@@ -242,7 +243,7 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
     } else if (std.mem.eql(u8, name, "get_status")) {
         var license_service = try license.initDefaultLemonSqueezy(alloc, .{});
         defer license_service.deinit(alloc);
-        const data = try routes.handleStatus(db, state, &license_service, alloc);
+        const data = try routes.handleStatus(db, secure_store_ref, state, &license_service, alloc);
         return .{ .text = data };
     } else if (std.mem.eql(u8, name, "clear_suspect")) {
         const node_id = try requireStringArg(args, "id");
@@ -313,7 +314,7 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         const id = try requireStringArg(args, "id");
         return .{ .text = try impactMarkdown(id, db, alloc) };
     } else if (std.mem.eql(u8, name, "status_summary")) {
-        return .{ .text = try statusMarkdown(db, state, alloc) };
+        return .{ .text = try statusMarkdown(db, secure_store_ref, state, alloc) };
     } else if (std.mem.eql(u8, name, "review_summary")) {
         return .{ .text = try reviewSummaryMarkdown(db, state, alloc) };
     }
@@ -521,7 +522,7 @@ fn resourcesListResult(db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
     return alloc.dupe(u8, buf.items);
 }
 
-fn resourceReadResult(uri: []const u8, db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn resourceReadResult(uri: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
     const text = if (std.mem.startsWith(u8, uri, "requirement://"))
         try requirementTraceMarkdown(uri[14..], db, alloc)
     else if (std.mem.startsWith(u8, uri, "user-need://"))
@@ -544,7 +545,7 @@ fn resourceReadResult(uri: []const u8, db: *graph_live.GraphDb, state: *sync_liv
         const code = std.fmt.parseInt(u16, rest[0..slash], 10) catch return error.InvalidArgument;
         break :blk try gapExplanationMarkdown(code, rest[slash + 1 ..], db, alloc);
     } else if (std.mem.eql(u8, uri, "report://status"))
-        try statusMarkdown(db, state, alloc)
+        try statusMarkdown(db, secure_store_ref, state, alloc)
     else if (std.mem.eql(u8, uri, "report://chain-gaps"))
         try chainGapSummaryMarkdown(db, alloc)
     else if (std.mem.eql(u8, uri, "report://rtm"))
@@ -571,8 +572,9 @@ fn promptsListResult(alloc: Allocator) ![]u8 {
     return std.fmt.allocPrint(alloc, "{{\"prompts\":{s}}}", .{prompts_json});
 }
 
-fn promptGetResult(name: []const u8, args: ?std.json.Value, db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn promptGetResult(name: []const u8, args: ?std.json.Value, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
     _ = db;
+    _ = secure_store_ref;
     _ = state;
     const body = if (std.mem.eql(u8, name, "trace_requirement")) blk: {
         const id = try requireStringArg(args, "id");
@@ -727,12 +729,12 @@ fn impactMarkdown(node_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator
     return alloc.dupe(u8, buf.items);
 }
 
-fn statusMarkdown(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn statusMarkdown(db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var license_service = try license.initDefaultLemonSqueezy(arena, .{});
-    const data = try routes.handleStatus(db, state, &license_service, arena);
+    const data = try routes.handleStatus(db, secure_store_ref, state, &license_service, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();
     var buf: std.ArrayList(u8) = .empty;
@@ -1155,7 +1157,9 @@ test "resources read returns requirement markdown" {
     try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need\"}", null);
     try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
     var state: sync_live.SyncState = .{};
-    const resp = try resourceReadResult("requirement://REQ-001", &db, &state, testing.allocator);
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    const resp = try resourceReadResult("requirement://REQ-001", &db, &store, &state, testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "# Requirement REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "User Needs") != null);
@@ -1168,7 +1172,9 @@ test "resources read returns impact markdown" {
     try db.addNode("REQ-001", "Requirement", "{}", null);
     try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
     var state: sync_live.SyncState = .{};
-    const resp = try resourceReadResult("impact://UN-001", &db, &state, testing.allocator);
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    const resp = try resourceReadResult("impact://UN-001", &db, &store, &state, testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "# Impact Analysis for UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-001") != null);
@@ -1182,7 +1188,9 @@ test "resources read returns gap markdown" {
     try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need\"}", null);
     try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
     var state: sync_live.SyncState = .{};
-    const resp = try resourceReadResult("gap://1203/REQ-001", &db, &state, testing.allocator);
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    const resp = try resourceReadResult("gap://1203/REQ-001", &db, &store, &state, testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "What RTMify Checked") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-001") != null);
@@ -1192,7 +1200,9 @@ test "resources read invalid uri returns error" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
     var state: sync_live.SyncState = .{};
-    try testing.expectError(error.NotFound, resourceReadResult("unknown://x", &db, &state, testing.allocator));
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    try testing.expectError(error.NotFound, resourceReadResult("unknown://x", &db, &store, &state, testing.allocator));
 }
 
 test "prompts list returns expected names" {
@@ -1209,7 +1219,9 @@ test "prompts get interpolates arguments" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
     var state: sync_live.SyncState = .{};
-    const resp = try promptGetResult("trace_requirement", .{ .object = args_obj }, &db, &state, testing.allocator);
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    const resp = try promptGetResult("trace_requirement", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "design-history://REQ-001") != null);
@@ -1222,6 +1234,12 @@ test "tools list contains legacy and new tools" {
     try testing.expect(std.mem.indexOf(u8, tools_json, "implementation_changes_since") != null);
 }
 
+test "mcp headers do not advertise wildcard cors" {
+    for (json_rpc_headers) |header| {
+        try testing.expect(!std.ascii.eqlIgnoreCase(header.name, "Access-Control-Allow-Origin"));
+    }
+}
+
 test "large output tools honor limit with truncation note" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
@@ -1231,7 +1249,9 @@ test "large output tools honor limit with truncation note" {
     defer args_obj.deinit();
     try args_obj.put("limit", .{ .integer = 1 });
     var state: sync_live.SyncState = .{};
-    const payload = try buildToolPayload("get_rtm", .{ .object = args_obj }, &db, &state, testing.allocator);
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    const payload = try buildToolPayload("get_rtm", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
     defer payload.deinit(testing.allocator);
     try testing.expect(payload.note != null);
     try testing.expect(std.mem.indexOf(u8, payload.text, "REQ-001") != null or std.mem.indexOf(u8, payload.text, "REQ-002") != null);
@@ -1256,7 +1276,9 @@ test "implementation changes tool returns bounded rows" {
     try args_obj.put("limit", .{ .integer = 1 });
 
     var state: sync_live.SyncState = .{};
-    const payload = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &db, &state, testing.allocator);
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    const payload = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
     defer payload.deinit(testing.allocator);
     try testing.expect(std.mem.indexOf(u8, payload.text, "\"node_id\":\"REQ-001\"") != null);
     try testing.expect(payload.note != null);

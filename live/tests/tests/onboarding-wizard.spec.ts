@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
-import { initSchema, seedConfiguredGraph } from '../helpers/db-seed';
+import { initSchema, seedConfiguredGraph, seedLegacyPlaintextConnection } from '../helpers/db-seed';
 
 const DEV_LICENSE_KEY = 'RTMIFY-DEV-0000-0000';
 
@@ -94,6 +94,62 @@ test('wizard can be reopened after a successful connect flow', async ({ page }) 
     await page.locator('.header-home-btn').click();
     await expect(page.getByRole('heading', { name: 'What standard governs your work?' })).toBeVisible();
     await expect(page.locator('.profile-list')).toBeVisible();
+  } finally {
+    await server.stop();
+    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+  }
+});
+
+test('legacy plaintext connection shows reconnect-required message', async ({ page }) => {
+  const dbPath = makeDbPath('rtmify-live-legacy-plaintext-');
+  seedLegacyPlaintextConnection(dbPath);
+  const port = await findFreePort();
+  const server = await startServer({ dbPath, port });
+
+  try {
+    await page.goto(server.baseUrl);
+    await ensureLicensed(page);
+
+    await expect(page.getByText('This workspace was configured before secure credential storage.')).toBeVisible();
+    await expect(page.locator('#lobby')).toHaveClass(/visible/);
+    await expect(page.locator('#req-body')).not.toBeVisible();
+  } finally {
+    await server.stop();
+    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+  }
+});
+
+test('unsupported secure storage shows explicit connect failure', async ({ page }) => {
+  const dbPath = makeDbPath('rtmify-live-unsupported-store-');
+  initSchema(dbPath);
+  const port = await findFreePort();
+  const server = await startServer({
+    dbPath,
+    port,
+    env: { RTMIFY_SECURE_STORE_BACKEND: 'unsupported' },
+  });
+
+  try {
+    await page.goto(server.baseUrl);
+    await ensureLicensed(page);
+    await expect(page.getByRole('heading', { name: 'What standard governs your work?' })).toBeVisible();
+
+    await page.locator('.profile-row[data-profile-id="medical"]').click();
+    await page.locator('[data-screen="1"] .authorize-btn').click();
+    await page.locator('[data-screen="2"] .authorize-btn').click();
+    await page.setInputFiles('#sa-file-input', {
+      name: 'service-account.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify({
+        client_email: 'svc@example.com',
+        private_key: 'pem',
+      })),
+    });
+    await page.locator('#lobby-url').fill('https://docs.google.com/spreadsheets/d/fake-sheet/edit');
+    await page.getByRole('button', { name: 'Review →' }).click();
+    await page.getByRole('button', { name: 'Authorize & Connect' }).click();
+
+    await expect(page.locator('#lobby-error')).toContainText('Secure credential storage is not available on this platform.');
   } finally {
     await server.stop();
     fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });

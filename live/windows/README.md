@@ -48,7 +48,7 @@ zig build test-live
 When the user clicks `Start Server`:
 
 1. the tray shell spawns `rtmify-live.exe`
-2. it waits for `http://localhost:<port>/api/status` to become reachable
+2. it waits for `http://127.0.0.1:<port>/api/status` to become reachable
 3. only then does it mark the server `Running`
 4. then it opens the dashboard in the default browser
 

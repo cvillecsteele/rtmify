@@ -10,6 +10,8 @@ The key UX model is:
 
 RTMify Live is not a traditional native desktop app with native controls for the full product surface, and it is not a remote web app backed by a hosted service. It is a local-first application whose primary user interface is a browser UI delivered by a local Zig process.
 
+The HTTP surface is intentionally loopback-only. `rtmify-live` binds `127.0.0.1`, opens the browser against that loopback origin, and does not support CORS or remote multi-user access.
+
 ## Core Pattern
 
 RTMify Live uses a `native shim + embedded webserver + browser UI` architecture.
@@ -114,7 +116,7 @@ Native shell (optional, platform-specific)
         v
   rtmify-live local process
         |
-        | serves HTTP on localhost
+        | serves HTTP on 127.0.0.1
         v
  Default browser renders embedded dashboard UI
 ```
@@ -161,7 +163,7 @@ Developers should treat the layer boundaries this way.
 - start and stop `rtmify-live`
 - know where logs and DB live for that platform
 - reflect runtime state in tray/menu UI
-- open `http://localhost:<port>`
+- open `http://127.0.0.1:<port>`
 
 ### Local runtime responsibilities
 
@@ -187,8 +189,8 @@ The common startup path is:
 1. A user launches either `rtmify-live` directly or a native shell.
 2. The native shell, if present, starts `rtmify-live`.
 3. `rtmify-live` opens the SQLite DB, loads config, and starts background workers.
-4. `rtmify-live` binds an HTTP port on localhost.
-5. The browser opens to `http://localhost:<port>`.
+4. `rtmify-live` binds an HTTP port on loopback (`127.0.0.1`).
+5. The browser opens to `http://127.0.0.1:<port>`.
 6. The embedded web UI loads and hydrates itself by calling local JSON routes.
 
 On Windows, the tray shell waits for `/api/status` before marking the server as running and opening the dashboard.
