@@ -62,11 +62,18 @@ pub fn walkChain(db: *GraphDb, profile: Profile, alloc: Allocator) ![]Gap {
                     "{s} '{s}' has no {s} edge to a {s}",
                     .{ step.from_type.toString(), node_id, step.edge_label.toString(), step.to_type.toString() },
                 ),
-                .incoming => try std.fmt.allocPrint(
-                    alloc,
-                    "{s} '{s}' has no incoming {s} edge from a {s}",
-                    .{ step.from_type.toString(), node_id, step.edge_label.toString(), step.to_type.toString() },
-                ),
+                .incoming => if (step.from_type == .user_need and step.edge_label == .derives_from and step.to_type == .requirement)
+                    try std.fmt.allocPrint(
+                        alloc,
+                        "UserNeed '{s}' has no downstream Requirements",
+                        .{node_id},
+                    )
+                else
+                    try std.fmt.allocPrint(
+                        alloc,
+                        "{s} '{s}' has no incoming {s} edge from a {s}",
+                        .{ step.from_type.toString(), node_id, step.edge_label.toString(), step.to_type.toString() },
+                    ),
             };
             try gaps.append(alloc, .{
                 .code = step.code,
@@ -92,7 +99,7 @@ pub fn walkSpecialGaps(db: *GraphDb, profile: Profile, alloc: Allocator) ![]Gap 
 
 fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gaps: *std.ArrayList(Gap)) !void {
     switch (check.kind) {
-        .unimplemented_requirement => try appendMissingEdgeGap(db, "Requirement", "IMPLEMENTED_IN", check, "unimplemented_requirement", "Requirement '{s}' has no IMPLEMENTED_IN edge to a source file", alloc, gaps),
+        .unimplemented_requirement => try appendMissingEdgeGap(db, "Requirement", "IMPLEMENTED_IN", check, "unimplemented_requirement", "Requirement '{s}' has no current source implementation evidence", alloc, gaps),
         .untested_source_file => try appendMissingEdgeGap(db, "SourceFile", "VERIFIED_BY_CODE", check, "untested_source_file", "SourceFile '{s}' has no VERIFIED_BY_CODE edge to a test file", alloc, gaps),
         .req_without_design_input => try appendMissingEdgeGap(db, "Requirement", "ALLOCATED_TO", check, "req_without_design_input", "Requirement '{s}' has no ALLOCATED_TO edge to a design input", alloc, gaps),
         .design_input_without_design_output => try appendMissingEdgeGap(db, "DesignInput", "SATISFIED_BY", check, "design_input_without_design_output", "DesignInput '{s}' has no SATISFIED_BY edge to a design output", alloc, gaps),
@@ -104,7 +111,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\  AND EXISTS (SELECT 1 FROM edges e WHERE e.from_id=n.id AND e.label='IMPLEMENTED_IN')
             \\  AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id=n.id AND e.label='COMMITTED_IN')
             \\ORDER BY n.id
-        , check, "uncommitted_requirement", "Requirement '{s}' has IMPLEMENTED_IN edges but no COMMITTED_IN edge", alloc, gaps),
+        , check, "uncommitted_requirement", "Requirement '{s}' has implementation evidence but no explicit commit-message trace", alloc, gaps),
         .unattributed_annotation => try appendQueryGaps(db,
             \\SELECT id FROM nodes
             \\WHERE type='CodeAnnotation'
@@ -115,7 +122,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      json_extract(properties,'$.author_time') = 0
             \\  )
             \\ORDER BY id
-        , check, "unattributed_annotation", "CodeAnnotation '{s}' is missing blame attribution", alloc, gaps),
+        , check, "unattributed_annotation", "RTMify found a requirement tag at {s}, but could not determine who last changed that line", alloc, gaps),
         .hlr_without_llr => try appendQueryGaps(db,
             \\SELECT n.id FROM nodes n
             \\WHERE n.type='Requirement'
@@ -128,7 +135,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      WHERE e.from_id = n.id AND e.label='REFINED_BY' AND child.type='Requirement'
             \\  )
             \\ORDER BY n.id
-        , check, "hlr_without_llr", "Requirement '{s}' has no REFINED_BY edge to a low-level requirement", alloc, gaps),
+        , check, "hlr_without_llr", "Requirement '{s}' has no downstream lower-level Requirements", alloc, gaps),
         .llr_without_source => try appendQueryGaps(db,
             \\SELECT child.id FROM nodes child
             \\WHERE child.type='Requirement'
@@ -140,7 +147,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\      SELECT 1 FROM edges e WHERE e.from_id = child.id AND e.label='IMPLEMENTED_IN'
             \\  )
             \\ORDER BY child.id
-        , check, "llr_without_source", "Requirement '{s}' is decomposed but has no IMPLEMENTED_IN edge", alloc, gaps),
+        , check, "llr_without_source", "Requirement '{s}' is decomposed but has no current source implementation evidence", alloc, gaps),
         .source_without_structural_coverage => try appendQueryGaps(db,
             \\SELECT s.id FROM nodes s
             \\WHERE s.type='SourceFile'
@@ -150,7 +157,7 @@ fn appendSpecialGaps(db: *GraphDb, check: SpecialGapCheck, alloc: Allocator, gap
             \\  )
             \\  AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id=s.id AND e.label='VERIFIED_BY_CODE')
             \\ORDER BY s.id
-        , check, "source_without_structural_coverage", "SourceFile '{s}' has implementation evidence but no VERIFIED_BY_CODE edge", alloc, gaps),
+        , check, "source_without_structural_coverage", "SourceFile '{s}' has implementation evidence but no current test evidence", alloc, gaps),
         .missing_asil => try appendQueryGaps(db,
             \\SELECT id FROM nodes
             \\WHERE type='Requirement'
@@ -473,7 +480,7 @@ test "walkChain handles incoming derives_from for user needs" {
         }
         if (std.mem.eql(u8, gap.gap_type, "orphan_requirement") and std.mem.eql(u8, gap.node_id, "UN-002")) {
             found_un2 = true;
-            try testing.expect(std.mem.indexOf(u8, gap.message, "incoming DERIVES_FROM") != null);
+            try testing.expectEqualStrings("UserNeed 'UN-002' has no downstream Requirements", gap.message);
         }
     }
     try testing.expect(!found_un1);

@@ -233,11 +233,18 @@ pub const GraphDb = struct {
             try ins.bindInt(6, now);
             _ = try ins.step();
         } else {
-            // Check if hash changed
-            const existing_hash = st.columnText(0);
-            const new_hash = row_hash orelse "";
-            if (!std.mem.eql(u8, existing_hash, new_hash)) {
-                try g.updateNode(id, properties_json, row_hash);
+            // Hashless nodes are intentionally always overwriteable. This is
+            // required for runtime-enriched nodes like CodeAnnotation, where
+            // the first upsert writes context and a later upsert adds blame.
+            if (row_hash == null) {
+                try g.updateNode(id, properties_json, null);
+            } else {
+                // Check if hash changed
+                const existing_hash = st.columnText(0);
+                const new_hash = row_hash.?;
+                if (!std.mem.eql(u8, existing_hash, new_hash)) {
+                    try g.updateNode(id, properties_json, row_hash);
+                }
             }
         }
     }
@@ -1131,6 +1138,31 @@ test "upsertNode no-op on same hash" {
     const node = try g.getNode("REQ-001", alloc);
     // Same hash → no update → v1 still there
     try testing.expectEqualStrings("{\"statement\":\"v1\"}", node.?.properties);
+}
+
+test "upsertNode updates hashless nodes on later overwrite" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.upsertNode(
+        "file.zig:42",
+        "CodeAnnotation",
+        "{\"req_id\":\"REQ-001\",\"line_number\":42}",
+        null,
+    );
+    try g.upsertNode(
+        "file.zig:42",
+        "CodeAnnotation",
+        "{\"req_id\":\"REQ-001\",\"line_number\":42,\"blame_author\":\"alice\",\"author_time\":123}",
+        null,
+    );
+    const node = try g.getNode("file.zig:42", alloc);
+    try testing.expect(node != null);
+    try testing.expect(std.mem.indexOf(u8, node.?.properties, "\"blame_author\":\"alice\"") != null);
+    try testing.expect(std.mem.indexOf(u8, node.?.properties, "\"author_time\":123") != null);
 }
 
 test "addEdge idempotent" {

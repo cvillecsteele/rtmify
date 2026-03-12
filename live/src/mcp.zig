@@ -975,7 +975,7 @@ fn explainGap(gap_type: []const u8, node_id: []const u8, profile_name: []const u
     _ = profile_name;
     if (std.mem.eql(u8, gap_type, "orphan_requirement")) {
         if (std.mem.startsWith(u8, node_id, "UN-")) return .{
-            .check = "RTMify looked for an incoming DERIVES_FROM edge from a Requirement to this User Need.",
+            .check = "RTMify looked for downstream Requirements linked to this User Need.",
             .why = "No requirement currently derives from this user need in the graph.",
             .inspect = "Check the Requirements tab for a row whose User Need ID cell contains this exact user-need ID.",
         };
@@ -986,28 +986,28 @@ fn explainGap(gap_type: []const u8, node_id: []const u8, profile_name: []const u
         };
     }
     if (std.mem.eql(u8, gap_type, "hlr_without_llr")) return .{
-        .check = "RTMify identified this requirement as deriving from a User Need, then looked for an outgoing REFINED_BY edge.",
-        .why = "It is acting like a high-level requirement without lower-level decomposition.",
+        .check = "RTMify identified this requirement as deriving from a User Need, then looked for downstream lower-level Requirements.",
+        .why = "It has no downstream lower-level requirements.",
         .inspect = "Add lower-level requirements and REFINED_BY links, or use a less strict profile if you intentionally model one requirement level.",
     };
     if (std.mem.eql(u8, gap_type, "llr_without_source")) return .{
-        .check = "RTMify found a decomposed requirement and then looked for IMPLEMENTED_IN to source code.",
-        .why = "The decomposition exists, but implementation traceability is missing.",
-        .inspect = "Verify repo scanning and code annotations are producing IMPLEMENTED_IN edges for this requirement.",
+        .check = "RTMify found a decomposed requirement and then looked for current source implementation evidence.",
+        .why = "The decomposition exists, but RTMify cannot see code that currently implements this lower-level requirement.",
+        .inspect = "Verify repo scanning and code annotations are linking this requirement to the right source files.",
     };
     if (std.mem.eql(u8, gap_type, "unimplemented_requirement")) return .{
-        .check = "RTMify looked for an IMPLEMENTED_IN edge from the requirement to a source file.",
-        .why = "No implementation link exists in the current graph.",
+        .check = "RTMify looked for current source implementation evidence linked to the requirement.",
+        .why = "RTMify cannot see code that currently appears to implement this requirement.",
         .inspect = "Confirm implementation exists and code annotations are linking the requirement to source files.",
     };
     if (std.mem.eql(u8, gap_type, "uncommitted_requirement")) return .{
-        .check = "RTMify found implementation edges and then looked for COMMITTED_IN edges.",
-        .why = "Implementation evidence exists, but commit traceability is missing.",
-        .inspect = "Check git scan results and whether commits were linked to this requirement.",
+        .check = "RTMify found current implementation evidence and then looked for commits whose messages explicitly referenced the requirement.",
+        .why = "Implementation evidence exists, but no commit message explicitly names this requirement.",
+        .inspect = "Check git scan results and whether commit messages were linked to this requirement.",
     };
     if (std.mem.eql(u8, gap_type, "unattributed_annotation")) return .{
-        .check = "RTMify found a CodeAnnotation and then checked for blame metadata.",
-        .why = "The annotation exists, but author/time attribution is missing.",
+        .check = "RTMify found a requirement tag in code and then asked git who last changed that line.",
+        .why = "The requirement tag exists, but git did not provide usable blame data for that line.",
         .inspect = "Check git blame availability and whether the file is tracked and readable.",
     };
     if (std.mem.eql(u8, gap_type, "req_without_design_input")) return .{
@@ -1021,8 +1021,8 @@ fn explainGap(gap_type: []const u8, node_id: []const u8, profile_name: []const u
         .inspect = "Check the Design Outputs tab and whether it references this design input.",
     };
     if (std.mem.eql(u8, gap_type, "design_output_without_source")) return .{
-        .check = "RTMify looked for IMPLEMENTED_IN from the design output to a source file.",
-        .why = "The design output has no implementation traceability.",
+        .check = "RTMify looked for current source implementation evidence linked to the design output.",
+        .why = "The design output has no source implementation evidence in the current graph.",
         .inspect = "Check repo scanning, code annotations, and design output IDs.",
     };
     if (std.mem.eql(u8, gap_type, "design_output_without_config_control")) return .{
@@ -1031,8 +1031,8 @@ fn explainGap(gap_type: []const u8, node_id: []const u8, profile_name: []const u
         .inspect = "Check the Configuration Items tab and linked design output IDs.",
     };
     if (std.mem.eql(u8, gap_type, "source_without_structural_coverage")) return .{
-        .check = "RTMify found source implementation evidence and then looked for VERIFIED_BY_CODE to a test file.",
-        .why = "The source file has no verification-by-code link.",
+        .check = "RTMify found this source file as current implementation evidence and then looked for current test evidence tied to it.",
+        .why = "RTMify can see code that appears to implement the requirement, but it cannot see tests that currently verify that code.",
         .inspect = "Check whether a test file should be linked and whether repo annotations captured it.",
     };
     if (std.mem.eql(u8, gap_type, "missing_asil")) return .{

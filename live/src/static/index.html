@@ -2323,7 +2323,7 @@ audit_readiness_summary(profile="aerospace")</div>
         if (String(id).startsWith('UN-')) {
           return {
             headline: `No requirement currently derives from ${id}.`,
-            check: 'RTMify looked for an incoming DERIVES_FROM edge from a Requirement to this User Need.',
+            check: 'RTMify looked for downstream Requirements linked to this User Need.',
             why: `In the ${profile} profile, a user need is expected to have at least one derived requirement. None is present in the current graph.`,
             inspect: 'Check the Requirements tab for a row whose User Need ID cell contains this exact user-need ID. Look for typos, missing links, or references skipped during ingest.'
           };
@@ -2336,44 +2336,44 @@ audit_readiness_summary(profile="aerospace")</div>
         };
       case 'hlr_without_llr':
         return {
-          headline: `${id} is acting like a high-level requirement without decomposition.`,
-          check: 'RTMify identified this requirement as derived from a User Need, then looked for an outgoing REFINED_BY edge to a lower-level requirement.',
-          why: `Under the ${profile} profile, high-level requirements are expected to decompose into lower-level requirements. No REFINED_BY link exists.`,
+          headline: `${id} has no downstream lower-level Requirements.`,
+          check: 'RTMify identified this requirement as derived from a User Need, then looked for downstream lower-level Requirements.',
+          why: `Under the ${profile} profile, high-level requirements are expected to decompose into lower-level requirements. None are linked downstream from this requirement.`,
           inspect: 'If this is truly a high-level requirement, add one or more lower-level requirements and link them. If you intentionally use one requirement level, this profile is stricter than your current data model.'
         };
       case 'llr_without_source':
         return {
-          headline: `${id} looks like a low-level requirement with no implementation link.`,
-          check: 'RTMify found this requirement as the child of a REFINED_BY chain and then looked for IMPLEMENTED_IN to source code.',
-          why: 'The decomposition exists, but the implementation step is missing.',
-          inspect: 'Check whether code traceability has been captured yet. If implementation exists, confirm repo scanning and code annotations are creating IMPLEMENTED_IN edges.'
+          headline: `${id} looks like a lower-level requirement with no current source implementation evidence.`,
+          check: 'RTMify found this requirement as part of a decomposition chain and then looked for current source implementation evidence.',
+          why: 'The decomposition exists, but RTMify cannot see code that currently implements this lower-level requirement.',
+          inspect: 'Check whether code traceability has been captured yet. If implementation exists, confirm repo scanning and code annotations are linking this requirement to the right source files.'
         };
       case 'source_without_structural_coverage':
         return {
-          headline: `${id} has implementation evidence but no verification-by-code link.`,
-          check: 'RTMify found a source file that is implemented or annotated, then looked for VERIFIED_BY_CODE to a test file.',
-          why: 'The code exists in the traceability graph, but no code-level verification link is present.',
+          headline: `${id} has implementation evidence but no current test evidence.`,
+          check: 'RTMify found this source file as current implementation evidence and then looked for current test evidence tied to it.',
+          why: 'RTMify can see code that appears to implement the requirement, but it cannot see tests that currently verify that code.',
           inspect: 'Check test-file annotations, repo scan coverage, and whether the matching verification artifact is represented as a TestFile in the graph.'
         };
       case 'unimplemented_requirement':
         return {
-          headline: `${id} has no source implementation link.`,
-          check: 'RTMify looked for an IMPLEMENTED_IN edge from this Requirement to a SourceFile.',
-          why: 'No implementation link exists in the current graph.',
-          inspect: 'If implementation exists, check repo scanning, code annotations, and whether the requirement ID is referenced exactly in code or commit history.'
+          headline: `${id} has no current source implementation evidence.`,
+          check: 'RTMify looked for current source implementation evidence linked to this requirement.',
+          why: 'RTMify cannot see code that currently appears to implement this requirement.',
+          inspect: 'If implementation exists, check repo scanning, code annotations, and whether the requirement ID is referenced exactly in code comments.'
         };
       case 'uncommitted_requirement':
         return {
-          headline: `${id} has implementation evidence but no commit evidence.`,
-          check: 'RTMify found IMPLEMENTED_IN for this requirement and then looked for COMMITTED_IN.',
-          why: 'The graph knows about implementation, but no linked commit was found.',
+          headline: `${id} has implementation evidence but no explicit commit-message trace.`,
+          check: 'RTMify found current implementation evidence for this requirement and then looked for commits whose messages explicitly referenced it.',
+          why: 'RTMify can see code linked to this requirement, but no commit message explicitly names that requirement.',
           inspect: 'Check whether commit messages reference the requirement ID and whether git log scanning is working for the configured repositories.'
         };
       case 'unattributed_annotation':
         return {
-          headline: `${id} is linked to code without blame attribution.`,
-          check: 'RTMify found a CodeAnnotation node and expected blame_author and author_time metadata.',
-          why: 'The annotation exists, but git blame data was not attached.',
+          headline: `${id} has no git blame data.`,
+          check: 'RTMify found a requirement tag in code and then asked git who last changed that line.',
+          why: 'The requirement tag exists, but git did not provide usable blame data for that line.',
           inspect: 'Check repo scan diagnostics for git blame failures, untracked files, or path mismatches.'
         };
       case 'req_without_design_input':
@@ -2393,8 +2393,8 @@ audit_readiness_summary(profile="aerospace")</div>
       case 'design_output_without_source':
         return {
           headline: `${id} has no implementation link.`,
-          check: 'RTMify looked for an IMPLEMENTED_IN edge from this DesignOutput to a SourceFile.',
-          why: 'The design output exists in the graph, but no source implementation is linked.',
+          check: 'RTMify looked for current source implementation evidence linked to this design output.',
+          why: 'The design output exists in the graph, but no source implementation evidence is linked.',
           inspect: 'Check repo/code traceability or add the implementation mapping if this design output is already realized in code.'
         };
       case 'design_output_without_config_control':
