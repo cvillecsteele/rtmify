@@ -321,17 +321,84 @@ fn rtmRowLt(_: void, a: RtmRow, b: RtmRow) bool {
     return std.mem.order(u8, a.test_id orelse "", b.test_id orelse "") == .lt;
 }
 
-fn nodeHasId(nodes: []const *const graph.Node, id: []const u8) bool {
-    for (nodes) |n| if (std.mem.eql(u8, n.id, id)) return true;
-    return false;
-}
-
 fn scoreStr(buf: []u8, sev: ?[]const u8, lik: ?[]const u8) []const u8 {
     const s = sev orelse return DASH;
     const l = lik orelse return DASH;
     const si = std.fmt.parseInt(u64, s, 10) catch return DASH;
     const li = std.fmt.parseInt(u64, l, 10) catch return DASH;
     return std.fmt.bufPrint(buf, "{d}", .{si * li}) catch DASH;
+}
+
+fn hardGapCount(findings: []const graph.GapFinding) usize {
+    var count: usize = 0;
+    for (findings) |finding| {
+        if (finding.severity == .hard) count += 1;
+    }
+    return count;
+}
+
+fn requirementHasGap(findings: []const graph.GapFinding, req_id: []const u8) bool {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.primary_id, req_id)) {
+            switch (finding.kind) {
+                .requirement_no_user_need_link,
+                .requirement_no_test_group_link,
+                .requirement_only_unresolved_test_group_refs,
+                .requirement_linked_to_empty_test_group,
+                => return true,
+                else => {},
+            }
+        }
+    }
+    return false;
+}
+
+fn riskHasGap(findings: []const graph.GapFinding, risk_id: []const u8) bool {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.primary_id, risk_id)) {
+            switch (finding.kind) {
+                .risk_without_mitigation_requirement,
+                .risk_unresolved_mitigation_requirement,
+                => return true,
+                else => {},
+            }
+        }
+    }
+    return false;
+}
+
+fn writeGapGroupDocx(w: anytype, alloc: Allocator, group_title: []const u8, findings: []const graph.GapFinding, severity: graph.GapSeverity) !void {
+    var wrote_group = false;
+    const sections = [_]struct { kind: graph.GapKind, heading: []const u8 }{
+        .{ .kind = .requirement_no_user_need_link, .heading = "Requirements with No User Need" },
+        .{ .kind = .requirement_no_test_group_link, .heading = "Requirements with No Test Group Link" },
+        .{ .kind = .requirement_only_unresolved_test_group_refs, .heading = "Requirements with Only Unresolved Test Group References" },
+        .{ .kind = .risk_without_mitigation_requirement, .heading = "Risks with No Mitigation Requirement" },
+        .{ .kind = .risk_unresolved_mitigation_requirement, .heading = "Risks with Unresolved Mitigation Requirement" },
+        .{ .kind = .user_need_without_requirements, .heading = "User Needs with No Requirements" },
+        .{ .kind = .requirement_linked_to_empty_test_group, .heading = "Requirements Linked to Empty Test Groups" },
+        .{ .kind = .test_group_without_requirements, .heading = "Test Groups with No Requirements" },
+    };
+    for (sections) |section| {
+        var count: usize = 0;
+        for (findings) |finding| {
+            if (finding.severity == severity and finding.kind == section.kind) count += 1;
+        }
+        if (count == 0) continue;
+        if (!wrote_group) {
+            try writePara(w, "Heading2", false, group_title);
+            wrote_group = true;
+        }
+        try writePara(w, "", true, try std.fmt.allocPrint(alloc, "{s} ({d})", .{ section.heading, count }));
+        for (findings) |finding| {
+            if (finding.severity != severity or finding.kind != section.kind) continue;
+            if (finding.related_id) |related| {
+                try writePara(w, "", false, try std.fmt.allocPrint(alloc, "\u{2022} {s} \u{2192} {s}", .{ finding.primary_id, related }));
+            } else {
+                try writePara(w, "", false, try std.fmt.allocPrint(alloc, "\u{2022} {s}", .{finding.primary_id}));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,10 +420,8 @@ fn buildDocument(
     try g.rtm(alloc, &rtm_rows);
     std.mem.sort(RtmRow, rtm_rows.items, {}, rtmRowLt);
 
-    var untested: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .tested_by, alloc, &untested);
-    var orphan: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .derives_from, alloc, &orphan);
+    var gap_findings: std.ArrayList(graph.GapFinding) = .empty;
+    try g.collectGapFindings(alloc, &gap_findings);
 
     // Build test rows
     const TestRow = struct {
@@ -409,16 +474,6 @@ fn buildDocument(
         }
     }.lt);
 
-    // Build list of unresolved risk mitigations
-    var unresolved: std.ArrayList(struct { risk_id: []const u8, req_id: []const u8 }) = .empty;
-    for (risk_rows.items) |row| {
-        if (row.req_id) |rid| {
-            if (g.getNode(rid) == null) {
-                try unresolved.append(alloc, .{ .risk_id = row.risk_id, .req_id = rid });
-            }
-        }
-    }
-
     // Build XML
     var buf: std.ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
@@ -452,8 +507,9 @@ fn buildDocument(
     try writePara(w, "Heading1", false, "Requirements Traceability");
     try tableStart(w, &COL_RTM);
     try writeHeaderRow(w, &[_][]const u8{ "Req ID", "User Need", "Statement", "Test Group", "Test ID", "Type", "Method", "Status", "Source File", "Test File", "Last Commit" }, &COL_RTM);
+
     for (rtm_rows.items) |row| {
-        const has_gap = nodeHasId(untested.items, row.req_id) or nodeHasId(orphan.items, row.req_id);
+        const has_gap = requirementHasGap(gap_findings.items, row.req_id);
         const fill: ?[]const u8 = if (has_gap) GAP_FILL else null;
         const req_label: []const u8 = if (has_gap)
             try std.fmt.allocPrint(alloc, "\u{26A0} {s}", .{row.req_id})
@@ -507,10 +563,10 @@ fn buildDocument(
     try tableStart(w, &COL_RISK);
     try writeHeaderRow(w, &[_][]const u8{ "Risk ID", "Description", "I.Sev", "I.Lik", "I.Score", "Mitigation", "Linked Req", "R.Sev", "R.Lik", "R.Score" }, &COL_RISK);
     for (risk_rows.items) |row| {
-        const is_unresolved = if (row.req_id) |rid| g.getNode(rid) == null else false;
-        const fill: ?[]const u8 = if (is_unresolved) GAP_FILL else null;
-        const req_label: []const u8 = if (is_unresolved)
-            try std.fmt.allocPrint(alloc, "\u{26A0} {s}", .{row.req_id.?})
+        const has_gap = riskHasGap(gap_findings.items, row.risk_id);
+        const fill: ?[]const u8 = if (has_gap) GAP_FILL else null;
+        const req_label: []const u8 = if (has_gap)
+            try std.fmt.allocPrint(alloc, "\u{26A0} {s}", .{row.req_id orelse DASH})
         else
             row.req_id orelse DASH;
         var iscore_buf: [32]u8 = undefined;
@@ -534,29 +590,14 @@ fn buildDocument(
     try tableEnd(w);
 
     // === Gap Summary ===
-    std.mem.sort(*const graph.Node, untested.items, {}, nodeIdLt);
-    std.mem.sort(*const graph.Node, orphan.items, {}, nodeIdLt);
-    const total_gaps = untested.items.len + orphan.items.len + unresolved.items.len;
+    const total_gaps = hardGapCount(gap_findings.items);
     try writePara(w, "Heading1", false, "Gap Summary");
     try writePara(w, "", true, try std.fmt.allocPrint(alloc, "{d} gap(s) found.", .{total_gaps}));
-
-    if (untested.items.len > 0) {
-        try writePara(w, "Heading2", false, try std.fmt.allocPrint(alloc, "Untested Requirements ({d})", .{untested.items.len}));
-        for (untested.items) |n| {
-            try writePara(w, "", false, try std.fmt.allocPrint(alloc, "\u{2022} {s}", .{n.id}));
-        }
-    }
-    if (orphan.items.len > 0) {
-        try writePara(w, "Heading2", false, try std.fmt.allocPrint(alloc, "Orphan Requirements \u{2014} no User Need ({d})", .{orphan.items.len}));
-        for (orphan.items) |n| {
-            try writePara(w, "", false, try std.fmt.allocPrint(alloc, "\u{2022} {s}", .{n.id}));
-        }
-    }
-    if (unresolved.items.len > 0) {
-        try writePara(w, "Heading2", false, try std.fmt.allocPrint(alloc, "Unresolved Risk Mitigations ({d})", .{unresolved.items.len}));
-        for (unresolved.items) |r| {
-            try writePara(w, "", false, try std.fmt.allocPrint(alloc, "\u{2022} {s} \u{2192} {s}", .{ r.risk_id, r.req_id }));
-        }
+    if (gap_findings.items.len == 0) {
+        try writePara(w, "", false, "No gaps detected.");
+    } else {
+        try writeGapGroupDocx(w, alloc, "Hard Gaps", gap_findings.items, .hard);
+        try writeGapGroupDocx(w, alloc, "Advisory Gaps", gap_findings.items, .advisory);
     }
 
     // Section properties: US Letter, 1" margins, footer
@@ -621,9 +662,9 @@ test "render_docx fixture" {
 
     // Gap summary
     try testing.expect(std.mem.indexOf(u8, out, "3 gap(s) found.") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Untested Requirements") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Orphan Requirements") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Unresolved Risk Mitigations") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Hard Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Advisory Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Unresolved Mitigation Requirement") != null);
 }
 
 test "render_docx no gaps no yellow" {
@@ -655,7 +696,8 @@ test "render_docx no gaps no yellow" {
     // No gaps → no yellow shading and no gap sub-sections
     try testing.expect(std.mem.indexOf(u8, out, "FFFF00") == null);
     try testing.expect(std.mem.indexOf(u8, out, "0 gap(s) found.") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Untested Requirements") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "Hard Gaps") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "No gaps detected.") != null);
 }
 
 test "render_docx includes multiple test groups and plural linked requirements" {

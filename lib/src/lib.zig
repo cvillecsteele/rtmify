@@ -174,24 +174,7 @@ pub export fn rtmify_free(handle: *RtmifyGraph) void {
 fn computeGapCount(g: *const graph.Graph) !usize {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var untested: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .tested_by, alloc, &untested);
-
-    var orphan: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .derives_from, alloc, &orphan);
-
-    var risk_rows: std.ArrayList(graph.RiskRow) = .empty;
-    try g.risks(alloc, &risk_rows);
-    var unresolved: usize = 0;
-    for (risk_rows.items) |row| {
-        if (row.req_id) |rid| {
-            if (g.getNode(rid) == null) unresolved += 1;
-        }
-    }
-
-    return untested.items.len + orphan.items.len + unresolved;
+    return g.hardGapCount(arena.allocator());
 }
 
 pub export fn rtmify_gap_count(handle: *const RtmifyGraph) c_int {
@@ -479,7 +462,7 @@ test "rtmify_gap_count empty graph" {
     try testing.expectEqual(@as(c_int, 0), rtmify_gap_count(handle));
 }
 
-test "rtmify_gap_count with orphan and untested requirements" {
+test "rtmify_gap_count counts only hard gaps" {
     const handle = try std.heap.page_allocator.create(RtmifyGraph);
     defer std.heap.page_allocator.destroy(handle);
     handle.gpa_state = .init;
@@ -487,8 +470,15 @@ test "rtmify_gap_count with orphan and untested requirements" {
     handle.g = graph.Graph.init(handle.gpa_state.allocator());
     defer handle.g.deinit();
 
-    // Two requirements with no edges → 2 orphan + 2 untested = 4 gaps
     try handle.g.addNode("REQ-001", .requirement, &.{});
-    try handle.g.addNode("REQ-002", .requirement, &.{});
-    try testing.expectEqual(@as(c_int, 4), rtmify_gap_count(handle));
+    try handle.g.addNode("REQ-002", .requirement, &.{.{ .key = "declared_test_group_ref_count", .value = "1" }});
+    try handle.g.addNode("UN-001", .user_need, &.{});
+    try handle.g.addNode("TG-001", .test_group, &.{});
+    try handle.g.addNode("RSK-001", .risk, &.{.{ .key = "declared_mitigation_req_ref_count", .value = "0" }});
+
+    // REQ-001 = no user need + no test group = 2 hard gaps
+    // REQ-002 = no user need + unresolved test-group refs = 2 hard gaps
+    // RSK-001 = no mitigation requirement = 1 hard gap
+    // UN-001 and TG-001 contribute advisory gaps only
+    try testing.expectEqual(@as(c_int, 5), rtmify_gap_count(handle));
 }

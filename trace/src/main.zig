@@ -117,7 +117,7 @@ const HELP =
     \\  --format <md|docx|pdf|all>  Output format (default: docx)
     \\  --output <path>          Output file or directory (default: same dir as input)
     \\  --project <name>         Project name for report header (default: filename)
-    \\  --gaps-json <path>       Write diagnostics JSON to path
+    \\  --gaps-json <path>       Write diagnostics + gap analysis JSON to path
     \\  --activate <key>         Activate license key for this machine
     \\  --deactivate             Deactivate license on this machine
     \\  --strict                 Exit with gap count when gaps are found (for CI)
@@ -192,26 +192,85 @@ fn outputPath(
 // ---------------------------------------------------------------------------
 
 fn gapCount(g: *const graph.Graph, gpa: std.mem.Allocator) !usize {
+    return g.hardGapCount(gpa);
+}
+
+fn writeJsonString(w: anytype, s: []const u8) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try w.writeAll("\\\""),
+            '\\' => try w.writeAll("\\\\"),
+            '\n' => try w.writeAll("\\n"),
+            '\r' => try w.writeAll("\\r"),
+            '\t' => try w.writeAll("\\t"),
+            else => try w.writeByte(c),
+        }
+    }
+}
+
+fn writeGapsJson(path: []const u8, diag: *const Diagnostics, g: *const graph.Graph, gpa: std.mem.Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var untested: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .tested_by, alloc, &untested);
+    var findings: std.ArrayList(graph.GapFinding) = .empty;
+    try g.collectGapFindings(alloc, &findings);
 
-    var orphan: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .derives_from, alloc, &orphan);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    const w = out.writer(gpa);
 
-    var risk_rows: std.ArrayList(graph.RiskRow) = .empty;
-    try g.risks(alloc, &risk_rows);
-    var unresolved: usize = 0;
-    for (risk_rows.items) |row| {
-        if (row.req_id) |rid| {
-            if (g.getNode(rid) == null) unresolved += 1;
+    try w.writeAll("{\"diagnostics\":[");
+    for (diag.entries.items, 0..) |e, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.writeAll("{");
+        try w.print("\"level\":\"{s}\"", .{@tagName(e.level)});
+        try w.print(",\"code\":{d}", .{e.code});
+        try w.print(",\"url\":\"{s}E{d}\"", .{ diagnostic.error_url_base, e.code });
+        try w.print(",\"source\":\"{s}\"", .{@tagName(e.source)});
+        if (e.tab) |t| {
+            try w.writeAll(",\"tab\":\"");
+            try writeJsonString(w, t);
+            try w.writeByte('"');
+        } else {
+            try w.writeAll(",\"tab\":null");
         }
+        if (e.row) |r| {
+            try w.print(",\"row\":{d}", .{r});
+        } else {
+            try w.writeAll(",\"row\":null");
+        }
+        try w.writeAll(",\"message\":\"");
+        try writeJsonString(w, e.message);
+        try w.writeAll("\"}");
     }
+    try w.writeAll("],\"gaps\":[");
+    for (findings.items, 0..) |finding, i| {
+        if (i > 0) try w.writeByte(',');
+        try w.writeAll("{");
+        try w.print("\"severity\":\"{s}\"", .{finding.severity.toString()});
+        try w.print(",\"kind\":\"{s}\"", .{finding.kind.toString()});
+        try w.writeAll(",\"primary_id\":\"");
+        try writeJsonString(w, finding.primary_id);
+        try w.writeByte('"');
+        if (finding.related_id) |related| {
+            try w.writeAll(",\"related_id\":\"");
+            try writeJsonString(w, related);
+            try w.writeByte('"');
+        } else {
+            try w.writeAll(",\"related_id\":null");
+        }
+        try w.writeByte('}');
+    }
+    try w.print("],\"gap_count\":{d},\"warning_count\":{d},\"error_count\":{d}}", .{
+        try g.hardGapCount(alloc),
+        diag.warning_count,
+        diag.error_count,
+    });
 
-    return untested.items.len + orphan.items.len + unresolved;
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+    try file.writeAll(out.items);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,7 +465,7 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     };
 
     try diag.printSummary(stderr);
-    if (args.gaps_json) |jp| try diag.writeJson(jp, gpa);
+    if (args.gaps_json) |jp| try writeGapsJson(jp, &diag, &g, gpa);
 
     const gaps = try gapCount(&g, gpa);
     const project_name = args.project orelse stem(input_path);

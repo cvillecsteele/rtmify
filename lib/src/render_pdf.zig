@@ -374,11 +374,8 @@ pub fn renderPdf(
     try g.rtm(alloc, &rtm_rows);
     std.mem.sort(RtmRow, rtm_rows.items, {}, rtmRowLt);
 
-    var untested: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .tested_by, alloc, &untested);
-
-    var orphan: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .derives_from, alloc, &orphan);
+    var gap_findings: std.ArrayList(graph.GapFinding) = .empty;
+    try g.collectGapFindings(alloc, &gap_findings);
 
     // Test rows (same traversal as render_md.zig)
     const TestRow = struct {
@@ -454,8 +451,7 @@ pub fn renderPdf(
         &COL_RTM,
     );
     for (rtm_rows.items) |row| {
-        const has_gap = nodeHasId(untested.items, row.req_id) or
-            nodeHasId(orphan.items, row.req_id);
+        const has_gap = requirementHasGap(gap_findings.items, row.req_id);
         const cells = [11][]const u8{
             row.req_id,
             row.user_need_id orelse "-",
@@ -502,12 +498,8 @@ pub fn renderPdf(
         &.{ "Risk ID", "Description", "IS", "IL", "ISc", "Mitigation", "Req", "RS", "RL", "RSc" },
         &COL_RISK,
     );
-    var unresolved: std.ArrayList(struct { risk_id: []const u8, req_id: []const u8 }) = .empty;
     for (risk_rows.items) |row| {
-        const is_unresolved = if (row.req_id) |rid| g.getNode(rid) == null else false;
-        if (is_unresolved) {
-            try unresolved.append(alloc, .{ .risk_id = row.risk_id, .req_id = row.req_id.? });
-        }
+        const has_gap = riskHasGap(gap_findings.items, row.risk_id);
         var ib: [32]u8 = undefined;
         var rb: [32]u8 = undefined;
         const cells = [10][]const u8{
@@ -522,41 +514,20 @@ pub fn renderPdf(
             row.residual_likelihood orelse "-",
             scoreStr(&rb, row.residual_severity, row.residual_likelihood),
         };
-        try pb.drawDataRow(&cells, &COL_RISK, is_unresolved);
+        try pb.drawDataRow(&cells, &COL_RISK, has_gap);
     }
 
     // Gap Summary
-    std.mem.sort(*const graph.Node, untested.items, {}, nodeIdLt);
-    std.mem.sort(*const graph.Node, orphan.items, {}, nodeIdLt);
-    const total = untested.items.len + orphan.items.len + unresolved.items.len;
+    const total = hardGapCount(gap_findings.items);
 
     try pb.drawSection("Gap Summary");
     const gap_line = try std.fmt.allocPrint(alloc, "{d} gap(s) found.", .{total});
     try pb.drawText(gap_line, FONT_BODY, true);
-
-    if (untested.items.len > 0) {
-        const hdr = try std.fmt.allocPrint(alloc, "Untested Requirements ({d})", .{untested.items.len});
-        try pb.drawText(hdr, FONT_BODY, true);
-        for (untested.items) |n| {
-            const line = try std.fmt.allocPrint(alloc, "  - {s}", .{n.id});
-            try pb.drawText(line, FONT_BODY, false);
-        }
-    }
-    if (orphan.items.len > 0) {
-        const hdr = try std.fmt.allocPrint(alloc, "Orphan Requirements - no User Need ({d})", .{orphan.items.len});
-        try pb.drawText(hdr, FONT_BODY, true);
-        for (orphan.items) |n| {
-            const line = try std.fmt.allocPrint(alloc, "  - {s}", .{n.id});
-            try pb.drawText(line, FONT_BODY, false);
-        }
-    }
-    if (unresolved.items.len > 0) {
-        const hdr = try std.fmt.allocPrint(alloc, "Unresolved Risk Mitigations ({d})", .{unresolved.items.len});
-        try pb.drawText(hdr, FONT_BODY, true);
-        for (unresolved.items) |r| {
-            const line = try std.fmt.allocPrint(alloc, "  - {s} -> {s}", .{ r.risk_id, r.req_id });
-            try pb.drawText(line, FONT_BODY, false);
-        }
+    if (gap_findings.items.len == 0) {
+        try pb.drawText("No gaps detected.", FONT_BODY, false);
+    } else {
+        try drawGapGroupPdf(&pb, alloc, "Hard Gaps", gap_findings.items, .hard);
+        try drawGapGroupPdf(&pb, alloc, "Advisory Gaps", gap_findings.items, .advisory);
     }
 
     // Flush the last page
@@ -757,17 +728,85 @@ fn rtmRowLt(_: void, a: RtmRow, b: RtmRow) bool {
     return std.mem.order(u8, a.test_id orelse "", b.test_id orelse "") == .lt;
 }
 
-fn nodeHasId(nodes: []const *const graph.Node, id: []const u8) bool {
-    for (nodes) |n| if (std.mem.eql(u8, n.id, id)) return true;
-    return false;
-}
-
 fn scoreStr(buf: []u8, sev: ?[]const u8, lik: ?[]const u8) []const u8 {
     const s = sev orelse return "-";
     const l = lik orelse return "-";
     const si = std.fmt.parseInt(u64, s, 10) catch return "-";
     const li = std.fmt.parseInt(u64, l, 10) catch return "-";
     return std.fmt.bufPrint(buf, "{d}", .{si * li}) catch "-";
+}
+
+fn hardGapCount(findings: []const graph.GapFinding) usize {
+    var count: usize = 0;
+    for (findings) |finding| {
+        if (finding.severity == .hard) count += 1;
+    }
+    return count;
+}
+
+fn requirementHasGap(findings: []const graph.GapFinding, req_id: []const u8) bool {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.primary_id, req_id)) {
+            switch (finding.kind) {
+                .requirement_no_user_need_link,
+                .requirement_no_test_group_link,
+                .requirement_only_unresolved_test_group_refs,
+                .requirement_linked_to_empty_test_group,
+                => return true,
+                else => {},
+            }
+        }
+    }
+    return false;
+}
+
+fn riskHasGap(findings: []const graph.GapFinding, risk_id: []const u8) bool {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.primary_id, risk_id)) {
+            switch (finding.kind) {
+                .risk_without_mitigation_requirement,
+                .risk_unresolved_mitigation_requirement,
+                => return true,
+                else => {},
+            }
+        }
+    }
+    return false;
+}
+
+fn drawGapGroupPdf(pb: *PageBuilder, alloc: Allocator, group_title: []const u8, findings: []const graph.GapFinding, severity: graph.GapSeverity) !void {
+    var wrote_group = false;
+    const sections = [_]struct { kind: graph.GapKind, heading: []const u8 }{
+        .{ .kind = .requirement_no_user_need_link, .heading = "Requirements with No User Need" },
+        .{ .kind = .requirement_no_test_group_link, .heading = "Requirements with No Test Group Link" },
+        .{ .kind = .requirement_only_unresolved_test_group_refs, .heading = "Requirements with Only Unresolved Test Group References" },
+        .{ .kind = .risk_without_mitigation_requirement, .heading = "Risks with No Mitigation Requirement" },
+        .{ .kind = .risk_unresolved_mitigation_requirement, .heading = "Risks with Unresolved Mitigation Requirement" },
+        .{ .kind = .user_need_without_requirements, .heading = "User Needs with No Requirements" },
+        .{ .kind = .requirement_linked_to_empty_test_group, .heading = "Requirements Linked to Empty Test Groups" },
+        .{ .kind = .test_group_without_requirements, .heading = "Test Groups with No Requirements" },
+    };
+    for (sections) |section| {
+        var count: usize = 0;
+        for (findings) |finding| {
+            if (finding.severity == severity and finding.kind == section.kind) count += 1;
+        }
+        if (count == 0) continue;
+        if (!wrote_group) {
+            try pb.drawText(group_title, FONT_BODY, true);
+            wrote_group = true;
+        }
+        const hdr = try std.fmt.allocPrint(alloc, "{s} ({d})", .{ section.heading, count });
+        try pb.drawText(hdr, FONT_BODY, true);
+        for (findings) |finding| {
+            if (finding.severity != severity or finding.kind != section.kind) continue;
+            const line = if (finding.related_id) |related|
+                try std.fmt.allocPrint(alloc, "  - {s} -> {s}", .{ finding.primary_id, related })
+            else
+                try std.fmt.allocPrint(alloc, "  - {s}", .{finding.primary_id});
+            try pb.drawText(line, FONT_BODY, false);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -814,7 +853,9 @@ test "render_pdf fixture" {
 
     // Gap summary section (parens are PDF-escaped to \( \))
     try testing.expect(std.mem.indexOf(u8, out, "gap\\(s\\) found.") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Untested") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Hard Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Advisory Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Unresolved Mitigation Requirement") != null);
 }
 
 test "render_pdf no gaps no yellow" {
@@ -852,6 +893,7 @@ test "render_pdf no gaps no yellow" {
 
     // Gap summary shows 0 (parens are PDF-escaped)
     try testing.expect(std.mem.indexOf(u8, out, "0 gap\\(s\\) found.") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "No gaps detected.") != null);
 }
 
 test "render_pdf pdf string escaping" {

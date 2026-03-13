@@ -65,16 +65,11 @@ pub fn renderMd(
     try g.rtm(alloc, &rtm_rows);
     std.mem.sort(RtmRow, rtm_rows.items, {}, rtmRowLt);
 
-    // Pre-compute gap sets for **⚠** markers
-    var untested: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .tested_by, alloc, &untested);
-
-    var orphan: std.ArrayList(*const graph.Node) = .empty;
-    try g.nodesMissingEdge(.requirement, .derives_from, alloc, &orphan);
+    var gap_findings: std.ArrayList(graph.GapFinding) = .empty;
+    try g.collectGapFindings(alloc, &gap_findings);
 
     for (rtm_rows.items) |row| {
-        const has_gap = nodeHasId(untested.items, row.req_id) or
-            nodeHasId(orphan.items, row.req_id);
+        const has_gap = requirementHasGap(gap_findings.items, row.req_id);
         const req_prefix: []const u8 = if (has_gap) "**⚠** " else "";
         const un = row.user_need_id orelse DASH;
         const tg = row.test_group_id orelse DASH;
@@ -166,11 +161,9 @@ pub fn renderMd(
         }
     }.lt);
 
-    var unresolved: std.ArrayList(struct { risk_id: []const u8, req_id: []const u8 }) = .empty;
-
     for (risk_rows.items) |row| {
-        const is_unresolved = if (row.req_id) |rid| g.getNode(rid) == null else false;
-        const req_prefix: []const u8 = if (is_unresolved) "**⚠** " else "";
+        const has_gap = riskHasGap(gap_findings.items, row.risk_id);
+        const req_prefix: []const u8 = if (has_gap) "**⚠** " else "";
         const req_str = row.req_id orelse DASH;
         const init_sev = row.initial_severity orelse DASH;
         const init_lik = row.initial_likelihood orelse DASH;
@@ -190,43 +183,18 @@ pub fn renderMd(
             req_prefix, req_str,
             res_sev, res_lik, res_score,
         });
-
-        if (is_unresolved) {
-            try unresolved.append(alloc, .{
-                .risk_id = row.risk_id,
-                .req_id = row.req_id.?,
-            });
-        }
     }
 
     // -----------------------------------------------------------------------
     // Gap Summary
     // -----------------------------------------------------------------------
-    std.mem.sort(*const graph.Node, untested.items, {}, nodeIdLt);
-    std.mem.sort(*const graph.Node, orphan.items, {}, nodeIdLt);
-
-    const total: usize = untested.items.len + orphan.items.len + unresolved.items.len;
+    const total = hardGapCount(gap_findings.items);
     try writer.print("\n## Gap Summary\n\n**{d} gap(s) found.**\n", .{total});
-
-    if (untested.items.len > 0) {
-        try writer.print("\n### Untested Requirements ({d})\n\n", .{untested.items.len});
-        for (untested.items) |n| {
-            try writer.print("- {s}\n", .{n.id});
-        }
-    }
-
-    if (orphan.items.len > 0) {
-        try writer.print("\n### Orphan Requirements \u{2014} no User Need ({d})\n\n", .{orphan.items.len});
-        for (orphan.items) |n| {
-            try writer.print("- {s}\n", .{n.id});
-        }
-    }
-
-    if (unresolved.items.len > 0) {
-        try writer.print("\n### Unresolved Risk Mitigations ({d})\n\n", .{unresolved.items.len});
-        for (unresolved.items) |r| {
-            try writer.print("- {s} \u{2192} {s}\n", .{ r.risk_id, r.req_id });
-        }
+    if (gap_findings.items.len == 0) {
+        try writer.writeAll("\nNo gaps detected.\n");
+    } else {
+        try renderGapGroup(writer, "Hard Gaps", gap_findings.items, .hard);
+        try renderGapGroup(writer, "Advisory Gaps", gap_findings.items, .advisory);
     }
 }
 
@@ -308,6 +276,78 @@ fn nodeHasId(nodes: []const *const graph.Node, id: []const u8) bool {
     return false;
 }
 
+fn hardGapCount(findings: []const graph.GapFinding) usize {
+    var count: usize = 0;
+    for (findings) |finding| {
+        if (finding.severity == .hard) count += 1;
+    }
+    return count;
+}
+
+fn requirementHasGap(findings: []const graph.GapFinding, req_id: []const u8) bool {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.primary_id, req_id)) {
+            switch (finding.kind) {
+                .requirement_no_user_need_link,
+                .requirement_no_test_group_link,
+                .requirement_only_unresolved_test_group_refs,
+                .requirement_linked_to_empty_test_group,
+                => return true,
+                else => {},
+            }
+        }
+    }
+    return false;
+}
+
+fn riskHasGap(findings: []const graph.GapFinding, risk_id: []const u8) bool {
+    for (findings) |finding| {
+        if (std.mem.eql(u8, finding.primary_id, risk_id)) {
+            switch (finding.kind) {
+                .risk_without_mitigation_requirement,
+                .risk_unresolved_mitigation_requirement,
+                => return true,
+                else => {},
+            }
+        }
+    }
+    return false;
+}
+
+fn renderGapGroup(writer: anytype, group_title: []const u8, findings: []const graph.GapFinding, severity: graph.GapSeverity) !void {
+    var wrote_group = false;
+    const sections = [_]struct { kind: graph.GapKind, heading: []const u8 }{
+        .{ .kind = .requirement_no_user_need_link, .heading = "Requirements with No User Need" },
+        .{ .kind = .requirement_no_test_group_link, .heading = "Requirements with No Test Group Link" },
+        .{ .kind = .requirement_only_unresolved_test_group_refs, .heading = "Requirements with Only Unresolved Test Group References" },
+        .{ .kind = .risk_without_mitigation_requirement, .heading = "Risks with No Mitigation Requirement" },
+        .{ .kind = .risk_unresolved_mitigation_requirement, .heading = "Risks with Unresolved Mitigation Requirement" },
+        .{ .kind = .user_need_without_requirements, .heading = "User Needs with No Requirements" },
+        .{ .kind = .requirement_linked_to_empty_test_group, .heading = "Requirements Linked to Empty Test Groups" },
+        .{ .kind = .test_group_without_requirements, .heading = "Test Groups with No Requirements" },
+    };
+    for (sections) |section| {
+        var count: usize = 0;
+        for (findings) |finding| {
+            if (finding.severity == severity and finding.kind == section.kind) count += 1;
+        }
+        if (count == 0) continue;
+        if (!wrote_group) {
+            try writer.print("\n### {s}\n", .{group_title});
+            wrote_group = true;
+        }
+        try writer.print("\n#### {s} ({d})\n\n", .{ section.heading, count });
+        for (findings) |finding| {
+            if (finding.severity != severity or finding.kind != section.kind) continue;
+            if (finding.related_id) |related| {
+                try writer.print("- {s} \u{2192} {s}\n", .{ finding.primary_id, related });
+            } else {
+                try writer.print("- {s}\n", .{finding.primary_id});
+            }
+        }
+    }
+}
+
 fn scoreStr(buf: []u8, sev: ?[]const u8, lik: ?[]const u8) []const u8 {
     const s = sev orelse return DASH;
     const l = lik orelse return DASH;
@@ -381,9 +421,9 @@ test "render_md no gaps" {
     // No gaps — no warning markers, gap summary shows 0, no sub-sections
     try testing.expect(std.mem.indexOf(u8, buf.items, "**⚠**") == null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "**0 gap(s) found.**") != null);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "### Untested") == null);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "### Orphan") == null);
-    try testing.expect(std.mem.indexOf(u8, buf.items, "### Unresolved") == null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "### Hard Gaps") == null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "### Advisory Gaps") == null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "No gaps detected.") != null);
 }
 
 test "render_md score calculation" {
@@ -422,4 +462,38 @@ test "render_md includes multiple test groups and plural linked requirements" {
     try testing.expect(std.mem.indexOf(u8, buf.items, "| TG-001 | T-001 |") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "| TG-002 | T-002 |") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "REQ-001, REQ-002") != null);
+}
+
+test "render_md gap summary includes hard and advisory categories" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+
+    try g.addNode("UN-001", .user_need, &.{});
+    try g.addNode("UN-002", .user_need, &.{});
+    try g.addNode("REQ-001", .requirement, &.{
+        .{ .key = "declared_test_group_ref_count", .value = "0" },
+    });
+    try g.addNode("REQ-002", .requirement, &.{
+        .{ .key = "declared_test_group_ref_count", .value = "1" },
+    });
+    try g.addNode("TG-001", .test_group, &.{});
+    try g.addNode("RSK-001", .risk, &.{
+        .{ .key = "declared_mitigation_req_ref_count", .value = "0" },
+    });
+
+    try g.addEdge("REQ-002", "UN-001", .derives_from);
+    try g.addEdge("REQ-002", "TG-001", .tested_by);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderMd(&g, "test.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+
+    try testing.expect(std.mem.indexOf(u8, buf.items, "### Hard Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "#### Requirements with No User Need (1)") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "#### Requirements with No Test Group Link (1)") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "#### Risks with No Mitigation Requirement (1)") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "### Advisory Gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "#### User Needs with No Requirements (1)") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "- UN-002") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "#### Requirements Linked to Empty Test Groups (1)") != null);
 }

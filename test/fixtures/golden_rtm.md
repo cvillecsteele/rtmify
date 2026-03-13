@@ -36,14 +36,22 @@ Generated: 2024-01-01T00:00:00Z
 
 **3 gap(s) found.**
 
-### Untested Requirements (1)
+### Hard Gaps
 
-- REQ-001
-
-### Orphan Requirements — no User Need (1)
+#### Requirements with No User Need (1)
 
 - REQ-002
 
-### Unresolved Risk Mitigations (1)
+#### Requirements with No Test Group Link (1)
+
+- REQ-001
+
+#### Risks with Unresolved Mitigation Requirement (1)
 
 - RSK-101 → REQ-602
+
+### Advisory Gaps
+
+#### Test Groups with No Requirements (1)
+
+- TG-002

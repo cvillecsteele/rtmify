@@ -764,11 +764,23 @@ fn ingestRequirements(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *I
         }
         try seen.put(id, {});
 
+        const tg_raw = cell(row, c_tgid);
+        var declared_test_group_ref_count: usize = 0;
+        if (!isBlankEquivalent(tg_raw)) {
+            for (try splitIds(tg_raw, a)) |part| {
+                const tg_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
+                if (tg_id.len == 0) continue;
+                declared_test_group_ref_count += 1;
+            }
+        }
+        const declared_test_group_ref_count_str = try std.fmt.allocPrint(a, "{d}", .{declared_test_group_ref_count});
+
         try g.addNode(id, .requirement, &.{
             .{ .key = "statement", .value = cell(row, c_stmt) },
             .{ .key = "priority", .value = cell(row, c_pri) },
             .{ .key = "status", .value = cell(row, c_status) },
             .{ .key = "notes", .value = cell(row, c_notes) },
+            .{ .key = "declared_test_group_ref_count", .value = declared_test_group_ref_count_str },
         });
         stats.requirement_count += 1;
 
@@ -784,7 +796,6 @@ fn ingestRequirements(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *I
         }
 
         // TESTED_BY edges: Requirement → TestGroup (multi-value, skip blanks)
-        const tg_raw = cell(row, c_tgid);
         if (!isBlankEquivalent(tg_raw)) {
             for (try splitIds(tg_raw, a)) |part| {
                 const tg_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
@@ -837,6 +848,17 @@ fn ingestRisks(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestSt
         const rsev = try parseNumericField(cell(row, c_rsev), diag, sheet.name, @intCast(ri + 2), "Residual Severity") orelse "";
         const rlik = try parseNumericField(cell(row, c_rlik), diag, sheet.name, @intCast(ri + 2), "Residual Likelihood") orelse "";
 
+        const req_raw = cell(row, c_req);
+        var declared_mitigation_req_ref_count: usize = 0;
+        if (!isBlankEquivalent(req_raw)) {
+            for (try splitIds(req_raw, a)) |part| {
+                const req_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
+                if (req_id.len == 0) continue;
+                declared_mitigation_req_ref_count += 1;
+            }
+        }
+        const declared_mitigation_req_ref_count_str = try std.fmt.allocPrint(a, "{d}", .{declared_mitigation_req_ref_count});
+
         try g.addNode(id, .risk, &.{
             .{ .key = "description",          .value = cell(row, c_desc) },
             .{ .key = "initial_severity",     .value = isev },
@@ -844,11 +866,11 @@ fn ingestRisks(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestSt
             .{ .key = "mitigation",           .value = cell(row, c_mit) },
             .{ .key = "residual_severity",    .value = rsev },
             .{ .key = "residual_likelihood",  .value = rlik },
+            .{ .key = "declared_mitigation_req_ref_count", .value = declared_mitigation_req_ref_count_str },
         });
         stats.risk_count += 1;
 
         // MITIGATED_BY edges: Risk → Requirement (multi-value, skip blanks)
-        const req_raw = cell(row, c_req);
         if (!isBlankEquivalent(req_raw)) {
             for (try splitIds(req_raw, a)) |part| {
                 const req_id = try normalizeId(part, a, diag, sheet.name, @intCast(ri + 2));
@@ -1524,6 +1546,59 @@ test "semanticValidate no warning for test group with tests" {
             try testing.expect(false); // should not reach here
         }
     }
+}
+
+test "ingest persists declared reference counts for requirements and risks" {
+    const sheets = [_]SheetData{
+        .{
+            .name = "User Needs",
+            .rows = &.{
+                &.{ "ID", "Statement", "Source", "Priority" },
+                &.{ "UN-001", "Need", "Customer", "high" },
+            },
+        },
+        .{
+            .name = "Tests",
+            .rows = &.{
+                &.{ "Test Group ID", "Test ID", "Test Type", "Test Method" },
+                &.{ "TG-001", "T-001", "Verification", "Test" },
+            },
+        },
+        .{
+            .name = "Requirements",
+            .rows = &.{
+                &.{ "ID", "Statement", "User Need ID", "Test Group IDs" },
+                &.{ "REQ-001", "One", "UN-001", "" },
+                &.{ "REQ-002", "Two", "UN-001", "TG-001, TG-404" },
+            },
+        },
+        .{
+            .name = "Risks",
+            .rows = &.{
+                &.{ "Risk ID", "Description", "Linked REQ" },
+                &.{ "RSK-001", "No mitigation", "" },
+                &.{ "RSK-002", "Broken mitigation", "REQ-404" },
+            },
+        },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    try ingest(&g, &sheets);
+
+    try testing.expectEqualStrings("0", g.getNode("REQ-001").?.get("declared_test_group_ref_count").?);
+    try testing.expectEqualStrings("2", g.getNode("REQ-002").?.get("declared_test_group_ref_count").?);
+    try testing.expectEqualStrings("0", g.getNode("RSK-001").?.get("declared_mitigation_req_ref_count").?);
+    try testing.expectEqualStrings("1", g.getNode("RSK-002").?.get("declared_mitigation_req_ref_count").?);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-002", testing.allocator, &edges);
+    var tested_by_count: usize = 0;
+    for (edges.items) |e| {
+        if (e.label == .tested_by) tested_by_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), tested_by_count);
 }
 
 test "resolveCol exact match" {
