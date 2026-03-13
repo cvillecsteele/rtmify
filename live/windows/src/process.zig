@@ -223,42 +223,6 @@ fn setChildEnvironment(allocator: std.mem.Allocator, log_path: []const u8) !void
     }
 }
 
-/// Spawn `rtmify-live.exe --activate <key>` and wait for exit.
-/// Returns exit code (0 = success).
-pub fn spawnActivate(key_utf8: []const u8) u32 {
-    var exe_buf: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
-    var dir_buf: [1024]u16 = undefined;
-    const dir = exeDir(&dir_buf);
-    if (dir.len == 0) return 1;
-
-    const suffix = std.unicode.utf8ToUtf16LeStringLiteral("rtmify-live.exe");
-    @memcpy(exe_buf[0..dir.len], dir);
-    @memcpy(exe_buf[dir.len .. dir.len + suffix.len], suffix);
-    exe_buf[dir.len + suffix.len] = 0;
-
-    var cmd_buf: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
-    var key_wide: [256:0]u16 = std.mem.zeroes([256:0]u16);
-    _ = std.unicode.utf8ToUtf16Le(&key_wide, key_utf8) catch return 1;
-    const prefix = std.unicode.utf8ToUtf16LeStringLiteral("rtmify-live.exe --activate ");
-    @memcpy(cmd_buf[0..prefix.len], prefix);
-    const key_len = std.mem.indexOfSentinel(u16, 0, &key_wide);
-    @memcpy(cmd_buf[prefix.len .. prefix.len + key_len], key_wide[0..key_len]);
-
-    var si: STARTUPINFOW = std.mem.zeroes(STARTUPINFOW);
-    si.cb = @sizeOf(STARTUPINFOW);
-    var pi: PROCESS_INFORMATION = std.mem.zeroes(PROCESS_INFORMATION);
-
-    const ok = CreateProcessW(&exe_buf, &cmd_buf, null, null, 0, CREATE_NO_WINDOW, null, null, &si, &pi);
-    if (ok == 0) return 1;
-    defer _ = CloseHandle(pi.hThread);
-    defer _ = CloseHandle(pi.hProcess);
-
-    _ = WaitForSingleObject(pi.hProcess, 30_000);
-    var exit_code: DWORD = 1;
-    _ = GetExitCodeProcess(pi.hProcess, &exit_code);
-    return exit_code;
-}
-
 pub var server_process: ?HANDLE = null;
 pub var server_log_handle: ?HANDLE = null;
 

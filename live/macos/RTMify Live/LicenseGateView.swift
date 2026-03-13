@@ -2,7 +2,6 @@ import SwiftUI
 
 struct LicenseGateView: View {
     @EnvironmentObject var vm: ViewModel
-    @State private var key: String = ""
 
     var body: some View {
         VStack(spacing: 24) {
@@ -20,13 +19,12 @@ struct LicenseGateView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("License Key")
+                Text("License File")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                SecureField("XXXX-XXXX-XXXX-XXXX", text: $key)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(vm.isActivating)
-                    .onSubmit { vm.activate(key: key) }
+                Text("Import a signed RTMify Live license file, or place it manually at ~/.rtmify/license.json.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
 
                 if let err = vm.activationError {
                     Text(err)
@@ -36,19 +34,24 @@ struct LicenseGateView: View {
             }
             .padding(.horizontal, 40)
 
-            Button(action: { vm.activate(key: key) }) {
+            Button(action: { vm.importLicense() }) {
                 if vm.isActivating {
                     HStack(spacing: 8) {
                         ProgressView().scaleEffect(0.7)
-                        Text("Activating...")
+                        Text("Importing...")
                     }
                 } else {
-                    Text("Activate")
+                    Text("Import License File")
                 }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(vm.isActivating || key.isEmpty)
+
+            Button("Clear Installed License") {
+                vm.clearLicense()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
 
             Link("Need a license?", destination: URL(string: "https://store.rtmify.io")!)
                 .font(.caption)

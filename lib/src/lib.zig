@@ -29,38 +29,32 @@ pub const RtmifyStatus = enum(c_int) {
 
 pub const RtmifyLicenseState = enum(c_int) {
     valid = 0,
-    valid_offline_grace = 1,
-    not_activated = 2,
+    not_licensed = 1,
     expired = 3,
-    fingerprint_mismatch = 4,
-    revoked = 5,
-    invalid_key = 6,
-    provider_unavailable = 7,
-    cache_corrupt = 8,
-    internal_error = 9,
+    invalid = 4,
+    tampered = 5,
 };
 
 pub const RtmifyLicenseDetailCode = enum(c_int) {
     none = 0,
-    invalid_key = 1,
-    revoked = 2,
-    network_error = 3,
-    server_error = 4,
-    protocol_error = 5,
-    cache_corrupt = 6,
-    fingerprint_mismatch = 7,
+    free_run_available = 1,
+    trial_exhausted = 2,
+    file_not_found = 3,
+    invalid_json = 4,
+    bad_signature = 5,
+    wrong_product = 6,
+    unsupported_schema = 7,
     expired = 8,
-    not_activated = 9,
+    install_failed = 9,
     internal_error = 10,
 };
 
 pub const RtmifyLicenseStatus = extern struct {
     state: c_int,
     permits_use: c_int,
-    activated_at: i64,
+    using_free_run: c_int,
     expires_at: i64,
-    last_validated_at: i64,
-    offline_grace_deadline: i64,
+    issued_at: i64,
     detail_code: c_int,
 };
 
@@ -270,30 +264,25 @@ fn nullableTime(value: ?i64) i64 {
 fn mapLicenseState(state: license.LicenseState) RtmifyLicenseState {
     return switch (state) {
         .valid => .valid,
-        .valid_offline_grace => .valid_offline_grace,
-        .not_activated => .not_activated,
+        .not_licensed => .not_licensed,
         .expired => .expired,
-        .fingerprint_mismatch => .fingerprint_mismatch,
-        .revoked => .revoked,
-        .invalid_key => .invalid_key,
-        .provider_unavailable => .provider_unavailable,
-        .cache_corrupt => .cache_corrupt,
-        .internal_error => .internal_error,
+        .invalid => .invalid,
+        .tampered => .tampered,
     };
 }
 
 fn mapLicenseDetail(code: license.LicenseDetailCode) RtmifyLicenseDetailCode {
     return switch (code) {
         .none => .none,
-        .invalid_key => .invalid_key,
-        .revoked => .revoked,
-        .network_error => .network_error,
-        .server_error => .server_error,
-        .protocol_error => .protocol_error,
-        .cache_corrupt => .cache_corrupt,
-        .fingerprint_mismatch => .fingerprint_mismatch,
+        .free_run_available => .free_run_available,
+        .trial_exhausted => .trial_exhausted,
+        .file_not_found => .file_not_found,
+        .invalid_json => .invalid_json,
+        .bad_signature => .bad_signature,
+        .wrong_product => .wrong_product,
+        .unsupported_schema => .unsupported_schema,
         .expired => .expired,
-        .not_activated => .not_activated,
+        .install_failed => .install_failed,
         .internal_error => .internal_error,
     };
 }
@@ -302,19 +291,21 @@ fn fillLicenseStatus(out_status: *RtmifyLicenseStatus, status: license.LicenseSt
     out_status.* = .{
         .state = @intFromEnum(mapLicenseState(status.state)),
         .permits_use = @intFromBool(status.permits_use),
-        .activated_at = nullableTime(status.activated_at),
+        .using_free_run = @intFromBool(status.using_free_run),
         .expires_at = nullableTime(status.expires_at),
-        .last_validated_at = nullableTime(status.last_validated_at),
-        .offline_grace_deadline = nullableTime(status.offline_grace_deadline),
+        .issued_at = nullableTime(status.issued_at),
         .detail_code = @intFromEnum(mapLicenseDetail(status.detail_code)),
     };
 }
 
-fn withDefaultLicenseService(comptime func: anytype) RtmifyStatus {
+fn withLicenseService(comptime product: license.LicenseProduct, comptime trial_policy: license.TrialPolicy, func: anytype) RtmifyStatus {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();
-    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+    var service = license.initDefaultHmacFile(gpa, .{
+        .product = product,
+        .trial_policy = trial_policy,
+    }) catch |err| {
         setError("license service init failed: {s}", .{@errorName(err)});
         return .err_license;
     };
@@ -322,11 +313,14 @@ fn withDefaultLicenseService(comptime func: anytype) RtmifyStatus {
     return func(gpa, &service);
 }
 
-pub export fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) c_int {
+fn fillStatusForProduct(out_status: *RtmifyLicenseStatus, product: license.LicenseProduct, trial_policy: license.TrialPolicy) c_int {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();
-    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+    var service = license.initDefaultHmacFile(gpa, .{
+        .product = product,
+        .trial_policy = trial_policy,
+    }) catch |err| {
         setError("license service init failed: {s}", .{@errorName(err)});
         return 1;
     };
@@ -342,83 +336,180 @@ pub export fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) c_int 
     return 0;
 }
 
-pub export fn rtmify_license_activate(license_key: [*:0]const u8, out_status: *RtmifyLicenseStatus) c_int {
+fn installLicenseForProduct(path: [*:0]const u8, out_status: *RtmifyLicenseStatus, product: license.LicenseProduct, trial_policy: license.TrialPolicy) c_int {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();
-    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
+    var service = license.initDefaultHmacFile(gpa, .{
+        .product = product,
+        .trial_policy = trial_policy,
+    }) catch |err| {
         setError("license service init failed: {s}", .{@errorName(err)});
         return 1;
     };
     defer service.deinit(gpa);
 
-    const key = std.mem.span(license_key);
-    var result = service.activate(gpa, .{ .license_key = key }) catch |err| {
-        setError("license activation failed: {s}", .{@errorName(err)});
+    var status = service.installFromPath(gpa, std.mem.span(path)) catch |err| {
+        setError("license install failed: {s}", .{@errorName(err)});
         return 1;
     };
-    defer result.deinit(gpa);
-    if (result.status.message) |msg| setError("{s}", .{msg});
-    fillLicenseStatus(out_status, result.status);
+    defer status.deinit(gpa);
+    if (status.message) |msg| setError("{s}", .{msg});
+    fillLicenseStatus(out_status, status);
     return 0;
+}
+
+fn clearLicenseForProduct(out_status: *RtmifyLicenseStatus, product: license.LicenseProduct, trial_policy: license.TrialPolicy) c_int {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+    var service = license.initDefaultHmacFile(gpa, .{
+        .product = product,
+        .trial_policy = trial_policy,
+    }) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer service.deinit(gpa);
+
+    var status = service.clearInstalledLicense(gpa) catch |err| {
+        setError("license clear failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer status.deinit(gpa);
+    if (status.message) |msg| setError("{s}", .{msg});
+    fillLicenseStatus(out_status, status);
+    return 0;
+}
+
+fn infoJsonForProduct(product: license.LicenseProduct, trial_policy: license.TrialPolicy) c_int {
+    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+    var service = license.initDefaultHmacFile(gpa, .{
+        .product = product,
+        .trial_policy = trial_policy,
+    }) catch |err| {
+        setError("license service init failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer service.deinit(gpa);
+
+    var info = service.getInfo(gpa) catch |err| {
+        setError("license info failed: {s}", .{@errorName(err)});
+        return 1;
+    };
+    defer info.deinit(gpa);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    const w = buf.writer(gpa);
+    w.writeAll("{\"license_path\":") catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    license.license_file.writeJsonString(w, info.license_path) catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    w.writeAll(",\"payload\":") catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    license.license_file.writePayloadJson(w, info.payload) catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    w.writeAll("}") catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    setError("{s}", .{buf.items});
+    return 0;
+}
+
+pub export fn rtmify_trace_license_get_status(out_status: *RtmifyLicenseStatus) c_int {
+    return fillStatusForProduct(out_status, .trace, .single_free_run);
+}
+
+pub export fn rtmify_trace_license_install(path: [*:0]const u8, out_status: *RtmifyLicenseStatus) c_int {
+    return installLicenseForProduct(path, out_status, .trace, .single_free_run);
+}
+
+pub export fn rtmify_trace_license_clear(out_status: *RtmifyLicenseStatus) c_int {
+    return clearLicenseForProduct(out_status, .trace, .single_free_run);
+}
+
+pub export fn rtmify_trace_license_record_successful_use() c_int {
+    const status = withLicenseService(.trace, .single_free_run, struct {
+        fn call(gpa: Allocator, service: *license.Service) RtmifyStatus {
+            service.recordSuccessfulUse(gpa) catch |err| {
+                setError("license marker write failed: {s}", .{@errorName(err)});
+                return .err_license;
+            };
+            return .ok;
+        }
+    }.call);
+    return if (status == .ok) 0 else 1;
+}
+
+pub export fn rtmify_trace_license_info_json() c_int {
+    return infoJsonForProduct(.trace, .single_free_run);
+}
+
+pub export fn rtmify_live_license_get_status(out_status: *RtmifyLicenseStatus) c_int {
+    return fillStatusForProduct(out_status, .live, .requires_license);
+}
+
+pub export fn rtmify_live_license_install(path: [*:0]const u8, out_status: *RtmifyLicenseStatus) c_int {
+    return installLicenseForProduct(path, out_status, .live, .requires_license);
+}
+
+pub export fn rtmify_live_license_clear(out_status: *RtmifyLicenseStatus) c_int {
+    return clearLicenseForProduct(out_status, .live, .requires_license);
+}
+
+pub export fn rtmify_live_license_info_json() c_int {
+    return infoJsonForProduct(.live, .requires_license);
+}
+
+pub export fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) c_int {
+    return fillStatusForProduct(out_status, .trace, .single_free_run);
+}
+
+pub export fn rtmify_license_activate(license_key: [*:0]const u8, out_status: *RtmifyLicenseStatus) c_int {
+    _ = license_key;
+    _ = out_status;
+    setError("license activation is no longer supported; import a signed license file", .{});
+    return 1;
 }
 
 pub export fn rtmify_license_deactivate(out_status: *RtmifyLicenseStatus) c_int {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
-    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
-        setError("license service init failed: {s}", .{@errorName(err)});
-        return 1;
-    };
-    defer service.deinit(gpa);
-
-    var result = service.deactivate(gpa) catch |err| {
-        setError("license deactivation failed: {s}", .{@errorName(err)});
-        return 1;
-    };
-    defer result.deinit(gpa);
-    if (result.status.message) |msg| setError("{s}", .{msg});
-    fillLicenseStatus(out_status, result.status);
-    return 0;
+    _ = out_status;
+    setError("license deactivation is no longer supported; clear the installed signed license file", .{});
+    return 1;
 }
 
 pub export fn rtmify_license_refresh(out_status: *RtmifyLicenseStatus) c_int {
-    var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
-    defer _ = gpa_state.deinit();
-    const gpa = gpa_state.allocator();
-    var service = license.initDefaultLemonSqueezy(gpa, .{}) catch |err| {
-        setError("license service init failed: {s}", .{@errorName(err)});
-        return 1;
-    };
-    defer service.deinit(gpa);
-
-    var result = service.refresh(gpa) catch |err| {
-        setError("license refresh failed: {s}", .{@errorName(err)});
-        return 1;
-    };
-    defer result.deinit(gpa);
-    if (result.status.message) |msg| setError("{s}", .{msg});
-    fillLicenseStatus(out_status, result.status);
-    return 0;
+    _ = out_status;
+    setError("license refresh is no longer supported for offline signed license files", .{});
+    return 1;
 }
 
 pub export fn rtmify_activate_license(license_key: [*:0]const u8) RtmifyStatus {
-    var out_status: RtmifyLicenseStatus = undefined;
-    if (rtmify_license_activate(license_key, &out_status) != 0) return .err_license;
-    return if (out_status.permits_use != 0) .ok else .err_license;
+    _ = license_key;
+    setError("license activation is no longer supported; import a signed license file", .{});
+    return .err_license;
 }
 
 pub export fn rtmify_check_license() RtmifyStatus {
     var out_status: RtmifyLicenseStatus = undefined;
-    if (rtmify_license_get_status(&out_status) != 0) return .err_license;
+    if (rtmify_trace_license_get_status(&out_status) != 0) return .err_license;
     return if (out_status.permits_use != 0) .ok else .err_license;
 }
 
 pub export fn rtmify_deactivate_license() RtmifyStatus {
-    var out_status: RtmifyLicenseStatus = undefined;
-    if (rtmify_license_deactivate(&out_status) != 0) return .err_license;
-    return .ok;
+    setError("license deactivation is no longer supported; clear the installed signed license file", .{});
+    return .err_license;
 }
 
 // ---------------------------------------------------------------------------

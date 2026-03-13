@@ -1,6 +1,6 @@
 # RTMify Trace — macOS App
 
-Native SwiftUI application that wraps `librtmify.a` in a drag-and-drop GUI. All XLSX parsing, graph construction, gap detection, and report rendering happen in the Zig library. Swift handles the window, file drops, license activation, and progress display.
+Native SwiftUI application that wraps `librtmify.a` in a drag-and-drop GUI. All XLSX parsing, graph construction, gap detection, and report rendering happen in the Zig library. Swift handles the window, file drops, signed-license import, and progress display.
 
 ---
 
@@ -74,21 +74,22 @@ Just Cmd+B in Xcode — no library rebuild needed.
 
 ---
 
-## Dev License Key
+## Licensing
 
-The app shows a license gate on first launch. For local development, use the bypass key:
+The app accepts signed offline license files.
 
-```
-RTMIFY-DEV-0000-0000
-```
+- Manual install path: `~/.rtmify/license.json`
+- In-app flow: import a `license.json` file from the license gate
 
-This is recognized entirely within `librtmify` — no network call is made. The key writes a valid `~/.rtmify/license.json` that never expires and never triggers online re-validation. To reset to the license gate state:
+Trace also allows one full free run. After one successful report generation,
+future runs require a valid signed license file unless the marker file is
+removed:
 
 ```sh
-rm ~/.rtmify/license.json
+rm ~/.rtmify/.trace-used
 ```
 
-To deactivate from within the app: **RTMify Trace menu → Deactivate License...**
+To remove an installed license file from within the app: **RTMify Trace menu → Clear Installed License...**
 
 ---
 
@@ -100,11 +101,11 @@ sys/trace/macos/
 ├── RTMify Trace.xcodeproj/
 │   └── project.pbxproj          ← hand-generated; edit here for build settings
 ├── RTMify Trace/
-│   ├── App.swift                 ← @main, Window scene, deactivate menu
+│   ├── App.swift                 ← @main, Window scene, clear-license menu
 │   ├── ContentView.swift         ← state switcher + error alert
 │   ├── ViewModel.swift           ← AppState machine, all async C calls
 │   ├── RTMifyBridge.swift        ← async Swift wrappers over C ABI
-│   ├── LicenseGateView.swift     ← key entry + activate button
+│   ├── LicenseGateView.swift     ← signed-license import gate
 │   ├── DropZoneView.swift        ← drag-and-drop zone, file summary, format picker
 │   ├── DoneView.swift            ← results, Show in Finder, Generate Another
 │   ├── rtmify-bridge.h           ← C ABI declarations (bridging header)
@@ -138,7 +139,7 @@ sys/trace/macos/
 │  │  Graph construction         │   │
 │  │  Gap detection              │   │
 │  │  PDF / DOCX / MD rendering  │   │
-│  │  License management         │   │
+│  │  Signed license files       │   │
 │  └─────────────────────────────┘   │
 └─────────────────────────────────────┘
 ```
@@ -152,9 +153,10 @@ rtmify_gap_count()         // number of traceability gaps
 rtmify_warning_count()     // number of validation warnings
 rtmify_last_error()        // human-readable error from last failure
 rtmify_free()              // release graph handle
-rtmify_activate_license()  // validate key with LemonSqueezy + write cache
-rtmify_check_license()     // read cache → 0 = ok, non-zero = gate
-rtmify_deactivate_license()// remove cache + notify LemonSqueezy
+rtmify_trace_license_get_status()            // Trace status + free-run policy
+rtmify_trace_license_install()               // install signed license file
+rtmify_trace_license_clear()                 // remove installed license file
+rtmify_trace_license_record_successful_use() // consume Trace free run
 ```
 
 ---
@@ -199,8 +201,10 @@ Seen on some Xcode/SDK combinations. Usually caused by incorrect code signing se
 
 ---
 
-### App shows license gate, dev key doesn't work
-Verify the library was rebuilt after the last change to `license.zig`. The dev key (`RTMIFY-DEV-0000-0000`) is compiled into `librtmify.a` — a stale library won't recognize it.
+### App still shows the license gate after importing a valid file
+Verify the library was rebuilt after the last change to `license.zig`, then
+check that the imported `license.json` is for product `trace` and has not
+expired or been tampered with.
 
 ---
 

@@ -1,113 +1,223 @@
-// license_gate.zig — Win32 dialog for license key entry.
-
 const std = @import("std");
+
 const HWND = *anyopaque;
 const HINSTANCE = *anyopaque;
 const BOOL = c_int;
 const UINT = c_uint;
 const DWORD = u32;
+const WORD = u16;
 const LPARAM = isize;
 const WPARAM = usize;
 const LRESULT = isize;
 
-const WM_COMMAND: UINT = 0x0111;
-const WM_CLOSE: UINT = 0x0010;
-const WM_INITDIALOG: UINT = 0x0110;
-
 const WS_CHILD: DWORD = 0x40000000;
 const WS_VISIBLE: DWORD = 0x10000000;
-const WS_BORDER: DWORD = 0x00800000;
 const WS_TABSTOP: DWORD = 0x00010000;
 const WS_CAPTION: DWORD = 0x00C00000;
 const WS_SYSMENU: DWORD = 0x00080000;
 const WS_POPUP: DWORD = 0x80000000;
 const DS_CENTER: DWORD = 0x00000008;
-const ES_AUTOHSCROLL: DWORD = 0x0080;
 const BS_DEFPUSHBUTTON: DWORD = 0x00000001;
 const BS_PUSHBUTTON: DWORD = 0x00000000;
 const SS_LEFT: DWORD = 0x00000000;
 
-const IDC_KEY_EDIT: c_int = 1001;
-const IDC_ACTIVATE_BTN: c_int = 1002;
+const OFN_FILEMUSTEXIST: DWORD = 0x00001000;
+const OFN_PATHMUSTEXIST: DWORD = 0x00000800;
+const OFN_HIDEREADONLY: DWORD = 0x00000004;
+
+const IDC_IMPORT_BTN: c_int = 1001;
+const IDC_CLEAR_BTN: c_int = 1002;
 const IDC_STATUS_LABEL: c_int = 1003;
 const IDCANCEL: c_int = 2;
 
 extern "user32" fn CreateWindowExW(
-    dwExStyle: DWORD, lpClassName: [*:0]const u16, lpWindowName: [*:0]const u16,
-    dwStyle: DWORD, X: i32, Y: i32, nWidth: i32, nHeight: i32,
-    hWndParent: ?HWND, hMenu: ?*anyopaque, hInstance: ?*anyopaque, lpParam: ?*anyopaque,
+    dwExStyle: DWORD,
+    lpClassName: [*:0]const u16,
+    lpWindowName: [*:0]const u16,
+    dwStyle: DWORD,
+    X: i32,
+    Y: i32,
+    nWidth: i32,
+    nHeight: i32,
+    hWndParent: ?HWND,
+    hMenu: ?*anyopaque,
+    hInstance: ?*anyopaque,
+    lpParam: ?*anyopaque,
 ) callconv(.winapi) ?HWND;
 extern "user32" fn ShowWindow(hWnd: HWND, nCmdShow: c_int) callconv(.winapi) BOOL;
 extern "user32" fn DestroyWindow(hWnd: HWND) callconv(.winapi) BOOL;
 extern "user32" fn SetDlgItemTextW(hDlg: HWND, nIDDlgItem: c_int, lpString: [*:0]const u16) callconv(.winapi) BOOL;
-extern "user32" fn GetDlgItemTextW(hDlg: HWND, nIDDlgItem: c_int, lpString: [*:0]u16, nMaxCount: c_int) callconv(.winapi) UINT;
 extern "user32" fn SendMessageW(hWnd: HWND, Msg: UINT, wParam: WPARAM, lParam: LPARAM) callconv(.winapi) LRESULT;
-extern "user32" fn EnableWindow(hWnd: HWND, bEnable: BOOL) callconv(.winapi) BOOL;
-extern "user32" fn GetDlgItem(hDlg: HWND, nIDDlgItem: c_int) callconv(.winapi) ?HWND;
-extern "user32" fn MessageBoxW(hWnd: ?HWND, lpText: [*:0]const u16, lpCaption: [*:0]const u16, uType: UINT) callconv(.winapi) c_int;
 
-const MB_OK: UINT = 0x00000000;
-const MB_ICONERROR: UINT = 0x00000010;
+const OPENFILENAMEW = extern struct {
+    lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
+    hwndOwner: ?HWND = null,
+    hInstance: ?HINSTANCE = null,
+    lpstrFilter: ?[*:0]const u16 = null,
+    lpstrCustomFilter: ?[*:0]u16 = null,
+    nMaxCustFilter: DWORD = 0,
+    nFilterIndex: DWORD = 1,
+    lpstrFile: ?[*:0]u16 = null,
+    nMaxFile: DWORD = 0,
+    lpstrFileTitle: ?[*:0]u16 = null,
+    nMaxFileTitle: DWORD = 0,
+    lpstrInitialDir: ?[*:0]const u16 = null,
+    lpstrTitle: ?[*:0]const u16 = null,
+    Flags: DWORD = 0,
+    nFileOffset: WORD = 0,
+    nFileExtension: WORD = 0,
+    lpstrDefExt: ?[*:0]const u16 = null,
+    lCustData: LPARAM = 0,
+    lpfnHook: ?*anyopaque = null,
+    lpTemplateName: ?[*:0]const u16 = null,
+    pvReserved: ?*anyopaque = null,
+    dwReserved: DWORD = 0,
+    FlagsEx: DWORD = 0,
+};
+
+extern "comdlg32" fn GetOpenFileNameW(lpofn: *OPENFILENAMEW) callconv(.winapi) BOOL;
 
 const RtmifyLicenseStatus = extern struct {
     state: i32,
     permits_use: i32,
-    activated_at: i64,
+    using_free_run: i32,
     expires_at: i64,
-    last_validated_at: i64,
-    offline_grace_deadline: i64,
+    issued_at: i64,
     detail_code: i32,
 };
 
 extern fn rtmify_last_error() [*:0]const u8;
-extern fn rtmify_license_get_status(out_status: *RtmifyLicenseStatus) i32;
-extern fn rtmify_license_activate(license_key: [*:0]const u8, out_status: *RtmifyLicenseStatus) i32;
+extern fn rtmify_live_license_get_status(out_status: *RtmifyLicenseStatus) i32;
+extern fn rtmify_live_license_install(path: [*:0]const u8, out_status: *RtmifyLicenseStatus) i32;
+extern fn rtmify_live_license_clear(out_status: *RtmifyLicenseStatus) i32;
 
 fn W(comptime s: []const u8) [:0]const u16 {
     return std.unicode.utf8ToUtf16LeStringLiteral(s);
 }
 
-/// Show a modal license key dialog. Blocks until the user activates or cancels.
-/// On successful activation, posts WM_APP+2 to `notify_hwnd`.
+fn toUtf16Message(text: []const u8, buf: []u16) [*:0]const u16 {
+    @memset(buf, 0);
+    const n = std.unicode.utf8ToUtf16Le(buf[0 .. buf.len - 1], text) catch 0;
+    buf[n] = 0;
+    return @ptrCast(buf.ptr);
+}
+
+fn licenseMessage(status: RtmifyLicenseStatus) []const u8 {
+    return switch (status.detail_code) {
+        3 => "No license file found. Import a signed RTMify Live license file or place it at ~/.rtmify/license.json.",
+        5 => "The license file signature is invalid or the file was modified.",
+        6 => "This license file is for a different RTMify product.",
+        8 => "The installed license file has expired.",
+        else => "Import a signed RTMify Live license file, or place it manually at ~/.rtmify/license.json.",
+    };
+}
+
+fn browseLicenseJson(hwnd: HWND, buf: []u8) ?[]u8 {
+    const filter = [_:0]u16{
+        'L', 'i', 'c', 'e', 'n', 's', 'e', ' ', 'F', 'i', 'l', 'e', 's', 0,
+        '*', '.', 'j', 's', 'o', 'n', 0,
+        0,
+    };
+    var path_w: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
+    var ofn = OPENFILENAMEW{
+        .hwndOwner = hwnd,
+        .lpstrFilter = &filter,
+        .lpstrFile = &path_w,
+        .nMaxFile = @intCast(path_w.len),
+        .Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY,
+        .lpstrDefExt = &[_:0]u16{ 'j', 's', 'o', 'n', 0 },
+    };
+    if (GetOpenFileNameW(&ofn) == 0) return null;
+    const wlen = std.mem.indexOfScalar(u16, &path_w, 0) orelse path_w.len;
+    const nbytes = std.unicode.utf16LeToUtf8(buf, path_w[0..wlen]) catch return null;
+    return buf[0..nbytes];
+}
+
 pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) void {
     _ = port;
 
     const hwnd = CreateWindowExW(
         0,
         W("STATIC"),
-        W("RTMify Live — Activate License"),
+        W("RTMify Live — Install License"),
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_CENTER,
-        100, 100, 380, 200,
-        notify_hwnd, null, hInstance, null,
+        100,
+        100,
+        420,
+        215,
+        notify_hwnd,
+        null,
+        hInstance,
+        null,
     ) orelse return;
 
-    // Label
-    _ = CreateWindowExW(0, W("STATIC"), W("Enter your license key:"),
+    _ = CreateWindowExW(
+        0,
+        W("STATIC"),
+        W("Import a signed license file, or place it at ~/.rtmify/license.json."),
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        20, 20, 340, 20,
-        hwnd, @ptrFromInt(IDC_STATUS_LABEL), hInstance, null);
+        20,
+        20,
+        380,
+        36,
+        hwnd,
+        @ptrFromInt(IDC_STATUS_LABEL),
+        hInstance,
+        null,
+    );
 
-    // Edit
-    _ = CreateWindowExW(WS_BORDER, W("EDIT"), W(""),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-        20, 50, 340, 28,
-        hwnd, @ptrFromInt(IDC_KEY_EDIT), hInstance, null);
-
-    // Activate button
-    _ = CreateWindowExW(0, W("BUTTON"), W("Activate"),
+    _ = CreateWindowExW(
+        0,
+        W("BUTTON"),
+        W("Import License File"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-        220, 100, 140, 30,
-        hwnd, @ptrFromInt(IDC_ACTIVATE_BTN), hInstance, null);
+        20,
+        80,
+        180,
+        30,
+        hwnd,
+        @ptrFromInt(IDC_IMPORT_BTN),
+        hInstance,
+        null,
+    );
 
-    // Cancel button
-    _ = CreateWindowExW(0, W("BUTTON"), W("Cancel"),
+    _ = CreateWindowExW(
+        0,
+        W("BUTTON"),
+        W("Clear Installed License"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        60, 100, 140, 30,
-        hwnd, @ptrFromInt(IDCANCEL), hInstance, null);
+        220,
+        80,
+        180,
+        30,
+        hwnd,
+        @ptrFromInt(IDC_CLEAR_BTN),
+        hInstance,
+        null,
+    );
 
-    _ = ShowWindow(hwnd, 5); // SW_SHOW
+    _ = CreateWindowExW(
+        0,
+        W("BUTTON"),
+        W("Cancel"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        140,
+        130,
+        140,
+        30,
+        hwnd,
+        @ptrFromInt(IDCANCEL),
+        hInstance,
+        null,
+    );
 
-    // Store references for the message handler
+    var status: RtmifyLicenseStatus = undefined;
+    if (rtmify_live_license_get_status(&status) == 0) {
+        var msg_buf: [512]u16 = undefined;
+        _ = SetDlgItemTextW(hwnd, IDC_STATUS_LABEL, toUtf16Message(licenseMessage(status), &msg_buf));
+    }
+
+    _ = ShowWindow(hwnd, 5);
     g_license_hwnd = hwnd;
     g_notify_hwnd = notify_hwnd;
 }
@@ -117,36 +227,36 @@ pub var g_notify_hwnd: ?HWND = null;
 
 pub fn licensePermitsUse() bool {
     var status: RtmifyLicenseStatus = undefined;
-    return rtmify_license_get_status(&status) == 0 and status.permits_use != 0;
+    return rtmify_live_license_get_status(&status) == 0 and status.permits_use != 0;
 }
 
-/// Handle WM_COMMAND in the license dialog.
 pub fn handleCommand(hwnd: HWND, ctrl_id: c_int) void {
-    if (ctrl_id == IDC_ACTIVATE_BTN) {
-        var key_buf: [128:0]u16 = std.mem.zeroes([128:0]u16);
-        _ = GetDlgItemTextW(hwnd, IDC_KEY_EDIT, &key_buf, 128);
-        var key_utf8: [256]u8 = undefined;
-        const key_wide_len = std.mem.indexOfSentinel(u16, 0, &key_buf);
-        const key_len = std.unicode.utf16LeToUtf8(&key_utf8, key_buf[0..key_wide_len]) catch return;
-        const key = key_utf8[0..key_len];
-        if (key.len == 0) return;
+    if (ctrl_id == IDC_IMPORT_BTN) {
+        var path_buf: [1024]u8 = undefined;
+        const path = browseLicenseJson(hwnd, &path_buf) orelse return;
+        var path_z: [1025:0]u8 = std.mem.zeroes([1025:0]u8);
+        @memcpy(path_z[0..path.len], path);
 
-        var key_z: [129:0]u8 = std.mem.zeroes([129:0]u8);
-        @memcpy(key_z[0..key.len], key);
         var status: RtmifyLicenseStatus = undefined;
-        const rc = rtmify_license_activate(&key_z, &status);
+        const rc = rtmify_live_license_install(&path_z, &status);
         if (rc == 0 and status.permits_use != 0) {
             _ = DestroyWindow(hwnd);
             g_license_hwnd = null;
-            // Notify main window
             if (g_notify_hwnd) |nwnd| {
                 const WM_APP: UINT = 0x8000;
                 _ = SendMessageW(nwnd, WM_APP + 2, 0, 0);
             }
         } else {
-            _ = rtmify_last_error();
-            _ = SetDlgItemTextW(hwnd, IDC_STATUS_LABEL, W("Activation failed. Check key and internet."));
+            var msg_buf: [512]u16 = undefined;
+            const msg = if (rc == 0) licenseMessage(status) else std.mem.span(rtmify_last_error());
+            _ = SetDlgItemTextW(hwnd, IDC_STATUS_LABEL, toUtf16Message(msg, &msg_buf));
         }
+    } else if (ctrl_id == IDC_CLEAR_BTN) {
+        var status: RtmifyLicenseStatus = undefined;
+        const rc = rtmify_live_license_clear(&status);
+        var msg_buf: [512]u16 = undefined;
+        const msg = if (rc == 0) licenseMessage(status) else std.mem.span(rtmify_last_error());
+        _ = SetDlgItemTextW(hwnd, IDC_STATUS_LABEL, toUtf16Message(msg, &msg_buf));
     } else if (ctrl_id == IDCANCEL) {
         if (g_license_hwnd) |lhwnd| {
             _ = DestroyWindow(lhwnd);

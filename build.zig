@@ -89,19 +89,43 @@ fn addLiveSecurityDeps(compile: *std.Build.Step.Compile, b: *std.Build) void {
     compile.linkFramework("CoreFoundation");
 }
 
+fn trimAsciiWhitespace(bytes: []u8) []const u8 {
+    return std.mem.trim(u8, bytes, " \t\r\n");
+}
+
+fn loadLicenseHmacKeyHex(b: *std.Build, optimize: std.builtin.OptimizeMode) []const u8 {
+    const key_file_opt = b.option([]const u8, "license-hmac-key-file", "Path to a 64-hex-char HMAC key file for signed RTMify licenses");
+    const key_file_env = b.graph.env_map.get("RTMIFY_LICENSE_HMAC_KEY_FILE");
+    const key_file = key_file_opt orelse key_file_env;
+    if (key_file) |path| {
+        const bytes = std.fs.cwd().readFileAlloc(b.allocator, path, 1024) catch @panic("failed to read license HMAC key file");
+        const trimmed = trimAsciiWhitespace(bytes);
+        if (trimmed.len != 64) @panic("license HMAC key file must contain exactly 64 lowercase hex chars");
+        return b.dupe(trimmed);
+    }
+    if (optimize != .Debug) {
+        @panic("release builds require -Dlicense-hmac-key-file or RTMIFY_LICENSE_HMAC_KEY_FILE");
+    }
+    return "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+}
+
 pub fn build(b: *std.Build) void {
     const version = "20260308-a";
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
     const opts = b.addOptions();
     opts.addOption([]const u8, "version", version);
+    const license_hmac_key_hex = loadLicenseHmacKeyHex(b, optimize);
+    opts.addOption([]const u8, "license_hmac_key_hex", license_hmac_key_hex);
     const opts_mod = opts.createModule();
-
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
 
     const native_rtmify_mod = b.createModule(.{
         .root_source_file = b.path("lib/src/lib.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "build_options", .module = opts_mod },
+        },
     });
     const native_cadcruncher_mod = b.createModule(.{
         .root_source_file = b.path("libcadcruncher/src/lib.zig"),
@@ -165,6 +189,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("lib/src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = opts_mod },
+            },
         }),
     });
 
@@ -175,9 +202,25 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("lib/src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = opts_mod },
+            },
         }),
     });
     static_lib.bundle_compiler_rt = true;
+
+    const license_gen_exe = b.addExecutable(.{
+        .name = "rtmify-license-gen",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lib/src/license_gen.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "rtmify", .module = native_rtmify_mod },
+                .{ .name = "build_options", .module = opts_mod },
+            },
+        }),
+    });
 
     const install_trace = b.addInstallArtifact(trace_exe, .{});
     const install_live = b.addInstallArtifact(live_exe, .{});
@@ -185,6 +228,7 @@ pub fn build(b: *std.Build) void {
     const install_cadcruncher_lib = b.addInstallArtifact(cadcruncher_lib, .{});
     const install_shared_lib = b.addInstallArtifact(shared_lib, .{});
     const install_static_lib = b.addInstallArtifact(static_lib, .{});
+    const install_license_gen = b.addInstallArtifact(license_gen_exe, .{});
 
     b.getInstallStep().dependOn(&install_trace.step);
     b.getInstallStep().dependOn(&install_live.step);
@@ -192,6 +236,7 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_cadcruncher_lib.step);
     b.getInstallStep().dependOn(&install_shared_lib.step);
     b.getInstallStep().dependOn(&install_static_lib.step);
+    b.getInstallStep().dependOn(&install_license_gen.step);
 
     const trace_step = b.step("trace", "Build rtmify-trace");
     trace_step.dependOn(&install_trace.step);
@@ -206,6 +251,9 @@ pub fn build(b: *std.Build) void {
     const lib_step = b.step("lib", "Build librtmify static and shared libraries");
     lib_step.dependOn(&install_shared_lib.step);
     lib_step.dependOn(&install_static_lib.step);
+
+    const license_gen_step = b.step("license-gen", "Build rtmify-license-gen");
+    license_gen_step.dependOn(&install_license_gen.step);
 
     const run_trace_cmd = b.addRunArtifact(trace_exe);
     if (b.args) |args| run_trace_cmd.addArgs(args);
@@ -227,6 +275,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("lib/src/lib.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = opts_mod },
+            },
         }),
     });
     const run_lib_tests = b.addRunArtifact(lib_tests);
@@ -382,6 +433,9 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "rtmify", .module = b.createModule(.{
                     .root_source_file = b.path("lib/src/lib.zig"),
                     .target = windows_check_target,
+                    .imports = &.{
+                        .{ .name = "build_options", .module = opts_mod },
+                    },
                 }) },
                 .{ .name = "build_options", .module = opts_mod },
             },
@@ -420,6 +474,9 @@ pub fn build(b: *std.Build) void {
         const cross_rtmify_mod = b.createModule(.{
             .root_source_file = b.path("lib/src/lib.zig"),
             .target = cross_target,
+            .imports = &.{
+                .{ .name = "build_options", .module = opts_mod },
+            },
         });
 
         const trace_release_exe = b.addExecutable(.{
@@ -467,6 +524,9 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("lib/src/lib.zig"),
                 .target = cross_target,
                 .optimize = .ReleaseSafe,
+                .imports = &.{
+                    .{ .name = "build_options", .module = opts_mod },
+                },
             }),
         });
         static_release_lib.bundle_compiler_rt = true;

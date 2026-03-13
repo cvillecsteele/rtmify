@@ -13,6 +13,12 @@ const test_results_inbox = @import("test_results_inbox.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
 
+const LicenseCommand = enum {
+    info,
+    install,
+    clear,
+};
+
 pub const std_options: std.Options = .{
     .log_level = .info,
     .logFn = log_sink.logFn,
@@ -30,8 +36,10 @@ const help_text =
     \\  --repo <path>          Repository path to scan (repeatable)
     \\  --profile <name>       Industry profile: medical|aerospace|automotive|generic
     \\  --inbox-dir <path>     Test result inbox directory (default: ~/.rtmify/inbox)
-    \\  --activate <key>       Activate license key
-    \\  --deactivate           Deactivate license
+    \\  --license <path>       Use a specific signed license file
+    \\  license info [--json]  Show installed license details
+    \\  license install <path> Install a signed license file
+    \\  license clear          Remove the installed license file
     \\  --license-status-json  Print structured license status JSON and exit
     \\  --version              Print version and exit
     \\  --help                 Print this help and exit
@@ -53,11 +61,15 @@ pub fn main() !void {
     var show_license_status_json = false;
     var show_help = false;
     var no_browser = false;
-    var activate_key: ?[]const u8 = null;
-    var do_deactivate = false;
+    var license_path_override: ?[]const u8 = null;
+    var license_cmd: ?LicenseCommand = null;
+    var license_cmd_path: ?[]const u8 = null;
+    var license_cmd_json = false;
     var repo_paths: std.ArrayList([]const u8) = .empty;
     var profile_name: ?[]const u8 = null;
     var inbox_dir_override: ?[]const u8 = null;
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -66,15 +78,33 @@ pub fn main() !void {
             show_version = true;
         } else if (std.mem.eql(u8, arg, "--license-status-json")) {
             show_license_status_json = true;
+        } else if (std.mem.eql(u8, arg, "--license") and i + 1 < args.len) {
+            i += 1;
+            license_path_override = args[i];
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            license_cmd_json = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             show_help = true;
         } else if (std.mem.eql(u8, arg, "--no-browser")) {
             no_browser = true;
-        } else if (std.mem.eql(u8, arg, "--deactivate")) {
-            do_deactivate = true;
-        } else if (std.mem.eql(u8, arg, "--activate") and i + 1 < args.len) {
+        } else if (std.mem.eql(u8, arg, "license")) {
+            if (i + 1 >= args.len) {
+                try stderr.writeAll("Error: missing license subcommand\n");
+                std.process.exit(1);
+            }
             i += 1;
-            activate_key = args[i];
+            license_cmd = std.meta.stringToEnum(LicenseCommand, args[i]) orelse {
+                try stderr.print("Error: unknown license subcommand: {s}\n", .{args[i]});
+                std.process.exit(1);
+            };
+            if (license_cmd == .install) {
+                if (i + 1 >= args.len) {
+                    try stderr.writeAll("Error: missing license file path\n");
+                    std.process.exit(1);
+                }
+                i += 1;
+                license_cmd_path = args[i];
+            }
         } else if (std.mem.eql(u8, arg, "--db") and i + 1 < args.len) {
             i += 1;
             const src = args[i];
@@ -96,9 +126,6 @@ pub fn main() !void {
         }
     }
 
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
-
     if (show_help) {
         try stdout.writeAll(help_text);
         return;
@@ -109,41 +136,80 @@ pub fn main() !void {
         return;
     }
 
-    var license_service = try license.initDefaultLemonSqueezy(gpa, .{});
+    var license_service = try license.initDefaultHmacFile(gpa, .{
+        .product = .live,
+        .trial_policy = .requires_license,
+        .license_path_override = license_path_override,
+    });
     defer license_service.deinit(gpa);
 
     if (show_license_status_json) {
         var status = try license_service.getStatus(gpa);
         defer status.deinit(gpa);
-        try stdout.print(
-            "{{\"state\":\"{s}\",\"permits_use\":{s},\"provider_id\":\"{s}\",\"detail_code\":\"{s}\"}}\n",
-            .{
-                @tagName(status.state),
-                if (status.permits_use) "true" else "false",
-                status.provider_id,
-                @tagName(status.detail_code),
+        try stdout.print("{{\"state\":\"{s}\",\"permits_use\":{s},\"detail_code\":\"{s}\"}}\n", .{
+            @tagName(status.state),
+            if (status.permits_use) "true" else "false",
+            @tagName(status.detail_code),
+        });
+        return;
+    }
+
+    if (license_cmd) |cmd| {
+        switch (cmd) {
+            .info => {
+                var info = license_service.getInfo(gpa) catch |err| {
+                    try stderr.print("Error: {s}\n", .{@errorName(err)});
+                    std.process.exit(2);
+                };
+                defer info.deinit(gpa);
+                if (license_cmd_json) {
+                    var buf: std.ArrayList(u8) = .empty;
+                    defer buf.deinit(gpa);
+                    const writer = buf.writer(gpa);
+                    try writer.writeAll("{\"license_path\":");
+                    try license.license_file.writeJsonString(writer, info.license_path);
+                    try writer.writeAll(",\"payload\":");
+                    try license.license_file.writePayloadJson(writer, info.payload);
+                    try writer.writeAll("}\n");
+                    try stdout.writeAll(buf.items);
+                } else {
+                    try stdout.print("License ID: {s}\nProduct: {s}\nTier: {s}\nIssued To: {s}\n", .{
+                        info.payload.license_id,
+                        @tagName(info.payload.product),
+                        @tagName(info.payload.tier),
+                        info.payload.issued_to,
+                    });
+                    if (info.payload.org) |org| try stdout.print("Org: {s}\n", .{org});
+                    if (info.payload.expires_at) |expires_at| {
+                        try stdout.print("Expires At: {d}\n", .{expires_at});
+                    } else {
+                        try stdout.writeAll("Expires At: perpetual\n");
+                    }
+                    try stdout.print("Path: {s}\n", .{info.license_path});
+                }
+                return;
             },
-        );
-        return;
-    }
-
-    if (activate_key) |key| {
-        var result = try license_service.activate(gpa, .{ .license_key = key });
-        defer result.deinit(gpa);
-        if (!result.status.permits_use) {
-            const msg = result.status.message orelse "license activation failed";
-            try stderr.print("Error: {s}\n", .{msg});
-            std.process.exit(2);
+            .install => {
+                const path = license_cmd_path orelse {
+                    try stderr.writeAll("Error: missing license file path\n");
+                    std.process.exit(1);
+                };
+                var status = try license_service.installFromPath(gpa, path);
+                defer status.deinit(gpa);
+                if (!status.permits_use) {
+                    try stderr.print("Error: {s}\n", .{status.message orelse "license install failed"});
+                    std.process.exit(2);
+                }
+                try stdout.writeAll("License installed successfully.\n");
+                return;
+            },
+            .clear => {
+                var status = try license_service.clearInstalledLicense(gpa);
+                defer status.deinit(gpa);
+                try stdout.writeAll("Installed license cleared.\n");
+                return;
+            },
         }
-        try stdout.print("License activated successfully.\n", .{});
-        return;
-    }
-
-    if (do_deactivate) {
-        var result = try license_service.deactivate(gpa);
-        defer result.deinit(gpa);
-        try stdout.print("License deactivated.\n", .{});
-        return;
     }
 
     std.log.info("rtmify-live {s} — db={s} port={d}", .{ build_options.version, db_path, port });

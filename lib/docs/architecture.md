@@ -304,47 +304,57 @@ UTF-8 characters are substituted with ASCII equivalents (em dash → `-`,
 
 ---
 
-### `license.zig` — LemonSqueezy license verification
+### `license.zig` — signed license-file verification
 
-**Activation flow:**
+RTMify licensing is fully offline at runtime.
 
-1. `rtmify-trace --activate <key>` calls `license.activate(gpa, .{}, key)`
-2. Computes a machine fingerprint: SHA-256 of hostname + OS tag, hex-encoded
-3. POSTs to `https://api.lemonsqueezy.com/v1/licenses/activate`
-4. On success, writes `~/.rtmify/license.json` with the activation record
+**Installed file:**
 
-**Startup check:**
+- default path: `~/.rtmify/license.json`
+- optional override: `--license <path>` or `RTMIFY_LICENSE`
 
-`license.check(gpa, .{})` runs three layers of verification:
+**Envelope model:**
 
-1. **Fingerprint** — recomputes `machineFingerprint()` and compares it to the
-   stored value. Mismatch → `fingerprint_mismatch`. This prevents copying
-   `license.json` to another machine.
-2. **Expiry** — `checkRecord` compares `expires_at` against `now`. Perpetual
-   licenses (`expires_at: null`) never expire. A 30-day grace period applies
-   to subscription licenses after expiration.
-3. **Periodic re-validation** — if `last_validated_at` is null or more than 7
-   days ago, the tool POSTs to `https://api.lemonsqueezy.com/v1/licenses/validate`.
-   On success, `last_validated_at` is updated in the cache. On network failure,
-   a 30-day offline grace period applies; beyond that the tool returns
-   `not_activated`.
+The installed file is a JSON envelope:
 
-`Options.now` overrides the current timestamp in tests, allowing all
-time-dependent paths to be exercised without real network calls or sleeping.
+```json
+{
+  "payload": {
+    "schema": 1,
+    "license_id": "TRACE-2026-0042",
+    "product": "trace",
+    "tier": "individual",
+    "issued_to": "jane@acme.com",
+    "issued_at": 1741824000,
+    "expires_at": null,
+    "org": "Acme Medical Devices"
+  },
+  "sig": "<hex hmac-sha256>"
+}
+```
 
-**Machine fingerprint:** SHA-256 of hostname + null byte + OS tag string.
-Platform-specific hostname retrieval:
-- POSIX: `std.posix.gethostname`
-- Windows: `GetComputerNameA` via `extern "kernel32"`
+`license_file.zig` writes the payload JSON in a fixed field order and verifies
+an HMAC-SHA256 signature using a build-embedded secret.
 
-**Cache path:** `~/.rtmify/license.json` (POSIX) or
-`%USERPROFILE%\.rtmify\license.json` (Windows). The `Options.dir` override
-redirects I/O to an arbitrary path — used in tests to avoid touching the real
-home directory.
+**Runtime check:**
 
-**HTTP:** `std.http.Client.fetch` with `std.Io.Writer.Allocating` to capture
-the response body. TLS is handled by Zig's built-in TLS implementation; no
-system TLS dependency.
+`license.getStatus(...)`:
+
+1. resolves the installed file path
+2. parses the envelope JSON
+3. verifies the HMAC signature
+4. checks schema and product match
+5. checks expiry
+6. for Trace, applies the single-free-run marker policy
+
+There are no runtime network calls, no fingerprinting, and no revalidation
+loop.
+
+**Trace free run:**
+
+Trace permits one successful output generation without an installed license.
+After that it writes `~/.rtmify/.trace-used`, and future runs require a valid
+signed license file.
 
 ---
 
@@ -439,7 +449,7 @@ The test suite has 131 tests covering:
 
 No mocking. Tests use `testing.tmpDir()` for filesystem I/O, `Options.now`
 to control timestamps in license tests, and build small graphs directly in
-memory for render tests. Network calls (LemonSqueezy) are not exercised in
+memory for render tests. No runtime licensing network calls exist in
 unit tests — re-validation is bypassed by setting `last_validated_at` to a
 recent timestamp.
 

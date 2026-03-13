@@ -346,7 +346,6 @@
   async function loadInfo() {
     const errEl = document.getElementById('info-error');
     const licenseStateEl = document.getElementById('info-license-state');
-    const licenseProviderEl = document.getElementById('info-license-provider');
     const trayEl = document.getElementById('info-tray-version');
     const liveEl = document.getElementById('info-live-version');
     const dbEl = document.getElementById('info-db-path');
@@ -354,7 +353,7 @@
     const testResultsEndpointEl = document.getElementById('test-results-endpoint');
     const testResultsTokenEl = document.getElementById('test-results-token');
     const testResultsInboxEl = document.getElementById('test-results-inbox');
-    if (!errEl || !trayEl || !liveEl || !dbEl || !logEl || !licenseStateEl || !licenseProviderEl) return;
+    if (!errEl || !trayEl || !liveEl || !dbEl || !logEl || !licenseStateEl) return;
 
     errEl.style.display = 'none';
     try {
@@ -363,7 +362,6 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const info = await res.json();
       licenseStateEl.textContent = licenseStatus?.state || 'unknown';
-      licenseProviderEl.textContent = licenseStatus?.provider_id || 'unknown';
       trayEl.textContent = info.tray_app_version || 'not available';
       liveEl.textContent = info.live_version || 'unknown';
       dbEl.textContent = info.db_path || 'unknown';
@@ -373,7 +371,6 @@
       errEl.textContent = 'Failed to load info: ' + e.message;
       errEl.style.display = 'block';
       licenseStateEl.textContent = '—';
-      licenseProviderEl.textContent = '—';
       trayEl.textContent = '—';
       liveEl.textContent = '—';
       dbEl.textContent = '—';
@@ -924,38 +921,44 @@
   }
 
   function licenseStateMessage(status) {
-    if (!status) return 'Enter a license key to continue.';
+    if (!status) return 'Select a signed license file to continue.';
     switch (status.state) {
-      case 'not_activated':
-        return 'Enter a license key to unlock RTMify Live.';
+      case 'not_licensed':
+        return status.using_free_run
+          ? 'A free run is available.'
+          : 'Select a signed license file or place it at ~/.rtmify/license.json.';
       case 'expired':
-        return 'This license has expired. Refresh or activate a valid key to continue.';
-      case 'fingerprint_mismatch':
-        return 'This license cache belongs to a different machine.';
-      case 'provider_unavailable':
-        return 'The license provider could not be reached. Refresh status or try again later.';
-      case 'cache_corrupt':
-        return 'The local license cache could not be read.';
-      case 'revoked':
-        return 'This license is no longer active.';
-      case 'invalid_key':
-        return 'The current license key is not valid.';
-      case 'valid_offline_grace':
-        return 'License is valid in offline grace mode.';
+        return 'This license has expired.';
+      case 'invalid':
+        return 'This license file is invalid.';
+      case 'tampered':
+        return 'This license file appears to have been modified or is for a different product.';
       case 'valid':
         return 'License is active.';
       default:
-        return 'License activation is required.';
+        return 'A signed license file is required.';
     }
   }
 
   function syncLicenseInfo(status) {
     const stateEl = document.getElementById('info-license-state');
-    const providerEl = document.getElementById('info-license-provider');
-    const deactivateBtn = document.getElementById('info-license-deactivate');
+    const idEl = document.getElementById('info-license-id');
+    const issuedToEl = document.getElementById('info-license-issued-to');
+    const orgEl = document.getElementById('info-license-org');
+    const tierEl = document.getElementById('info-license-tier');
+    const expiresEl = document.getElementById('info-license-expires');
+    const pathEl = document.getElementById('info-license-path');
+    const clearBtn = document.getElementById('info-license-clear');
+    const gateClearBtn = document.getElementById('license-clear-btn');
     if (stateEl) stateEl.textContent = status?.state || 'unknown';
-    if (providerEl) providerEl.textContent = status?.provider_id || 'unknown';
-    if (deactivateBtn) deactivateBtn.style.display = status?.permits_use ? 'inline-block' : 'none';
+    if (idEl) idEl.textContent = status?.license_id || '—';
+    if (issuedToEl) issuedToEl.textContent = status?.issued_to || '—';
+    if (orgEl) orgEl.textContent = status?.org || '—';
+    if (tierEl) tierEl.textContent = status?.tier || '—';
+    if (expiresEl) expiresEl.textContent = status?.expires_at == null ? 'perpetual' : String(status.expires_at);
+    if (pathEl) pathEl.textContent = status?.license_path || '—';
+    if (clearBtn) clearBtn.style.display = status?.license_id ? 'inline-block' : 'none';
+    if (gateClearBtn) gateClearBtn.style.display = status?.license_id ? 'inline-block' : 'none';
   }
 
   function showLicenseGate(status, errorMessage = '') {
@@ -974,7 +977,7 @@
     }
     syncLicenseInfo(status);
     gate.classList.add('visible');
-    document.getElementById('license-key-input')?.focus();
+    document.getElementById('license-import-btn')?.focus();
   }
 
   function hideLicenseGate() {
@@ -1013,29 +1016,32 @@
     await showLobby();
   }
 
-  async function activateLicense() {
-    const input = document.getElementById('license-key-input');
-    const btn = document.getElementById('license-activate-btn');
-    const key = (input?.value || '').trim();
-    if (!key) {
-      showLicenseGate(licenseStatusCache, 'Please enter a license key.');
+  function chooseLicenseFile() {
+    document.getElementById('license-file-input')?.click();
+  }
+
+  async function importLicenseFile(file) {
+    const btn = document.getElementById('license-import-btn');
+    if (!file) {
+      showLicenseGate(licenseStatusCache, 'Please select a license.json file.');
       return;
     }
 
     btn.disabled = true;
-    btn.textContent = 'Activating…';
+    btn.textContent = 'Importing…';
     try {
-      const res = await fetch('/api/license/activate', {
+      const licenseJson = await file.text();
+      const res = await fetch('/api/license/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ license_key: key }),
+        body: JSON.stringify({ license_json: licenseJson }),
       });
       const data = await res.json().catch(() => ({}));
       const status = data.license || null;
       licenseStatusCache = status;
       syncLicenseInfo(status);
       if (!res.ok || !status || !status.permits_use) {
-        showLicenseGate(status, status?.message || `Activation failed (HTTP ${res.status})`);
+        showLicenseGate(status, status?.message || `License import failed (HTTP ${res.status})`);
         return;
       }
       await continueLicensedBoot();
@@ -1043,14 +1049,16 @@
       showLicenseGate(licenseStatusCache, e.message);
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Activate';
+      btn.textContent = 'Select License File';
+      const input = document.getElementById('license-file-input');
+      if (input) input.value = '';
     }
   }
 
-  async function deactivateLicense() {
-    if (!window.confirm('Deactivate the license on this machine?')) return;
+  async function clearInstalledLicense() {
+    if (!window.confirm('Clear the installed license on this machine?')) return;
     try {
-      const res = await fetch('/api/license/deactivate', { method: 'POST' });
+      const res = await fetch('/api/license/clear', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       const status = data.license || null;
       licenseStatusCache = status;
@@ -1063,9 +1071,7 @@
 
   async function refreshLicenseStatus() {
     try {
-      const res = await fetch('/api/license/refresh', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      const status = data.license || null;
+      const status = await loadLicenseStatus(true);
       licenseStatusCache = status;
       syncLicenseInfo(status);
       if (status?.permits_use) {
@@ -1077,6 +1083,11 @@
       showLicenseGate(licenseStatusCache, e.message);
     }
   }
+
+  document.getElementById('license-file-input')?.addEventListener('change', (event) => {
+    const file = event.target?.files?.[0] || null;
+    void importLicenseFile(file);
+  });
 
   // --- Service-account drag and drop ---
 

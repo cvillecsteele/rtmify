@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 struct FileSummary {
     let path: String
@@ -25,8 +26,9 @@ enum AppState {
 final class ViewModel: ObservableObject {
     @Published var state: AppState = .dropZone
     @Published var errorMessage: String? = nil
-    @Published var activationError: String? = nil
-    @Published var isActivating: Bool = false
+    @Published var licenseError: String? = nil
+    @Published var licenseStatusMessage: String? = nil
+    @Published var isInstallingLicense: Bool = false
 
     private var graph: OpaquePointer? = nil
     private var loadedPath: String? = nil
@@ -36,40 +38,48 @@ final class ViewModel: ObservableObject {
     func checkLicense() {
         do {
             let status = try rtmifyLicenseStatus()
+            licenseStatusMessage = message(for: status)
             state = status.permitsUse ? .dropZone : .licenseGate
         } catch {
+            licenseStatusMessage = "Install a signed RTMify Trace license file to unlock future runs."
             state = .licenseGate
         }
     }
 
-    func activate(key: String) {
-        guard !key.isEmpty else {
-            activationError = "Please enter a license key."
-            return
-        }
-        isActivating = true
-        activationError = nil
+    func importLicense() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a signed RTMify Trace license file."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isInstallingLicense = true
+        licenseError = nil
         Task {
             do {
-                let status = try await rtmifyActivate(key: key)
-                isActivating = false
+                let status = try await rtmifyInstallLicense(path: url.path)
+                isInstallingLicense = false
+                licenseStatusMessage = message(for: status)
                 state = status.permitsUse ? .dropZone : .licenseGate
             } catch let e as BridgeError {
-                isActivating = false
-                activationError = e.message
+                isInstallingLicense = false
+                licenseError = e.message
             } catch {
-                isActivating = false
-                activationError = error.localizedDescription
+                isInstallingLicense = false
+                licenseError = error.localizedDescription
             }
         }
     }
 
-    func deactivate() {
+    func clearLicense() {
         Task {
             do {
-                _ = try await rtmifyDeactivate()
+                let status = try await rtmifyClearLicense()
+                licenseStatusMessage = message(for: status)
                 freeGraph()
-                state = .licenseGate
+                state = status.permitsUse ? .dropZone : .licenseGate
             } catch let e as BridgeError {
                 errorMessage = e.message
             } catch {
@@ -126,11 +136,13 @@ final class ViewModel: ObservableObject {
                                                  outputPath: out, projectName: projectName)
                         paths.append(out)
                     }
+                    try? await rtmifyRecordSuccessfulUse()
                     state = .done(result: GenerateResult(outputPaths: paths, gapCount: gapCount))
                 } else {
                     let out = outputPath(forInput: inputPath, format: format)
                     try await rtmifyGenerate(graph: g, format: format,
                                              outputPath: out, projectName: projectName)
+                    try? await rtmifyRecordSuccessfulUse()
                     state = .done(result: GenerateResult(outputPaths: [out], gapCount: gapCount))
                 }
             } catch let e as BridgeError {
@@ -170,6 +182,33 @@ final class ViewModel: ObservableObject {
     deinit {
         if let g = graph {
             rtmify_free(g)
+        }
+    }
+
+    private func message(for status: LicenseStatus) -> String {
+        switch status.detailCode {
+        case 1:
+            return "You can use RTMify Trace once without a license. The first successful report will consume that free run."
+        case 2:
+            return "Your one free RTMify Trace run has been used. Import a signed license file or place it at ~/.rtmify/license.json."
+        case 3:
+            return "No installed license file was found. Place license.json at ~/.rtmify/license.json or import it here."
+        case 8:
+            return "The installed license file has expired."
+        case 5:
+            return "The license file signature is invalid or the file was modified."
+        case 6:
+            return "This license file is for a different RTMify product."
+        case 4, 7:
+            return "The license file is not a valid RTMify Trace license."
+        default:
+            if status.permitsUse && status.usingFreeRun {
+                return "Free run available."
+            }
+            if status.permitsUse {
+                return "Valid license installed."
+            }
+            return "Install a signed RTMify Trace license file to continue."
         }
     }
 }

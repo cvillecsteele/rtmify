@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,19 +6,9 @@ import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
 import { initSchema, seedConfiguredGraph, seedLegacyPlaintextConnection } from '../helpers/db-seed';
 
-const DEV_LICENSE_KEY = 'RTMIFY-DEV-0000-0000';
-
 function makeDbPath(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   return path.join(dir, 'graph.db');
-}
-
-async function ensureLicensed(page: Page): Promise<void> {
-  const gate = page.locator('#license-gate');
-  if (!(await gate.isVisible())) return;
-  await page.locator('#license-key-input').fill(DEV_LICENSE_KEY);
-  await page.getByRole('button', { name: 'Activate' }).click();
-  await expect(gate).toBeHidden();
 }
 
 test('configured generic workspace reopens setup at profile selection with no stale choice', async ({ page }) => {
@@ -29,7 +19,6 @@ test('configured generic workspace reopens setup at profile selection with no st
 
   try {
     await page.goto(server.baseUrl);
-    await ensureLicensed(page);
 
     await page.locator('.header-home-btn').click();
     await expect(page.getByRole('heading', { name: 'What standard governs your work?' })).toBeVisible();
@@ -66,7 +55,6 @@ test('wizard can be reopened after a successful connect flow', async ({ page }) 
     });
 
     await page.goto(server.baseUrl);
-    await ensureLicensed(page);
 
     await expect(page.getByRole('heading', { name: 'What standard governs your work?' })).toBeVisible();
     await page.locator('.profile-row', { hasText: 'Aerospace' }).first().click();
@@ -108,7 +96,6 @@ test('legacy plaintext connection shows reconnect-required message', async ({ pa
 
   try {
     await page.goto(server.baseUrl);
-    await ensureLicensed(page);
 
     await expect(page.getByText('This workspace was configured before secure credential storage.')).toBeVisible();
     await expect(page.locator('#lobby')).toHaveClass(/visible/);
@@ -131,7 +118,6 @@ test('unsupported secure storage shows explicit connect failure', async ({ page 
 
   try {
     await page.goto(server.baseUrl);
-    await ensureLicensed(page);
     await expect(page.getByRole('heading', { name: 'What standard governs your work?' })).toBeVisible();
 
     await page.locator('.profile-row[data-profile-id="medical"]').click();

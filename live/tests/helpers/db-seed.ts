@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
+const DEV_LICENSE_HMAC_KEY_HEX = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+
 function sqlQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
@@ -41,6 +43,61 @@ export function writeSecureCredential(dbPath: string, credentialRef: string, sec
 export function clearSecureStoreFile(dbPath: string): void {
   const filePath = secureStoreFilePath(dbPath);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
+export function licenseFilePath(dbPath: string): string {
+  return `${dbPath}.license.json`;
+}
+
+type TestLicenseProduct = 'live' | 'trace';
+type TestLicenseTier = 'lab' | 'individual' | 'team' | 'site';
+
+function canonicalPayloadJson(payload: {
+  schema: number;
+  license_id: string;
+  product: TestLicenseProduct;
+  tier: TestLicenseTier;
+  issued_to: string;
+  issued_at: number;
+  expires_at: number | null;
+  org: string | null;
+}): string {
+  return `{"expires_at":${payload.expires_at === null ? 'null' : String(payload.expires_at)},"issued_at":${payload.issued_at},"issued_to":${JSON.stringify(payload.issued_to)},"license_id":${JSON.stringify(payload.license_id)},"org":${payload.org === null ? 'null' : JSON.stringify(payload.org)},"product":${JSON.stringify(payload.product)},"schema":${payload.schema},"tier":${JSON.stringify(payload.tier)}}`;
+}
+
+export function writeTestLicenseFile(dbPath: string, options?: {
+  product?: TestLicenseProduct;
+  tier?: TestLicenseTier;
+  issuedTo?: string;
+  org?: string | null;
+  expiresAt?: number | null;
+  licenseId?: string;
+}): string {
+  const payload = {
+    schema: 1,
+    license_id: options?.licenseId ?? `${(options?.product ?? 'live').toUpperCase()}-TEST-0001`,
+    product: options?.product ?? 'live',
+    tier: options?.tier ?? 'site',
+    issued_to: options?.issuedTo ?? 'playwright@example.com',
+    issued_at: nowTs(),
+    expires_at: options?.expiresAt ?? null,
+    org: options?.org ?? 'RTMify Test Harness',
+  } satisfies {
+    schema: number;
+    license_id: string;
+    product: TestLicenseProduct;
+    tier: TestLicenseTier;
+    issued_to: string;
+    issued_at: number;
+    expires_at: number | null;
+    org: string | null;
+  };
+
+  const canonical = canonicalPayloadJson(payload);
+  const sig = crypto.createHmac('sha256', Buffer.from(DEV_LICENSE_HMAC_KEY_HEX, 'hex')).update(canonical).digest('hex');
+  const filePath = licenseFilePath(dbPath);
+  fs.writeFileSync(filePath, JSON.stringify({ payload, sig }));
+  return filePath;
 }
 
 export function setConfig(dbPath: string, key: string, value: string): void {

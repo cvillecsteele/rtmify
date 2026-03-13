@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import ServiceManagement
 import Darwin
+import AppKit
 
 enum AppState {
     case licenseGate
@@ -57,11 +58,15 @@ final class ViewModel: ObservableObject {
         return permitsUse
     }
 
-    func activate(key: String) {
-        guard !key.isEmpty else {
-            activationError = "Please enter a license key."
-            return
-        }
+    func importLicense() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select a signed RTMify Live license file."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
         isActivating = true
         activationError = nil
         Task {
@@ -70,20 +75,20 @@ final class ViewModel: ObservableObject {
                 activationError = "rtmify-live binary not found."
                 return
             }
-            let result = await runCommand(binary, args: ["--activate", key])
+            let result = await runCommand(binary, args: ["license", "install", url.path])
             isActivating = false
             if result.exitCode == 0 {
                 state = .stopped
             } else {
-                activationError = result.stderr.isEmpty ? "Activation failed. Check your key and internet connection." : result.stderr
+                activationError = result.stderr.isEmpty ? "License import failed." : result.stderr
             }
         }
     }
 
-    func deactivate() {
+    func clearLicense() {
         guard let binary = binaryPath() else { return }
         Task {
-            _ = await runCommand(binary, args: ["--deactivate"])
+            _ = await runCommand(binary, args: ["license", "clear"])
             stop()
             state = .licenseGate
         }

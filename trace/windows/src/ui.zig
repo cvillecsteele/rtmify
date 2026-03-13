@@ -183,8 +183,8 @@ extern "gdi32" fn CreateFontIndirectW(lplf: *const LOGFONTW) callconv(.winapi) ?
 // Control IDs
 // ---------------------------------------------------------------------------
 
-pub const IDC_KEY_EDIT: usize = 101;
-pub const IDC_ACTIVATE_BTN: usize = 102;
+pub const IDC_IMPORT_LICENSE_BTN: usize = 101;
+pub const IDC_CLEAR_LICENSE_BTN: usize = 102;
 pub const IDC_ACTIV_ERR: usize = 104;
 pub const IDC_FORMAT_COMBO: usize = 201;
 pub const IDC_BROWSE_BTN: usize = 202;
@@ -200,8 +200,8 @@ pub const IDC_AGAIN_BTN: usize = 304;
 // Global control handles (set in createControls)
 // ---------------------------------------------------------------------------
 
-pub var key_edit: ?*anyopaque = null;
-pub var activate_btn: ?*anyopaque = null;
+pub var import_license_btn: ?*anyopaque = null;
+pub var clear_license_btn: ?*anyopaque = null;
 pub var activ_err: ?*anyopaque = null;
 pub var format_combo: ?*anyopaque = null;
 pub var browse_btn: ?*anyopaque = null;
@@ -259,22 +259,22 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
 
     // --- License gate controls ---
 
-    key_edit = CreateWindowExW(
-        0x0200, // WS_EX_CLIENTEDGE
-        CLS_EDIT,
-        null,
-        WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP | ES_LEFT | ES_AUTOHSCROLL,
-        sc(60, dpi), sc(185, dpi), sc(360, dpi), sc(28, dpi),
-        hwnd, @ptrFromInt(IDC_KEY_EDIT), hinstance, null,
-    );
-
-    activate_btn = CreateWindowExW(
+    import_license_btn = CreateWindowExW(
         0,
         CLS_BTN,
-        toUtf16Z("Activate"),
+        toUtf16Z("Import License File"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-        sc(165, dpi), sc(228, dpi), sc(150, dpi), sc(32, dpi),
-        hwnd, @ptrFromInt(IDC_ACTIVATE_BTN), hinstance, null,
+        sc(90, dpi), sc(205, dpi), sc(300, dpi), sc(32, dpi),
+        hwnd, @ptrFromInt(IDC_IMPORT_LICENSE_BTN), hinstance, null,
+    );
+
+    clear_license_btn = CreateWindowExW(
+        0,
+        CLS_BTN,
+        toUtf16Z("Clear Installed License"),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        sc(90, dpi), sc(245, dpi), sc(300, dpi), sc(28, dpi),
+        hwnd, @ptrFromInt(IDC_CLEAR_LICENSE_BTN), hinstance, null,
     );
 
     activ_err = CreateWindowExW(
@@ -282,7 +282,7 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         CLS_STATIC,
         null,
         WS_CHILD | SS_LEFT | SS_WORDELLIPSIS,
-        sc(60, dpi), sc(270, dpi), sc(360, dpi), sc(40, dpi),
+        sc(60, dpi), sc(285, dpi), sc(360, dpi), sc(40, dpi),
         hwnd, @ptrFromInt(IDC_ACTIV_ERR), hinstance, null,
     );
 
@@ -398,7 +398,7 @@ pub fn setFont(hwnd: HWND) void {
 
     // Apply to all child controls
     const ctls = [_]?*anyopaque{
-        key_edit, activate_btn, activ_err, format_combo, browse_btn,
+        import_license_btn, clear_license_btn, activ_err, format_combo, browse_btn,
         generate_btn, clear_btn, status_text, output_text, show_btn,
         open_btn, again_btn,
     };
@@ -414,9 +414,9 @@ pub fn setFont(hwnd: HWND) void {
 pub fn updateVisibility(tag: state.AppStateTag) void {
     // License gate
     const lic = @intFromBool(tag == .license_gate);
-    if (key_edit) |c| _ = ShowWindow(c, if (lic != 0) SW_SHOW else SW_HIDE);
-    if (activate_btn) |c| _ = ShowWindow(c, if (lic != 0) SW_SHOW else SW_HIDE);
-    // activ_err stays hidden until there's an error message
+    if (import_license_btn) |c| _ = ShowWindow(c, if (lic != 0) SW_SHOW else SW_HIDE);
+    if (clear_license_btn) |c| _ = ShowWindow(c, if (lic != 0) SW_SHOW else SW_HIDE);
+    if (activ_err) |c| _ = ShowWindow(c, if (lic != 0) SW_SHOW else SW_HIDE);
 
     // Drop zone controls
     const dz = @intFromBool(tag == .drop_zone or tag == .file_loaded or tag == .generating);
@@ -481,21 +481,6 @@ pub fn setOutputText(text_utf8: []const u8) void {
     if (output_text) |c| _ = SetWindowTextW(c, &buf);
 }
 
-// ---------------------------------------------------------------------------
-// getKeyText — read license key edit control (UTF-8)
-// ---------------------------------------------------------------------------
-
-pub fn getKeyText(buf: []u8) []u8 {
-    var wbuf: [128]u16 = std.mem.zeroes([128]u16);
-    const len = if (key_edit) |c|
-        @as(usize, @intCast(@max(0, GetWindowTextW(c, &wbuf, @intCast(wbuf.len)))))
-    else
-        0;
-    const nbytes = std.unicode.utf16LeToUtf8(buf, wbuf[0..len]) catch return buf[0..0];
-    return buf[0..nbytes];
-}
-
-// ---------------------------------------------------------------------------
 // getSelectedFormat — read combo box selection → Format enum
 // ---------------------------------------------------------------------------
 
@@ -560,15 +545,25 @@ fn paintLicenseGate(hdc: HDC, client: *const RECT) void {
     _ = DrawTextW(hdc, &title, @intCast(title.len - 1), &title_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
     // Subtitle
-    const sub = comptime makeW("Enter your license key to activate.");
+    const sub = comptime makeW("Import a signed RTMify Trace license file, or place it at ~/.rtmify/license.json.");
     var sub_rect = RECT{
         .left = 60,
         .top = title_rect.bottom + 20,
         .right = client.right - 60,
-        .bottom = title_rect.bottom + 50,
+        .bottom = title_rect.bottom + 72,
     };
     _ = SetTextColor(hdc, 0x00555555);
-    _ = DrawTextW(hdc, &sub, @intCast(sub.len - 1), &sub_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    _ = DrawTextW(hdc, &sub, @intCast(sub.len - 1), &sub_rect, DT_CENTER | DT_WORDBREAK);
+
+    const free_run = comptime makeW("Trace allows one full free run. After the first successful report, import a license file to continue.");
+    var free_run_rect = RECT{
+        .left = 40,
+        .top = title_rect.bottom + 88,
+        .right = client.right - 40,
+        .bottom = title_rect.bottom + 145,
+    };
+    _ = SetTextColor(hdc, 0x00555555);
+    _ = DrawTextW(hdc, &free_run, @intCast(free_run.len - 1), &free_run_rect, DT_CENTER | DT_WORDBREAK);
 
     // "Need a license?" link text (bottom)
     const link = comptime makeW("Need a license? Visit store.rtmify.io");

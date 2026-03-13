@@ -98,6 +98,29 @@ pub fn browseXlsx(hwnd: HWND, buf: []u8) ?[]u8 {
     return buf[0..nbytes];
 }
 
+pub fn browseLicenseJson(hwnd: HWND, buf: []u8) ?[]u8 {
+    const filter = [_:0]u16{
+        'L', 'i', 'c', 'e', 'n', 's', 'e', ' ', 'F', 'i', 'l', 'e', 's', 0,
+        '*', '.', 'j', 's', 'o', 'n', 0,
+        0,
+    };
+
+    var path_w: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
+    var ofn = OPENFILENAMEW{
+        .hwndOwner = hwnd,
+        .lpstrFilter = &filter,
+        .lpstrFile = &path_w,
+        .nMaxFile = @intCast(path_w.len),
+        .Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY,
+        .lpstrDefExt = &[_:0]u16{ 'j', 's', 'o', 'n', 0 },
+    };
+
+    if (GetOpenFileNameW(&ofn) == 0) return null;
+    const wlen = std.mem.indexOfScalar(u16, &path_w, 0) orelse path_w.len;
+    const nbytes = std.unicode.utf16LeToUtf8(buf, path_w[0..wlen]) catch return null;
+    return buf[0..nbytes];
+}
+
 // ---------------------------------------------------------------------------
 // showError — MessageBoxW with a UTF-8 error string
 // ---------------------------------------------------------------------------

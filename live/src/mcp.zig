@@ -247,7 +247,10 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         const data = try routes.handleSchema(db, alloc);
         return .{ .text = data };
     } else if (std.mem.eql(u8, name, "get_status")) {
-        var license_service = try license.initDefaultLemonSqueezy(alloc, .{});
+        var license_service = try license.initDefaultHmacFile(alloc, .{
+            .product = .live,
+            .trial_policy = .requires_license,
+        });
         defer license_service.deinit(alloc);
         const data = try routes.handleStatus(db, secure_store_ref, state, &license_service, alloc);
         return .{ .text = data };
@@ -754,7 +757,10 @@ fn statusMarkdown(db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var license_service = try license.initDefaultLemonSqueezy(arena, .{});
+    var license_service = try license.initDefaultHmacFile(arena, .{
+        .product = .live,
+        .trial_policy = .requires_license,
+    });
     const data = try routes.handleStatus(db, secure_store_ref, state, &license_service, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();

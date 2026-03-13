@@ -915,17 +915,20 @@ In this mode:
 
 The deployment procedure:
 
-1. Activate the license on an unclassified machine: `rtmify-live --activate <key>`
+1. Install the signed license file on an unclassified machine, or prepare it for manual placement as `~/.rtmify/license.json`
 2. Copy three files to approved transfer media (CD-R, USB per site policy):
    - `rtmify-live` (the binary)
-   - `~/.rtmify/license.json` (the activation cache)
+   - `~/.rtmify/license.json` (the signed license file)
    - The XLSX spreadsheet
 3. Transfer media to the classified machine per the site's data transfer procedures
 4. Place files on the classified machine's local drive
 5. Run `rtmify-live --xlsx /path/to/requirements.xlsx --no-browser`
 6. Open `http://127.0.0.1:8000` in the local browser
 
-The binary never phones home. The license check reads `license.json` from disk. The 30-day offline grace period (designed for airplane use) covers classified deployments permanently — the tool will never see a network, and the grace period renews each time the license.json is valid on disk. For perpetual licenses (`expires_at: null`), there is no grace period concern at all. It runs forever.
+The binary never phones home. The license check reads the signed
+`license.json` from disk and verifies its HMAC signature locally. There is no
+runtime network dependency, no revalidation loop, and no offline grace model.
+Perpetual licenses (`expires_at: null`) run indefinitely.
 
 ### 18.4 Repo Scanning in Air-Gapped Environments
 

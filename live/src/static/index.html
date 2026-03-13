@@ -1127,17 +1127,17 @@
 
 <div id="license-gate">
   <div class="lobby-card license-gate-card">
-    <h2>Activate RTMify Live</h2>
-    <div id="license-gate-state" class="lobby-subtitle">Enter a license key to continue.</div>
+    <h2>Install RTMify Live License</h2>
+    <div id="license-gate-state" class="lobby-subtitle">Select a signed license file or place it at <code>~/.rtmify/license.json</code>.</div>
     <div id="license-gate-error" class="lobby-error" style="display:none"></div>
-    <input id="license-key-input" class="lobby-input" type="text" placeholder="XXXX-XXXX-XXXX-XXXX"
-      aria-label="License key" onkeydown="if(event.key==='Enter') activateLicense()">
+    <input id="license-file-input" type="file" accept=".json,application/json" style="display:none">
     <div class="license-gate-actions">
       <button class="btn" type="button" onclick="refreshLicenseStatus()">Refresh Status</button>
-      <button id="license-activate-btn" class="btn" type="button" onclick="activateLicense()">Activate</button>
+      <button id="license-import-btn" class="btn" type="button" onclick="chooseLicenseFile()">Select License File</button>
+      <button id="license-clear-btn" class="btn" type="button" onclick="clearInstalledLicense()" style="display:none">Clear License</button>
     </div>
     <div class="license-gate-meta">
-      Need a license? <a href="https://store.rtmify.io" target="_blank" rel="noopener noreferrer">Visit store.rtmify.io</a>
+      Manual install path: <code>~/.rtmify/license.json</code>
     </div>
   </div>
 </div>
@@ -1562,8 +1562,18 @@ audit_readiness_summary(profile="aerospace")</div>
       <div class="info-grid">
         <div class="info-label">License State</div>
         <div id="info-license-state" class="req-id">Loading…</div>
-        <div class="info-label">License Provider</div>
-        <div id="info-license-provider" class="req-id">Loading…</div>
+        <div class="info-label">License ID</div>
+        <div id="info-license-id" class="req-id">Loading…</div>
+        <div class="info-label">Issued To</div>
+        <div id="info-license-issued-to" class="req-id">Loading…</div>
+        <div class="info-label">Org</div>
+        <div id="info-license-org" class="req-id">Loading…</div>
+        <div class="info-label">Tier</div>
+        <div id="info-license-tier" class="req-id">Loading…</div>
+        <div class="info-label">Expires</div>
+        <div id="info-license-expires" class="req-id">Loading…</div>
+        <div class="info-label">License Path</div>
+        <div id="info-license-path" class="req-id">Loading…</div>
         <div class="info-label">Tray App Version</div>
         <div id="info-tray-version" class="req-id">Loading…</div>
         <div class="info-label">rtmify-live Version</div>
@@ -1575,7 +1585,8 @@ audit_readiness_summary(profile="aerospace")</div>
       </div>
       <div class="license-inline-actions">
         <button id="info-license-refresh" class="btn" onclick="refreshLicenseStatus()">Refresh License Status</button>
-        <button id="info-license-deactivate" class="btn" onclick="deactivateLicense()" style="display:none">Deactivate License</button>
+        <button id="info-license-import" class="btn" onclick="chooseLicenseFile()">Import License File</button>
+        <button id="info-license-clear" class="btn" onclick="clearInstalledLicense()" style="display:none">Clear License</button>
       </div>
     </div>
   </section>

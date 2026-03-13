@@ -4,7 +4,7 @@ const store_mod = @import("license_store.zig");
 const types = @import("license_types.zig");
 
 const MemoryStoreCtx = struct {
-    record: ?types.CacheRecord = null,
+    envelope: ?types.LicenseEnvelope = null,
 };
 
 pub fn create(alloc: Allocator) !store_mod.Store {
@@ -16,35 +16,35 @@ pub fn create(alloc: Allocator) !store_mod.Store {
     };
 }
 
-fn read(ctx_ptr: *anyopaque, alloc: Allocator) !?types.CacheRecord {
+fn readEnvelope(ctx_ptr: *anyopaque, alloc: Allocator) !?types.LicenseEnvelope {
     const ctx: *MemoryStoreCtx = @ptrCast(@alignCast(ctx_ptr));
-    if (ctx.record) |record| return try record.clone(alloc);
+    if (ctx.envelope) |envelope| return try envelope.clone(alloc);
     return null;
 }
 
-fn write(ctx_ptr: *anyopaque, alloc: Allocator, record: types.CacheRecord) !void {
+fn writeEnvelope(ctx_ptr: *anyopaque, alloc: Allocator, envelope: types.LicenseEnvelope) !void {
     const ctx: *MemoryStoreCtx = @ptrCast(@alignCast(ctx_ptr));
-    if (ctx.record) |*existing| existing.deinit(alloc);
-    ctx.record = try record.clone(alloc);
+    if (ctx.envelope) |*existing| existing.deinit(alloc);
+    ctx.envelope = try envelope.clone(alloc);
 }
 
-fn clear(ctx_ptr: *anyopaque, alloc: Allocator) !void {
+fn clearEnvelope(ctx_ptr: *anyopaque, alloc: Allocator) !void {
     const ctx: *MemoryStoreCtx = @ptrCast(@alignCast(ctx_ptr));
-    if (ctx.record) |*existing| {
+    if (ctx.envelope) |*existing| {
         existing.deinit(alloc);
-        ctx.record = null;
+        ctx.envelope = null;
     }
 }
 
 fn deinit(ctx_ptr: *anyopaque, alloc: Allocator) void {
     const ctx: *MemoryStoreCtx = @ptrCast(@alignCast(ctx_ptr));
-    if (ctx.record) |*existing| existing.deinit(alloc);
+    if (ctx.envelope) |*existing| existing.deinit(alloc);
     alloc.destroy(ctx);
 }
 
 const vtable = store_mod.Store.VTable{
-    .read = read,
-    .write = write,
-    .clear = clear,
+    .readEnvelope = readEnvelope,
+    .writeEnvelope = writeEnvelope,
+    .clearEnvelope = clearEnvelope,
     .deinit = deinit,
 };

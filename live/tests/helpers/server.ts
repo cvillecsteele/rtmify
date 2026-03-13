@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { secureStoreFilePath } from './db-seed.js';
+import { licenseFilePath, secureStoreFilePath, writeTestLicenseFile } from './db-seed.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sysRoot = path.resolve(here, '..', '..', '..');
@@ -50,10 +50,14 @@ export async function startServer(options: {
   repoPath?: string;
   extraArgs?: string[];
   env?: Record<string, string>;
+  licensed?: boolean;
 }): Promise<StartedServer> {
   const args = ['--db', options.dbPath, '--port', String(options.port), '--no-browser'];
   if (options.repoPath) args.push('--repo', options.repoPath);
   if (options.extraArgs) args.push(...options.extraArgs);
+
+  const shouldInstallTestLicense = options.licensed !== false;
+  const configuredLicensePath = shouldInstallTestLicense ? writeTestLicenseFile(options.dbPath, { product: 'live' }) : licenseFilePath(options.dbPath);
 
   const logPath = path.join(path.dirname(options.dbPath), 'server.log');
   const child = spawn(binaryPath(), args, {
@@ -65,6 +69,7 @@ export async function startServer(options: {
       RTMIFY_SECURE_STORE_TEST_FILE: secureStoreFilePath(options.dbPath),
       RTMIFY_TEST_RESULTS_TOKEN_FILE: tokenFilePath(options.dbPath),
       RTMIFY_TEST_RESULTS_INBOX_DIR: inboxDirPath(options.dbPath),
+      RTMIFY_LICENSE: configuredLicensePath,
       ...options.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

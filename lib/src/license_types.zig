@@ -1,47 +1,116 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+pub const LicenseProduct = enum {
+    trace,
+    live,
+};
+
+pub const LicenseTier = enum {
+    lab,
+    individual,
+    team,
+    site,
+};
+
+pub const TrialPolicy = enum {
+    single_free_run,
+    requires_license,
+    unlimited,
+};
+
+pub const LicensePayload = struct {
+    schema: u32,
+    license_id: []const u8,
+    product: LicenseProduct,
+    tier: LicenseTier,
+    issued_to: []const u8,
+    issued_at: i64,
+    expires_at: ?i64,
+    org: ?[]const u8 = null,
+
+    pub fn deinit(self: *LicensePayload, alloc: Allocator) void {
+        alloc.free(self.license_id);
+        alloc.free(self.issued_to);
+        if (self.org) |org| alloc.free(org);
+        self.* = undefined;
+    }
+
+    pub fn clone(self: LicensePayload, alloc: Allocator) !LicensePayload {
+        return .{
+            .schema = self.schema,
+            .license_id = try alloc.dupe(u8, self.license_id),
+            .product = self.product,
+            .tier = self.tier,
+            .issued_to = try alloc.dupe(u8, self.issued_to),
+            .issued_at = self.issued_at,
+            .expires_at = self.expires_at,
+            .org = if (self.org) |org| try alloc.dupe(u8, org) else null,
+        };
+    }
+};
+
+pub const LicenseEnvelope = struct {
+    payload: LicensePayload,
+    sig: []const u8,
+
+    pub fn deinit(self: *LicenseEnvelope, alloc: Allocator) void {
+        self.payload.deinit(alloc);
+        alloc.free(self.sig);
+        self.* = undefined;
+    }
+
+    pub fn clone(self: LicenseEnvelope, alloc: Allocator) !LicenseEnvelope {
+        return .{
+            .payload = try self.payload.clone(alloc),
+            .sig = try alloc.dupe(u8, self.sig),
+        };
+    }
+};
+
 pub const LicenseState = enum {
     valid,
-    valid_offline_grace,
-    not_activated,
+    not_licensed,
     expired,
-    fingerprint_mismatch,
-    revoked,
-    invalid_key,
-    provider_unavailable,
-    cache_corrupt,
-    internal_error,
+    invalid,
+    tampered,
 };
 
 pub const LicenseDetailCode = enum {
     none,
-    invalid_key,
-    revoked,
-    network_error,
-    server_error,
-    protocol_error,
-    cache_corrupt,
-    fingerprint_mismatch,
+    free_run_available,
+    trial_exhausted,
+    file_not_found,
+    invalid_json,
+    bad_signature,
+    wrong_product,
+    unsupported_schema,
     expired,
-    not_activated,
+    install_failed,
     internal_error,
 };
 
 pub const LicenseStatus = struct {
     state: LicenseState,
     permits_use: bool,
-    provider_id: []const u8,
-    activated_at: ?i64,
-    expires_at: ?i64,
-    last_validated_at: ?i64,
-    offline_grace_deadline: ?i64,
     detail_code: LicenseDetailCode,
     message: ?[]const u8,
+    license_path: []const u8,
+    issued_to: ?[]const u8,
+    org: ?[]const u8,
+    license_id: ?[]const u8,
+    product: ?LicenseProduct,
+    tier: ?LicenseTier,
+    issued_at: ?i64,
+    expires_at: ?i64,
+    using_free_run: bool,
 
     pub fn deinit(self: *LicenseStatus, alloc: Allocator) void {
-        alloc.free(self.provider_id);
-        if (self.message) |msg| alloc.free(msg);
+        alloc.free(self.license_path);
+        if (self.message) |message| alloc.free(message);
+        if (self.issued_to) |issued_to| alloc.free(issued_to);
+        if (self.org) |org| alloc.free(org);
+        if (self.license_id) |license_id| alloc.free(license_id);
         self.* = undefined;
     }
 
@@ -49,14 +118,29 @@ pub const LicenseStatus = struct {
         return .{
             .state = self.state,
             .permits_use = self.permits_use,
-            .provider_id = try alloc.dupe(u8, self.provider_id),
-            .activated_at = self.activated_at,
-            .expires_at = self.expires_at,
-            .last_validated_at = self.last_validated_at,
-            .offline_grace_deadline = self.offline_grace_deadline,
             .detail_code = self.detail_code,
-            .message = if (self.message) |msg| try alloc.dupe(u8, msg) else null,
+            .message = if (self.message) |message| try alloc.dupe(u8, message) else null,
+            .license_path = try alloc.dupe(u8, self.license_path),
+            .issued_to = if (self.issued_to) |issued_to| try alloc.dupe(u8, issued_to) else null,
+            .org = if (self.org) |org| try alloc.dupe(u8, org) else null,
+            .license_id = if (self.license_id) |license_id| try alloc.dupe(u8, license_id) else null,
+            .product = self.product,
+            .tier = self.tier,
+            .issued_at = self.issued_at,
+            .expires_at = self.expires_at,
+            .using_free_run = self.using_free_run,
         };
+    }
+};
+
+pub const LicenseInfo = struct {
+    payload: LicensePayload,
+    license_path: []const u8,
+
+    pub fn deinit(self: *LicenseInfo, alloc: Allocator) void {
+        self.payload.deinit(alloc);
+        alloc.free(self.license_path);
+        self.* = undefined;
     }
 };
 
@@ -72,39 +156,3 @@ pub const OperationResult = struct {
         self.* = undefined;
     }
 };
-
-pub const CacheRecord = struct {
-    schema_version: u32 = 2,
-    provider_id: []const u8,
-    license_key: []const u8,
-    fingerprint: []const u8,
-    activated_at: i64,
-    expires_at: ?i64,
-    last_validated_at: ?i64,
-    provider_instance_id: ?[]const u8,
-    provider_payload_json: []const u8,
-
-    pub fn deinit(self: *CacheRecord, alloc: Allocator) void {
-        alloc.free(self.provider_id);
-        alloc.free(self.license_key);
-        alloc.free(self.fingerprint);
-        if (self.provider_instance_id) |value| alloc.free(value);
-        alloc.free(self.provider_payload_json);
-        self.* = undefined;
-    }
-
-    pub fn clone(self: CacheRecord, alloc: Allocator) !CacheRecord {
-        return .{
-            .schema_version = self.schema_version,
-            .provider_id = try alloc.dupe(u8, self.provider_id),
-            .license_key = try alloc.dupe(u8, self.license_key),
-            .fingerprint = try alloc.dupe(u8, self.fingerprint),
-            .activated_at = self.activated_at,
-            .expires_at = self.expires_at,
-            .last_validated_at = self.last_validated_at,
-            .provider_instance_id = if (self.provider_instance_id) |value| try alloc.dupe(u8, value) else null,
-            .provider_payload_json = try alloc.dupe(u8, self.provider_payload_json),
-        };
-    }
-};
-

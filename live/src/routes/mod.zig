@@ -31,9 +31,9 @@ pub const handleNode = query.handleNode;
 pub const handleStatus = status.handleStatus;
 pub const handleInfo = status.handleInfo;
 pub const handleLicenseStatus = license_routes.handleLicenseStatus;
-pub const handleLicenseActivateResponse = license_routes.handleLicenseActivateResponse;
-pub const handleLicenseDeactivateResponse = license_routes.handleLicenseDeactivateResponse;
-pub const handleLicenseRefreshResponse = license_routes.handleLicenseRefreshResponse;
+pub const handleLicenseInfo = license_routes.handleLicenseInfo;
+pub const handleLicenseImportResponse = license_routes.handleLicenseImportResponse;
+pub const handleLicenseClearResponse = license_routes.handleLicenseClearResponse;
 
 pub const handleConnectionValidate = connection.handleConnectionValidate;
 pub const handleConnectionValidateResponse = connection.handleConnectionValidateResponse;

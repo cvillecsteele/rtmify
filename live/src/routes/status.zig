@@ -85,7 +85,7 @@ pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Sto
     return alloc.dupe(u8, buf.items);
 }
 
-pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, alloc: Allocator) ![]const u8 {
+pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
     const tray_version = (try db.getConfig("tray_app_version", alloc)) orelse try alloc.dupe(u8, "not available");
     defer alloc.free(tray_version);
     const live_version = (try db.getConfig("live_version", alloc)) orelse try alloc.dupe(u8, "unknown");
@@ -102,6 +102,8 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, a
     defer alloc.free(token);
     const endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/test-results", .{actual_port});
     defer alloc.free(endpoint);
+    const license_path = try license.resolveLicensePath(alloc, license_service.deps.license_path_override);
+    defer alloc.free(license_path);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -121,6 +123,8 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, a
     try shared.appendJsonStr(&buf, inbox_dir, alloc);
     try buf.appendSlice(alloc, ",\"test_results_auth_mode\":");
     try shared.appendJsonStr(&buf, "bearer_token", alloc);
+    try buf.appendSlice(alloc, ",\"license_path\":");
+    try shared.appendJsonStr(&buf, license_path, alloc);
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
 }
@@ -139,21 +143,56 @@ pub fn appendLicenseStatusJson(buf: *std.ArrayList(u8), status: license.LicenseS
     try shared.appendJsonStr(buf, @tagName(status.state), alloc);
     try buf.appendSlice(alloc, ",\"permits_use\":");
     try buf.appendSlice(alloc, if (status.permits_use) "true" else "false");
-    try buf.appendSlice(alloc, ",\"provider_id\":");
-    try shared.appendJsonStr(buf, status.provider_id, alloc);
-    try buf.appendSlice(alloc, ",\"activated_at\":");
-    try shared.appendJsonIntOpt(buf, status.activated_at, alloc);
+    try buf.appendSlice(alloc, ",\"using_free_run\":");
+    try buf.appendSlice(alloc, if (status.using_free_run) "true" else "false");
+    try buf.appendSlice(alloc, ",\"license_path\":");
+    try shared.appendJsonStr(buf, status.license_path, alloc);
+    try buf.appendSlice(alloc, ",\"issued_to\":");
+    try shared.appendJsonStrOpt(buf, status.issued_to, alloc);
+    try buf.appendSlice(alloc, ",\"org\":");
+    try shared.appendJsonStrOpt(buf, status.org, alloc);
+    try buf.appendSlice(alloc, ",\"license_id\":");
+    try shared.appendJsonStrOpt(buf, status.license_id, alloc);
+    try buf.appendSlice(alloc, ",\"product\":");
+    try shared.appendJsonStrOpt(buf, if (status.product) |value| @tagName(value) else null, alloc);
+    try buf.appendSlice(alloc, ",\"tier\":");
+    try shared.appendJsonStrOpt(buf, if (status.tier) |value| @tagName(value) else null, alloc);
+    try buf.appendSlice(alloc, ",\"issued_at\":");
+    try shared.appendJsonIntOpt(buf, status.issued_at, alloc);
     try buf.appendSlice(alloc, ",\"expires_at\":");
     try shared.appendJsonIntOpt(buf, status.expires_at, alloc);
-    try buf.appendSlice(alloc, ",\"last_validated_at\":");
-    try shared.appendJsonIntOpt(buf, status.last_validated_at, alloc);
-    try buf.appendSlice(alloc, ",\"offline_grace_deadline\":");
-    try shared.appendJsonIntOpt(buf, status.offline_grace_deadline, alloc);
     try buf.appendSlice(alloc, ",\"detail_code\":");
     try shared.appendJsonStr(buf, @tagName(status.detail_code), alloc);
     try buf.appendSlice(alloc, ",\"message\":");
     try shared.appendJsonStrOpt(buf, status.message, alloc);
     try buf.append(alloc, '}');
+}
+
+fn installSampleLiveLicense(service: *license.Service, alloc: Allocator) !void {
+    const key = try license.defaultHmacKeyBytes(alloc);
+    defer alloc.free(key);
+    var payload = license.LicensePayload{
+        .schema = 1,
+        .license_id = try alloc.dupe(u8, "LIVE-2026-0001"),
+        .product = .live,
+        .tier = .individual,
+        .issued_to = try alloc.dupe(u8, "jane@example.com"),
+        .issued_at = 123,
+        .expires_at = null,
+        .org = try alloc.dupe(u8, "Acme"),
+    };
+    defer payload.deinit(alloc);
+    const sig = try license.license_file.signPayloadHex(alloc, payload, key);
+    defer alloc.free(sig);
+    var envelope = license.LicenseEnvelope{
+        .payload = try payload.clone(alloc),
+        .sig = try alloc.dupe(u8, sig),
+    };
+    defer envelope.deinit(alloc);
+    const envelope_json = try license.license_file.envelopeJsonAlloc(alloc, envelope);
+    defer alloc.free(envelope_json);
+    var status = try service.installFromBytes(alloc, envelope_json);
+    defer status.deinit(alloc);
 }
 
 const testing = std.testing;
@@ -180,10 +219,19 @@ test "gitless mode status is configured and repos list is empty" {
     try db.storeConfig("credential_store_version", "1");
     try store.put(alloc, "cred_status", "{\"platform\":\"google\",\"client_email\":\"svc@example.com\",\"private_key\":\"key\"}");
 
-    var license_service = try license.initDefaultStub(alloc, .{});
+    var dir = testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(root);
+    const license_path = try std.fs.path.join(alloc, &.{ root, "license.json" });
+    defer alloc.free(license_path);
+    var license_service = try license.initDefaultHmacFile(alloc, .{
+        .product = .live,
+        .trial_policy = .requires_license,
+        .license_path_override = license_path,
+    });
     defer license_service.deinit(alloc);
-    var activation = try license_service.activate(alloc, .{ .license_key = license.DEV_KEY });
-    defer activation.deinit(alloc);
+    try installSampleLiveLicense(&license_service, alloc);
 
     const status = try handleStatus(&db, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":true") != null);
@@ -260,10 +308,22 @@ test "handleInfo returns version and path details" {
     try db.storeConfig("actual_port", "8123");
     try db.storeConfig("test_results_inbox_dir", "/tmp/inbox");
 
+    var dir = testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(root);
+    const license_path = try std.fs.path.join(alloc, &.{ root, "license.json" });
+    defer alloc.free(license_path);
+    var license_service = try license.initDefaultHmacFile(alloc, .{
+        .product = .live,
+        .trial_policy = .requires_license,
+        .license_path_override = license_path,
+    });
+    defer license_service.deinit(alloc);
     var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token", alloc);
     defer auth.deinit(alloc);
 
-    const resp = try handleInfo(&db, &auth, alloc);
+    const resp = try handleInfo(&db, &auth, &license_service, alloc);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
@@ -274,4 +334,5 @@ test "handleInfo returns version and path details" {
     try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/test-results", obj.get("test_results_endpoint").?.string);
     try testing.expectEqualStrings("/tmp/inbox", obj.get("test_results_inbox_dir").?.string);
     try testing.expectEqualStrings("bearer_token", obj.get("test_results_auth_mode").?.string);
+    try testing.expectEqualStrings(license_path, obj.get("license_path").?.string);
 }

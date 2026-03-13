@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,19 +6,9 @@ import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
 import { seedConfiguredGraph } from '../helpers/db-seed';
 
-const DEV_LICENSE_KEY = 'RTMIFY-DEV-0000-0000';
-
 function makeDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtmify-live-test-results-api-'));
   return path.join(dir, 'graph.db');
-}
-
-async function ensureLicensed(page: Page): Promise<void> {
-  const gate = page.locator('#license-gate');
-  if (!(await gate.isVisible())) return;
-  await page.locator('#license-key-input').fill(DEV_LICENSE_KEY);
-  await page.getByRole('button', { name: 'Activate' }).click();
-  await expect(gate).toBeHidden();
 }
 
 test('MCP & AI tab shows the test-results endpoint and token can be regenerated', async ({ page }) => {
@@ -29,7 +19,6 @@ test('MCP & AI tab shows the test-results endpoint and token can be regenerated'
 
   try {
     await page.goto(server.baseUrl);
-    await ensureLicensed(page);
 
     await page.getByRole('button', { name: /^Guide$/ }).click();
     await page.getByRole('button', { name: 'MCP & AI' }).click();

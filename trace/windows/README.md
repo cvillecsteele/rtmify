@@ -32,9 +32,19 @@ cd sys
 zig build win-gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
 ```
 
-## Dev License Key
+## Development Licensing
 
-Use `RTMIFY-DEV-0000-0000` to activate during development (bypasses server check).
+Debug builds use the deterministic development HMAC key baked in by `sys/build.zig`. Generate a signed dev license with:
+
+```sh
+cd sys
+zig build license-gen
+./zig-out/bin/rtmify-license-gen --product trace --tier individual --to dev@example.com --org "Local Dev" --perpetual --out /tmp/trace-license.json
+```
+
+Then either:
+- import `/tmp/trace-license.json` in the app
+- or copy it to `~/.rtmify/license.json`
 
 ## Project Layout
 
@@ -51,8 +61,6 @@ sys/trace/windows/
 │   ├── rtmify.rc     — icon + version info + manifest reference
 │   ├── rtmify.manifest — PerMonitorV2 DPI + Common Controls v6
 │   └── rtmify.ico    — application icon (replace before distribution)
-├── docs/
-│   └── prd.md        — product requirements
 ├── Makefile
 └── README.md
 ```
@@ -75,7 +83,7 @@ sys/trace/windows/
 Launch
   │
   ├─ License missing → [License Gate]
-  │     Enter key → Activate (worker thread) → [Drop Zone]
+  │     Import signed license file → [Drop Zone]
   │
   └─ License OK → [Drop Zone]
         Drop .xlsx or Browse → Load (worker) → [File Loaded]

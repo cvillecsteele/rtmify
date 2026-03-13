@@ -144,6 +144,18 @@ extern "gdi32" fn DeleteObject(ho: *anyopaque) callconv(.winapi) BOOL;
 var g_state: state.AppState = .{};
 var g_hinstance: ?*anyopaque = null;
 
+fn licenseStatusMessage(status: bridge.RtmifyLicenseStatus) [*:0]const u8 {
+    return switch (status.detail_code) {
+        1 => "One full free run is available. The first successful report will consume it.",
+        2 => "Your free Trace run has been used. Import a signed license file or place it at ~/.rtmify/license.json.",
+        3 => "No license file found. Import a signed license file or place it at ~/.rtmify/license.json.",
+        5 => "The license file signature is invalid or the file was modified.",
+        6 => "This license file is for a different RTMify product.",
+        8 => "The installed license file has expired.",
+        else => "Import a signed RTMify Trace license file to unlock the app.",
+    };
+}
+
 // ---------------------------------------------------------------------------
 // UTF-16 string helpers
 // ---------------------------------------------------------------------------
@@ -317,11 +329,13 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
             DragAcceptFiles(hw, 1);
             // Check license on startup
             var lic_status: bridge.RtmifyLicenseStatus = undefined;
-            const rc = bridge.rtmify_license_get_status(&lic_status);
+            const rc = bridge.rtmify_trace_license_get_status(&lic_status);
             if (rc == 0 and lic_status.permits_use != 0) {
                 g_state.tag = .drop_zone;
             } else {
                 g_state.tag = .license_gate;
+                g_state.has_activation_error = true;
+                ui.setActivationError(licenseStatusMessage(lic_status));
             }
             ui.updateVisibility(g_state.tag);
             return 0;
@@ -371,7 +385,8 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         WM_COMMAND => {
             const ctrl_id = wparam & 0xFFFF;
             switch (ctrl_id) {
-                ui.IDC_ACTIVATE_BTN => handleActivate(hw),
+                ui.IDC_IMPORT_LICENSE_BTN => handleImportLicense(hw),
+                ui.IDC_CLEAR_LICENSE_BTN => handleClearLicense(hw),
                 ui.IDC_BROWSE_BTN => handleBrowse(hw),
                 ui.IDC_GENERATE_BTN => handleGenerate(hw),
                 ui.IDC_CLEAR_BTN => transitionToDropZone(hw),
@@ -402,6 +417,7 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
             // Restore button text
             if (ui.generate_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Generate"));
             if (status == bridge.RTMIFY_OK) {
+                _ = bridge.recordSuccessfulUse();
                 if (g_state.result) |r| {
                     transitionToDone(hw, r);
                 }
@@ -413,12 +429,13 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
             }
         },
 
-        bridge.WM_ACTIVATE_COMPLETE => {
+        bridge.WM_LICENSE_COMPLETE => {
             const status: i32 = @intCast(wparam);
-            if (ui.activate_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Activate"));
-            if (ui.activate_btn) |b| _ = EnableWindow(b, 1);
+            if (ui.import_license_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Import License File"));
+            if (ui.import_license_btn) |b| _ = EnableWindow(b, 1);
             if (status == bridge.RTMIFY_OK) {
                 g_state.has_activation_error = false;
+                ui.setActivationError("");
                 if (ui.activ_err) |c| _ = ShowWindow(c, SW_HIDE);
                 g_state.tag = .drop_zone;
                 ui.updateVisibility(.drop_zone);
@@ -438,16 +455,28 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
 // WM_COMMAND handlers
 // ---------------------------------------------------------------------------
 
-fn handleActivate(hwnd: HWND) void {
-    var key_buf: [128]u8 = undefined;
-    const key = ui.getKeyText(&key_buf);
-    if (key.len == 0) return;
-
-    if (ui.activate_btn) |b| {
-        _ = SetWindowTextW(b, toUtf16Z("Activating\xe2\x80\xa6"));
+fn handleImportLicense(hwnd: HWND) void {
+    var path_buf: [1024]u8 = undefined;
+    const path = dialogs.browseLicenseJson(hwnd, &path_buf) orelse return;
+    if (ui.import_license_btn) |b| {
+        _ = SetWindowTextW(b, toUtf16Z("Importing\xe2\x80\xa6"));
         _ = EnableWindow(b, 0);
     }
-    bridge.spawnActivate(hwnd, key);
+    bridge.spawnInstallLicense(hwnd, path);
+}
+
+fn handleClearLicense(hwnd: HWND) void {
+    if (!bridge.clearLicense()) {
+        dialogs.showError(hwnd, bridge.rtmify_last_error());
+        return;
+    }
+    var status: bridge.RtmifyLicenseStatus = undefined;
+    _ = bridge.rtmify_trace_license_get_status(&status);
+    g_state.has_activation_error = true;
+    ui.setActivationError(licenseStatusMessage(status));
+    g_state.tag = .license_gate;
+    ui.updateVisibility(.license_gate);
+    _ = InvalidateRect(hwnd, null, 1);
 }
 
 extern "user32" fn EnableWindow(hWnd: *anyopaque, bEnable: BOOL) callconv(.winapi) BOOL;

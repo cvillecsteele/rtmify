@@ -258,10 +258,15 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/info")) {
-            const body = try routes.handleInfo(ctx.db, ctx.test_results_auth, alloc);
+            const body = try routes.handleInfo(ctx.db, ctx.test_results_auth, ctx.license_service, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/license/info")) {
+            const resp = try routes.handleLicenseInfo(ctx.license_service, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.startsWith(u8, path, "/api/v1/test-results/")) {
             const execution_id = try decodePathParam(path["/api/v1/test-results/".len..], alloc);
             const resp = try routes.handleGetExecutionResponse(
@@ -392,9 +397,9 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body_bytes = try readBody(req, alloc);
             response_status = .ok;
             try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.secure_store, ctx.state, alloc);
-        } else if (std.mem.eql(u8, path, "/api/license/activate")) {
+        } else if (std.mem.eql(u8, path, "/api/license/import")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleLicenseActivateResponse(ctx.license_service, body_bytes, alloc);
+            const resp = try routes.handleLicenseImportResponse(ctx.license_service, body_bytes, alloc);
             if (resp.ok) {
                 var license_status = try ctx.license_service.getStatus(alloc);
                 defer license_status.deinit(alloc);
@@ -406,22 +411,9 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
-        } else if (std.mem.eql(u8, path, "/api/license/deactivate")) {
-            const resp = try routes.handleLicenseDeactivateResponse(ctx.license_service, alloc);
+        } else if (std.mem.eql(u8, path, "/api/license/clear")) {
+            const resp = try routes.handleLicenseClearResponse(ctx.license_service, alloc);
             if (resp.ok) ctx.state.product_enabled.store(false, .seq_cst);
-            response_status = resp.status;
-            response_bytes = resp.body.len;
-            try sendJsonWithStatus(req, resp.body, resp.status);
-        } else if (std.mem.eql(u8, path, "/api/license/refresh")) {
-            const resp = try routes.handleLicenseRefreshResponse(ctx.license_service, alloc);
-            if (resp.ok) {
-                var license_status = try ctx.license_service.getStatus(alloc);
-                defer license_status.deinit(alloc);
-                ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
-                if (license_status.permits_use) {
-                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
-                }
-            }
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
@@ -540,9 +532,9 @@ fn isLicenseExempt(method: std.http.Method, path: []const u8) bool {
         std.mem.eql(u8, path, "/api/status") or
         std.mem.eql(u8, path, "/api/info") or
         std.mem.eql(u8, path, "/api/license/status") or
-        std.mem.eql(u8, path, "/api/license/activate") or
-        std.mem.eql(u8, path, "/api/license/deactivate") or
-        std.mem.eql(u8, path, "/api/license/refresh");
+        std.mem.eql(u8, path, "/api/license/info") or
+        std.mem.eql(u8, path, "/api/license/import") or
+        std.mem.eql(u8, path, "/api/license/clear");
 }
 
 const RequestValidationError = error{

@@ -17,9 +17,11 @@ const VERSION = @import("build_options").version;
 // ---------------------------------------------------------------------------
 
 const EXIT_SUCCESS: u8 = 0;
-const EXIT_INPUT: u8 = 1; // file not found, not XLSX, missing tabs
-const EXIT_LICENSE: u8 = 2; // not activated, expired, revoked
-const EXIT_OUTPUT: u8 = 3; // can't write to destination
+const EXIT_INPUT: u8 = 1;
+const EXIT_LICENSE_REQUIRED: u8 = 2;
+const EXIT_LICENSE_EXPIRED: u8 = 3;
+const EXIT_LICENSE_INVALID: u8 = 4;
+const EXIT_OUTPUT: u8 = 5;
 
 // ---------------------------------------------------------------------------
 // Argument types
@@ -32,12 +34,20 @@ pub const Args = struct {
     format: Format = .docx,
     output: ?[]const u8 = null,
     project: ?[]const u8 = null,
-    activate: ?[]const u8 = null,
-    deactivate: bool = false,
+    license_path: ?[]const u8 = null,
+    license_cmd: ?LicenseCommand = null,
+    license_cmd_path: ?[]const u8 = null,
+    json: bool = false,
     strict: bool = false,
     version: bool = false,
     help: bool = false,
     gaps_json: ?[]const u8 = null,
+};
+
+pub const LicenseCommand = enum {
+    info,
+    install,
+    clear,
 };
 
 pub const ParseError = error{
@@ -58,14 +68,23 @@ pub fn parseArgs(tokens: []const []const u8) ParseError!Args {
             args.help = true;
         } else if (std.mem.eql(u8, tok, "--version")) {
             args.version = true;
-        } else if (std.mem.eql(u8, tok, "--deactivate")) {
-            args.deactivate = true;
+        } else if (std.mem.eql(u8, tok, "--json")) {
+            args.json = true;
         } else if (std.mem.eql(u8, tok, "--strict")) {
             args.strict = true;
-        } else if (std.mem.eql(u8, tok, "--activate")) {
+        } else if (std.mem.eql(u8, tok, "--license")) {
             i += 1;
             if (i >= tokens.len) return error.MissingValue;
-            args.activate = tokens[i];
+            args.license_path = tokens[i];
+        } else if (std.mem.eql(u8, tok, "license")) {
+            i += 1;
+            if (i >= tokens.len) return error.MissingValue;
+            args.license_cmd = std.meta.stringToEnum(LicenseCommand, tokens[i]) orelse return error.UnknownFlag;
+            if (args.license_cmd == .install) {
+                i += 1;
+                if (i >= tokens.len) return error.MissingValue;
+                args.license_cmd_path = tokens[i];
+            }
         } else if (std.mem.eql(u8, tok, "--format")) {
             i += 1;
             if (i >= tokens.len) return error.MissingValue;
@@ -118,8 +137,10 @@ const HELP =
     \\  --output <path>          Output file or directory (default: same dir as input)
     \\  --project <name>         Project name for report header (default: filename)
     \\  --gaps-json <path>       Write diagnostics + gap analysis JSON to path
-    \\  --activate <key>         Activate license key for this machine
-    \\  --deactivate             Deactivate license on this machine
+    \\  --license <path>         Use a specific signed license file for this run
+    \\  license info [--json]    Show installed license details
+    \\  license install <path>   Install a signed license file
+    \\  license clear            Remove the installed license file
     \\  --strict                 Exit with gap count when gaps are found (for CI)
     \\  --version                Print version and exit
     \\  --help                   Print this help and exit
@@ -129,13 +150,15 @@ const HELP =
     \\  rtmify-trace requirements.xlsx --format all --output ./reports/
     \\  rtmify-trace requirements.xlsx --format md --project "Ventilator v2.1"
     \\  rtmify-trace requirements.xlsx --gaps-json gaps.json
-    \\  rtmify-trace --activate XXXX-XXXX-XXXX-XXXX
+    \\  rtmify-trace license install ./license.json
     \\
     \\Exit codes:
     \\  0   success
     \\  1   input file error
-    \\  2   license error
-    \\  3   output error
+    \\  2   license required / trial exhausted
+    \\  3   license expired
+    \\  4   invalid/tampered/wrong-product license
+    \\  5   output error
     \\  N   gap count (with --strict)
     \\
 ;
@@ -262,7 +285,7 @@ fn writeGapsJson(path: []const u8, diag: *const Diagnostics, g: *const graph.Gra
         }
         try w.writeByte('}');
     }
-    try w.print("],\"gap_count\":{d},\"warning_count\":{d},\"error_count\":{d}}", .{
+    try w.print("],\"gap_count\":{d},\"warning_count\":{d},\"error_count\":{d}}}", .{
         try g.hardGapCount(alloc),
         diag.warning_count,
         diag.error_count,
@@ -373,7 +396,11 @@ fn generateReport(
 fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
-    var license_service = try license.initDefaultLemonSqueezy(gpa, .{});
+    var license_service = try license.initDefaultHmacFile(gpa, .{
+        .product = .trace,
+        .trial_policy = .single_free_run,
+        .license_path_override = args.license_path,
+    });
     defer license_service.deinit(gpa);
 
     if (args.help) {
@@ -386,47 +413,83 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
         return EXIT_SUCCESS;
     }
 
-    if (args.activate) |key| {
-        var activation = try license_service.activate(gpa, .{ .license_key = key });
-        defer activation.deinit(gpa);
-        if (!activation.status.permits_use) {
-            try stderr.print("Error: {s}\n", .{activation.status.message orelse "license activation failed"});
-            return EXIT_LICENSE;
+    if (args.license_cmd) |cmd| {
+        switch (cmd) {
+            .info => {
+                var info = license_service.getInfo(gpa) catch |err| {
+                    try stderr.print("Error: {s}\n", .{@errorName(err)});
+                    return EXIT_LICENSE_INVALID;
+                };
+                defer info.deinit(gpa);
+                if (args.json) {
+                    var buf: std.ArrayList(u8) = .empty;
+                    defer buf.deinit(gpa);
+                    const w = buf.writer(gpa);
+                    try w.writeAll("{\"license_path\":\"");
+                    try license.license_file.writeJsonString(w, info.license_path);
+                    try w.writeByte('"');
+                    try w.writeAll(",\"payload\":");
+                    try license.license_file.writePayloadJson(w, info.payload);
+                    try w.writeAll("}\n");
+                    try stdout.writeAll(buf.items);
+                } else {
+                    try stdout.print("License ID: {s}\nProduct: {s}\nTier: {s}\nIssued To: {s}\n", .{
+                        info.payload.license_id,
+                        @tagName(info.payload.product),
+                        @tagName(info.payload.tier),
+                        info.payload.issued_to,
+                    });
+                    if (info.payload.org) |org| try stdout.print("Org: {s}\n", .{org});
+                    if (info.payload.expires_at) |expires_at| {
+                        try stdout.print("Expires At: {d}\n", .{expires_at});
+                    } else {
+                        try stdout.writeAll("Expires At: perpetual\n");
+                    }
+                    try stdout.print("Path: {s}\n", .{info.license_path});
+                }
+                return EXIT_SUCCESS;
+            },
+            .install => {
+                const install_path = args.license_cmd_path orelse return EXIT_INPUT;
+                var status = try license_service.installFromPath(gpa, install_path);
+                defer status.deinit(gpa);
+                if (!status.permits_use) {
+                    try stderr.print("Error: {s}\n", .{status.message orelse "license install failed"});
+                    return switch (status.state) {
+                        .expired => EXIT_LICENSE_EXPIRED,
+                        .invalid, .tampered => EXIT_LICENSE_INVALID,
+                        else => EXIT_LICENSE_REQUIRED,
+                    };
+                }
+                try stdout.writeAll("License installed successfully.\n");
+                return EXIT_SUCCESS;
+            },
+            .clear => {
+                var status = try license_service.clearInstalledLicense(gpa);
+                defer status.deinit(gpa);
+                try stdout.writeAll("Installed license cleared.\n");
+                return EXIT_SUCCESS;
+            },
         }
-        try stdout.print("License activated successfully.\n", .{});
-        return EXIT_SUCCESS;
-    }
-
-    if (args.deactivate) {
-        var deactivation = try license_service.deactivate(gpa);
-        defer deactivation.deinit(gpa);
-        try stdout.print("License deactivated.\n", .{});
-        return EXIT_SUCCESS;
     }
 
     // License gate
     var lic_status = try license_service.getStatus(gpa);
     defer lic_status.deinit(gpa);
     switch (lic_status.state) {
-        .valid, .valid_offline_grace => {},
-        .not_activated, .invalid_key => {
-            try stderr.writeAll("Error: license not activated.\n");
-            try stderr.writeAll("Run: rtmify-trace --activate <your-license-key>\n");
-            return EXIT_LICENSE;
+        .valid => {},
+        .not_licensed => {
+            try stderr.print("Error: {s}\n", .{lic_status.message orelse "license is required"});
+            try stderr.writeAll("Install a signed license file with: rtmify-trace license install <path>\n");
+            return EXIT_LICENSE_REQUIRED;
         },
         .expired => {
-            try stderr.writeAll("Error: license expired (grace period elapsed).\n");
-            try stderr.writeAll("Visit https://rtmify.io to renew your subscription.\n");
-            return EXIT_LICENSE;
+            try stderr.print("Error: {s}\n", .{lic_status.message orelse "license expired"});
+            return EXIT_LICENSE_EXPIRED;
         },
-        .fingerprint_mismatch => {
-            try stderr.writeAll("Error: this license is not valid on this machine.\n");
-            try stderr.writeAll("To move your license, deactivate on the old machine first.\n");
-            return EXIT_LICENSE;
-        },
-        .revoked, .provider_unavailable, .cache_corrupt, .internal_error => {
+        .invalid, .tampered => {
             try stderr.print("Error: {s}\n", .{lic_status.message orelse "license check failed"});
-            return EXIT_LICENSE;
+            return EXIT_LICENSE_INVALID;
         },
     }
 
@@ -486,6 +549,8 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     } else {
         try stdout.print("Done. {d} gap(s) found.\n", .{gaps});
     }
+
+    try license_service.recordSuccessfulUse(gpa);
 
     if (args.strict and gaps > 0) {
         return @intCast(@min(gaps, 254));
@@ -598,14 +663,21 @@ test "parseArgs --version and --help" {
     try testing.expect(hh.help);
 }
 
-test "parseArgs --activate" {
-    const args = try parseArgs(&.{ "--activate", "XXXX-1234-YYYY-5678" });
-    try testing.expectEqualStrings("XXXX-1234-YYYY-5678", args.activate.?);
+test "parseArgs license info --json" {
+    const args = try parseArgs(&.{ "license", "info", "--json" });
+    try testing.expectEqual(LicenseCommand.info, args.license_cmd.?);
+    try testing.expect(args.json);
 }
 
-test "parseArgs --deactivate --strict" {
-    const args = try parseArgs(&.{ "--deactivate", "--strict" });
-    try testing.expect(args.deactivate);
+test "parseArgs license install" {
+    const args = try parseArgs(&.{ "license", "install", "./license.json" });
+    try testing.expectEqual(LicenseCommand.install, args.license_cmd.?);
+    try testing.expectEqualStrings("./license.json", args.license_cmd_path.?);
+}
+
+test "parseArgs license clear --strict" {
+    const args = try parseArgs(&.{ "license", "clear", "--strict" });
+    try testing.expectEqual(LicenseCommand.clear, args.license_cmd.?);
     try testing.expect(args.strict);
 }
 
@@ -615,9 +687,11 @@ test "parseArgs unknown flag" {
 
 test "parseArgs missing value" {
     try testing.expectError(error.MissingValue, parseArgs(&.{"--format"}));
-    try testing.expectError(error.MissingValue, parseArgs(&.{"--activate"}));
     try testing.expectError(error.MissingValue, parseArgs(&.{"--output"}));
     try testing.expectError(error.MissingValue, parseArgs(&.{"--project"}));
+    try testing.expectError(error.MissingValue, parseArgs(&.{"--license"}));
+    try testing.expectError(error.MissingValue, parseArgs(&.{"license"}));
+    try testing.expectError(error.MissingValue, parseArgs(&.{ "license", "install" }));
 }
 
 test "parseArgs --format pdf" {

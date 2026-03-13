@@ -11,6 +11,8 @@ private func lastError() -> String {
 struct LicenseStatus {
     let state: Int32
     let permitsUse: Bool
+    let usingFreeRun: Bool
+    let detailCode: Int32
 }
 
 func rtmifyLoad(path: String) async throws -> OpaquePointer {
@@ -51,20 +53,30 @@ func rtmifyGenerate(graph: OpaquePointer, format: String,
 
 func rtmifyLicenseStatus() throws -> LicenseStatus {
     var status = RtmifyLicenseStatus()
-    let rc = rtmify_license_get_status(&status)
+    let rc = rtmify_trace_license_get_status(&status)
     if rc == 0 {
-        return LicenseStatus(state: status.state, permitsUse: status.permits_use != 0)
+        return LicenseStatus(
+            state: status.state,
+            permitsUse: status.permits_use != 0,
+            usingFreeRun: status.using_free_run != 0,
+            detailCode: status.detail_code
+        )
     }
     throw BridgeError(message: lastError())
 }
 
-func rtmifyActivate(key: String) async throws -> LicenseStatus {
+func rtmifyInstallLicense(path: String) async throws -> LicenseStatus {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
             var status = RtmifyLicenseStatus()
-            let rc = key.withCString { rtmify_license_activate($0, &status) }
+            let rc = path.withCString { rtmify_trace_license_install($0, &status) }
             if rc == 0 {
-                continuation.resume(returning: LicenseStatus(state: status.state, permitsUse: status.permits_use != 0))
+                continuation.resume(returning: LicenseStatus(
+                    state: status.state,
+                    permitsUse: status.permits_use != 0,
+                    usingFreeRun: status.using_free_run != 0,
+                    detailCode: status.detail_code
+                ))
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))
             }
@@ -72,13 +84,31 @@ func rtmifyActivate(key: String) async throws -> LicenseStatus {
     }
 }
 
-func rtmifyDeactivate() async throws -> LicenseStatus {
+func rtmifyClearLicense() async throws -> LicenseStatus {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
             var status = RtmifyLicenseStatus()
-            let rc = rtmify_license_deactivate(&status)
+            let rc = rtmify_trace_license_clear(&status)
             if rc == 0 {
-                continuation.resume(returning: LicenseStatus(state: status.state, permitsUse: status.permits_use != 0))
+                continuation.resume(returning: LicenseStatus(
+                    state: status.state,
+                    permitsUse: status.permits_use != 0,
+                    usingFreeRun: status.using_free_run != 0,
+                    detailCode: status.detail_code
+                ))
+            } else {
+                continuation.resume(throwing: BridgeError(message: lastError()))
+            }
+        }
+    }
+}
+
+func rtmifyRecordSuccessfulUse() async throws {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            let rc = rtmify_trace_license_record_successful_use()
+            if rc == 0 {
+                continuation.resume()
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))
             }

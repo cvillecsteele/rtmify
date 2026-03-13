@@ -20,9 +20,9 @@ pub const handleNode = mod.handleNode;
 
 pub const handleStatus = mod.handleStatus;
 pub const handleLicenseStatus = mod.handleLicenseStatus;
-pub const handleLicenseActivateResponse = mod.handleLicenseActivateResponse;
-pub const handleLicenseDeactivateResponse = mod.handleLicenseDeactivateResponse;
-pub const handleLicenseRefreshResponse = mod.handleLicenseRefreshResponse;
+pub const handleLicenseInfo = mod.handleLicenseInfo;
+pub const handleLicenseImportResponse = mod.handleLicenseImportResponse;
+pub const handleLicenseClearResponse = mod.handleLicenseClearResponse;
 pub const handleInfo = mod.handleInfo;
 pub const handlePostTestResults = mod.handlePostTestResults;
 pub const handlePostTestResultsResponse = mod.handlePostTestResultsResponse;

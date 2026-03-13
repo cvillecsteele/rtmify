@@ -60,7 +60,7 @@ pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool,
 
     switch (srv_state) {
         .license_gate => {
-            _ = AppendMenuW(menu, MF_STRING, CMD_LICENSE, W("Enter License Key..."));
+            _ = AppendMenuW(menu, MF_STRING, CMD_LICENSE, W("Import License File..."));
         },
         .stopped, .@"error" => {
             _ = AppendMenuW(menu, MF_STRING, CMD_START, W("Start Server"));

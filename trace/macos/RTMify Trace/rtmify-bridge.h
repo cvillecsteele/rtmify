@@ -6,10 +6,9 @@ typedef struct RtmifyGraph RtmifyGraph;
 typedef struct RtmifyLicenseStatus {
     int32_t state;
     int32_t permits_use;
-    int64_t activated_at;
+    int32_t using_free_run;
     int64_t expires_at;
-    int64_t last_validated_at;
-    int64_t offline_grace_deadline;
+    int64_t issued_at;
     int32_t detail_code;
 } RtmifyLicenseStatus;
 
@@ -27,12 +26,11 @@ int32_t rtmify_gap_count(const RtmifyGraph* graph);
 int32_t rtmify_warning_count(void);
 const char* rtmify_last_error(void);
 void rtmify_free(RtmifyGraph* graph);
-int32_t rtmify_license_get_status(RtmifyLicenseStatus* out_status);
-int32_t rtmify_license_activate(const char* license_key, RtmifyLicenseStatus* out_status);
-int32_t rtmify_license_deactivate(RtmifyLicenseStatus* out_status);
-int32_t rtmify_license_refresh(RtmifyLicenseStatus* out_status);
-int32_t rtmify_activate_license(const char* license_key);
+int32_t rtmify_trace_license_get_status(RtmifyLicenseStatus* out_status);
+int32_t rtmify_trace_license_install(const char* path, RtmifyLicenseStatus* out_status);
+int32_t rtmify_trace_license_clear(RtmifyLicenseStatus* out_status);
+int32_t rtmify_trace_license_record_successful_use(void);
+int32_t rtmify_trace_license_info_json(void);
 int32_t rtmify_check_license(void);
-int32_t rtmify_deactivate_license(void);
 
 #endif

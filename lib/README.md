@@ -21,19 +21,19 @@ Options:
   --format <md|docx|pdf|all>  Output format (default: docx)
   --output <path>             Output file or directory (default: same dir as input)
   --project <name>            Project name for report header (default: filename)
-  --activate <key>            Activate license key for this machine
-  --deactivate                Deactivate license on this machine
+  --license <path>            Use a specific signed license file
   --gaps-json <path>          Write diagnostics and gap list as JSON
-  --strict                    Exit with gap count when gaps are found (for CI)
+  --strict                    Exit with hard-gap count when hard gaps are found
   --version                   Print version and exit
   --help                      Print this help and exit
 
 Exit codes:
   0   success
-  1   input file error (not found, not XLSX, missing required tabs)
-  2   license error (not activated, expired, revoked)
-  3   output error (cannot write destination)
-  N   gap count (with --strict only)
+  1   input/general error
+  2   license required / trial exhausted
+  3   license expired
+  4   invalid, tampered, or wrong-product license
+  5   output error
 ```
 
 ### Examples
@@ -42,7 +42,8 @@ Exit codes:
 rtmify-trace requirements.xlsx
 rtmify-trace requirements.xlsx --format all --output ./reports/
 rtmify-trace requirements.xlsx --format md --project "Ventilator v2.1"
-rtmify-trace --activate XXXX-XXXX-XXXX-XXXX
+rtmify-trace license info --json
+rtmify-trace license install /path/to/license.json
 ```
 
 ## Building
@@ -93,19 +94,23 @@ Column order does not matter — headers are matched by name (case-insensitive).
 Blank rows and extra columns are ignored. Missing optional columns are treated
 as empty.
 
-## License activation
+## Licensing
 
-The tool requires a LemonSqueezy license key on first run:
+RTMify uses signed offline license files.
+
+- Manual install path: `~/.rtmify/license.json`
+- Override for one run: `--license /path/to/license.json`
+
+Trace allows one full free run with no installed license. After a successful
+generation, subsequent runs require a valid signed license file.
+
+Commands:
 
 ```sh
-rtmify-trace --activate XXXX-XXXX-XXXX-XXXX
+rtmify-trace license info --json
+rtmify-trace license install /path/to/license.json
+rtmify-trace license clear
 ```
-
-This validates the key online and writes a cache to `~/.rtmify/license.json`.
-The license is bound to the activating machine via a hardware fingerprint.
-Subsequent runs are offline. The tool silently re-validates with LemonSqueezy
-every 7 days; if the server is unreachable, a 30-day offline grace period
-applies before the license is considered lapsed.
 
 ## C ABI
 
@@ -120,9 +125,11 @@ const char*  rtmify_last_error(void);
 int          rtmify_warning_count(void);
 void         rtmify_free(RtmifyGraph*);
 
-RtmifyStatus rtmify_activate_license(const char* license_key);
-RtmifyStatus rtmify_check_license(void);
-RtmifyStatus rtmify_deactivate_license(void);
+int          rtmify_trace_license_get_status(RtmifyLicenseStatus* out_status);
+int          rtmify_trace_license_install(const char* path, RtmifyLicenseStatus* out_status);
+int          rtmify_trace_license_clear(RtmifyLicenseStatus* out_status);
+int          rtmify_trace_license_record_successful_use(void);
+char*        rtmify_trace_license_info_json(void);
 ```
 
 See [docs/architecture.md](docs/architecture.md) for full details.
@@ -141,7 +148,9 @@ sys/
 │   │   ├── render_md.zig   Markdown report renderer
 │   │   ├── render_docx.zig DOCX report renderer (ZIP+XML, no external deps)
 │   │   ├── render_pdf.zig  PDF 1.4 report renderer (Helvetica AFM, direct PDF)
-│   │   └── license.zig     LemonSqueezy license verification + local cache
+│   │   ├── license.zig     signed license file service + trial policy
+│   │   ├── license_file.zig canonical payload JSON + HMAC verification
+│   │   └── license_gen.zig operator-side signed license generator
 │   ├── docs/
 │   │   └── architecture.md deep-dive on design decisions and module internals
 │   └── vendor/

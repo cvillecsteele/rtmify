@@ -7,26 +7,25 @@ pub const Store = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        read: *const fn (ctx: *anyopaque, alloc: Allocator) anyerror!?types.CacheRecord,
-        write: *const fn (ctx: *anyopaque, alloc: Allocator, record: types.CacheRecord) anyerror!void,
-        clear: *const fn (ctx: *anyopaque, alloc: Allocator) anyerror!void,
+        readEnvelope: *const fn (ctx: *anyopaque, alloc: Allocator) anyerror!?types.LicenseEnvelope,
+        writeEnvelope: *const fn (ctx: *anyopaque, alloc: Allocator, envelope: types.LicenseEnvelope) anyerror!void,
+        clearEnvelope: *const fn (ctx: *anyopaque, alloc: Allocator) anyerror!void,
         deinit: *const fn (ctx: *anyopaque, alloc: Allocator) void,
     };
 
-    pub fn read(self: Store, alloc: Allocator) !?types.CacheRecord {
-        return self.vtable.read(self.ctx, alloc);
+    pub fn readEnvelope(self: Store, alloc: Allocator) !?types.LicenseEnvelope {
+        return self.vtable.readEnvelope(self.ctx, alloc);
     }
 
-    pub fn write(self: Store, alloc: Allocator, record: types.CacheRecord) !void {
-        return self.vtable.write(self.ctx, alloc, record);
+    pub fn writeEnvelope(self: Store, alloc: Allocator, envelope: types.LicenseEnvelope) !void {
+        return self.vtable.writeEnvelope(self.ctx, alloc, envelope);
     }
 
-    pub fn clear(self: Store, alloc: Allocator) !void {
-        return self.vtable.clear(self.ctx, alloc);
+    pub fn clearEnvelope(self: Store, alloc: Allocator) !void {
+        return self.vtable.clearEnvelope(self.ctx, alloc);
     }
 
     pub fn deinit(self: Store, alloc: Allocator) void {
         self.vtable.deinit(self.ctx, alloc);
     }
 };
-

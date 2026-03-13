@@ -62,7 +62,7 @@ struct MenuBarView: View {
     private var mainActions: some View {
         switch vm.state {
         case .licenseGate:
-            Button("Enter License Key…") {
+            Button("Import License File…") {
                 openWindow(id: "license")
             }
         case .stopped, .error:
