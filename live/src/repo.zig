@@ -39,8 +39,8 @@ const ignored_dirs = &[_][]const u8{
 
 /// Classify a file path as source, test_file, or ignored.
 pub fn classifyFile(path: []const u8) FileKind {
-    // Check for ignored directory components
-    var it = std.mem.splitScalar(u8, path, std.fs.path.sep);
+    // Check for ignored directory components — split on both separators for portability
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
     while (it.next()) |component| {
         for (ignored_dirs) |d| {
             if (std.mem.eql(u8, component, d)) return .ignored;
@@ -62,8 +62,8 @@ pub fn classifyFile(path: []const u8) FileKind {
 }
 
 fn isTestPath(path: []const u8, basename: []const u8) bool {
-    // Directory components containing test markers
-    var it = std.mem.splitScalar(u8, path, std.fs.path.sep);
+    // Directory components containing test markers — split on both separators for portability
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
     while (it.next()) |component| {
         if (std.ascii.eqlIgnoreCase(component, "test") or
             std.ascii.eqlIgnoreCase(component, "tests") or

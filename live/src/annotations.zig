@@ -302,10 +302,10 @@ pub fn buildKnownIds(db: *GraphDb, alloc: Allocator) ![][]const u8 {
 const testing = std.testing;
 
 test "scanFile C-style line comment with req ID" {
-    // Write a temp file
-    const tmp = "/tmp/test_annotations_c.c";
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
     {
-        const f = try std.fs.cwd().createFile(tmp, .{});
+        const f = try tmp_dir.dir.createFile("test.c", .{});
         defer f.close();
         try f.writeAll(
             \\int foo() {
@@ -314,6 +314,9 @@ test "scanFile C-style line comment with req ID" {
             \\}
         );
     }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("test.c", &path_buf);
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -326,9 +329,10 @@ test "scanFile C-style line comment with req ID" {
 }
 
 test "scanFile Python hash comment with req ID" {
-    const tmp = "/tmp/test_annotations_py.py";
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
     {
-        const f = try std.fs.cwd().createFile(tmp, .{});
+        const f = try tmp_dir.dir.createFile("test.py", .{});
         defer f.close();
         try f.writeAll(
             \\def foo():
@@ -336,6 +340,9 @@ test "scanFile Python hash comment with req ID" {
             \\    pass
         );
     }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("test.py", &path_buf);
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -347,12 +354,16 @@ test "scanFile Python hash comment with req ID" {
 }
 
 test "scanFile no match for unknown ID" {
-    const tmp = "/tmp/test_annotations_nomatch.c";
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
     {
-        const f = try std.fs.cwd().createFile(tmp, .{});
+        const f = try tmp_dir.dir.createFile("nomatch.c", .{});
         defer f.close();
         try f.writeAll("// REQ-999: something\n");
     }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("nomatch.c", &path_buf);
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -363,12 +374,16 @@ test "scanFile no match for unknown ID" {
 }
 
 test "scanFile returns empty for unknown extension" {
-    const tmp = "/tmp/test_annotations.yaml";
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
     {
-        const f = try std.fs.cwd().createFile(tmp, .{});
+        const f = try tmp_dir.dir.createFile("test.yaml", .{});
         defer f.close();
         try f.writeAll("# REQ-001: yaml comment\n");
     }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("test.yaml", &path_buf);
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -379,12 +394,16 @@ test "scanFile returns empty for unknown extension" {
 }
 
 test "scanFile multiple IDs on same line" {
-    const tmp = "/tmp/test_annotations_multi.c";
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
     {
-        const f = try std.fs.cwd().createFile(tmp, .{});
+        const f = try tmp_dir.dir.createFile("multi.c", .{});
         defer f.close();
         try f.writeAll("// REQ-001 and REQ-002 both apply here\n");
     }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("multi.c", &path_buf);
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -395,9 +414,10 @@ test "scanFile multiple IDs on same line" {
 }
 
 test "scanFileDetailed reports unknown requirement references in comments" {
-    const tmp = "/tmp/test_annotations_unknown.c";
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
     {
-        const f = try std.fs.cwd().createFile(tmp, .{});
+        const f = try tmp_dir.dir.createFile("unknown.c", .{});
         defer f.close();
         try f.writeAll(
             \\// REQ-001 implemented here
@@ -405,6 +425,9 @@ test "scanFileDetailed reports unknown requirement references in comments" {
             \\const char *s = "REQ-888";
         );
     }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("unknown.c", &path_buf);
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
