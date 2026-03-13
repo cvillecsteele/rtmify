@@ -12,7 +12,7 @@ function makeDbPath(): string {
   return path.join(dir, 'graph.db');
 }
 
-test('requirement detail renders repo-linked nodes and user-need impact stays downstream only', async ({ page }) => {
+test('requirement detail renders upstream user needs separately from downstream evidence', async ({ page }) => {
   const dbPath = makeDbPath();
   seedConfiguredGraph(dbPath, { requirementId: 'REQ-001', userNeedId: 'UN-001' });
   const repo = RepoFixture.create();
@@ -27,6 +27,27 @@ test('requirement detail renders repo-linked nodes and user-need impact stays do
     await page.locator('#req-body tr').first().locator('.expand-btn').click();
     await expect(page.locator('.detail-row')).toContainText('src/foo.c', { timeout: 15000 });
     await expect(page.locator('.detail-row')).not.toContainText('Loading…');
+    const detail = page.locator('.detail-row').first();
+    const downstreamSection = detail.locator('.tree-section').nth(0);
+    const upstreamSection = detail.locator('.tree-section').nth(1);
+    await expect(downstreamSection).toContainText('Downstream');
+    await expect(downstreamSection).toContainText('src/foo.c');
+    await expect(downstreamSection).not.toContainText('UN-001');
+    await expect(upstreamSection).toContainText('Upstream');
+    await expect(upstreamSection).toContainText('UN-001');
+    await expect(upstreamSection).toContainText('Source User Need');
+
+    await page.getByRole('button', { name: /^User Needs$/ }).click();
+    await expect(page.locator('#un-body')).toContainText('UN-001', { timeout: 15000 });
+    await page.locator('#un-body tr').first().locator('.expand-btn').click();
+    const needDetail = page.locator('#un-body').locator('tr.detail-row').first();
+    const needDownstreamSection = needDetail.locator('.tree-section').nth(0);
+    const needUpstreamSection = needDetail.locator('.tree-section').nth(1);
+    await expect(needDownstreamSection).toContainText('Downstream');
+    await expect(needDownstreamSection).toContainText('REQ-001');
+    await expect(needDownstreamSection).toContainText('Derived Requirement');
+    await expect(needUpstreamSection).toContainText('Upstream');
+    await expect(needUpstreamSection).not.toContainText('REQ-001');
 
     await page.getByRole('button', { name: /^Analysis/ }).click();
     await page.getByRole('button', { name: /^Impact$/ }).click();

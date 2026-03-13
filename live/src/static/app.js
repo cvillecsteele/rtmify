@@ -395,12 +395,65 @@
       return;
     }
 
-    // One row per requirement — use the first occurrence (first test row)
-    const seen = new Map();
+    const summaries = new Map();
     for (const r of rows) {
-      if (!seen.has(r.req_id)) seen.set(r.req_id, r);
+      let summary = summaries.get(r.req_id);
+      if (!summary) {
+        summary = {
+          req_id: r.req_id,
+          statement: r.statement,
+          status: r.status,
+          user_need_id: r.user_need_id,
+          suspect: !!r.suspect,
+          test_group_ids: new Set(),
+          test_ids: new Set(),
+          hasEmptyTestGroup: false,
+          hasConcreteTest: false,
+          hasFail: false,
+          hasNonPassConcreteResult: false,
+        };
+        summaries.set(r.req_id, summary);
+      }
+      if (r.user_need_id) summary.user_need_id = r.user_need_id;
+      if (r.statement) summary.statement = r.statement;
+      if (r.status) summary.status = r.status;
+      if (r.suspect) summary.suspect = true;
+      if (r.test_group_id) {
+        summary.test_group_ids.add(r.test_group_id);
+        if (!r.test_id) summary.hasEmptyTestGroup = true;
+      }
+      if (r.test_id) {
+        summary.test_ids.add(r.test_id);
+        summary.hasConcreteTest = true;
+        if (r.result === 'FAIL') summary.hasFail = true;
+        if (r.result !== 'PASS') summary.hasNonPassConcreteResult = true;
+      }
     }
-    const reqs = [...seen.values()].sort((a, b) => a.req_id.localeCompare(b.req_id));
+    const reqs = [...summaries.values()]
+      .map(summary => {
+        const test_group_ids = [...summary.test_group_ids].sort((a, b) => a.localeCompare(b));
+        let aggregate_result = null;
+        if (test_group_ids.length > 0) {
+          if (summary.hasFail) {
+            aggregate_result = 'FAIL';
+          } else if (summary.hasConcreteTest && !summary.hasNonPassConcreteResult && !summary.hasEmptyTestGroup) {
+            aggregate_result = 'PASS';
+          } else {
+            aggregate_result = 'PENDING';
+          }
+        }
+        return {
+          req_id: summary.req_id,
+          statement: summary.statement,
+          status: summary.status,
+          user_need_id: summary.user_need_id,
+          suspect: summary.suspect,
+          test_group_ids,
+          test_count: summary.test_ids.size,
+          aggregate_result,
+        };
+      })
+      .sort((a, b) => a.req_id.localeCompare(b.req_id));
 
     const issueCount = reqs.filter(r => rowSeverity(r) !== '').length;
     const badge = document.getElementById('gap-badge');
@@ -417,10 +470,10 @@
       const severity = rowSeverity(r);
       const rowClass = severity ? ` class="${severity}"` : '';
       const status = r.status || '—';
-      const tgCell = r.test_group_id
-        ? `<span class="test-id">${esc(r.test_group_id)}</span>`
+      const tgCell = r.test_group_ids.length > 0
+        ? r.test_group_ids.map(tgId => `<span class="test-id">${esc(tgId)}</span>`).join(' ')
         : '<span class="result-missing">No Test</span>';
-      const resultCell = resultBadge(r.result, !!r.test_group_id);
+      const resultCell = resultBadge(r.aggregate_result, r.test_group_ids.length > 0);
       return `<tr${rowClass}>
         <td><button class="expand-btn" aria-label="Expand ${esc(r.req_id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.req_id)}" data-colspan="5">${CHEVRON_SVG}</button><span class="req-id">${esc(r.req_id)}</span></td>
         <td>${esc(r.statement || '—')}</td>
@@ -485,8 +538,8 @@
     }
     tbody.innerHTML = rows.map(r => {
       const rowClass = r.suspect ? ' class="suspect"' : '';
-      const reqCell = r.req_id
-        ? `<span class="req-id">${esc(r.req_id)}</span>`
+      const reqCell = (r.req_ids || []).length > 0
+        ? r.req_ids.map(reqId => `<span class="req-id">${esc(reqId)}</span>`).join(' ')
         : '<span class="text-placeholder">—</span>';
       return `<tr${rowClass}>
         <td><button class="expand-btn" aria-label="Expand ${esc(r.test_id || r.test_group_id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(r.test_id || r.test_group_id)}" data-colspan="5">${CHEVRON_SVG}</button><span class="test-id">${esc(r.test_group_id || '—')}</span></td>
@@ -593,8 +646,10 @@
   // warning = gaps: no test linked or no parent user need
   // ""      = fully linked and passing
   function rowSeverity(r) {
-    if (r.result === 'FAIL') return 'error';
-    if (!r.test_group_id || !r.user_need_id) return 'warning';
+    const result = r.aggregate_result || r.result;
+    const hasTests = Array.isArray(r.test_group_ids) ? r.test_group_ids.length > 0 : !!r.test_group_id;
+    if (result === 'FAIL') return 'error';
+    if (!hasTests || !r.user_need_id) return 'warning';
     return '';
   }
 
@@ -690,6 +745,35 @@
       default:
         return label.replaceAll('_', ' ');
     }
+  }
+
+  function semanticEdgeDirection(currentType, edge, rawDir) {
+    const relation = humanEdgeLabel(currentType, edge, rawDir);
+
+    if (relation === 'Source User Need' || relation === 'Parent Requirement') {
+      return 'up';
+    }
+    if (relation === 'Derived Requirement' || relation === 'Child Requirement') {
+      return 'down';
+    }
+
+    return rawDir === 'out' ? 'down' : 'up';
+  }
+
+  function splitSemanticEdges(currentType, edgesOut, edgesIn) {
+    const upstream = [];
+    const downstream = [];
+
+    for (const edge of edgesOut) {
+      const item = { edge, rawDir: 'out' };
+      (semanticEdgeDirection(currentType, edge, 'out') === 'up' ? upstream : downstream).push(item);
+    }
+    for (const edge of edgesIn) {
+      const item = { edge, rawDir: 'in' };
+      (semanticEdgeDirection(currentType, edge, 'in') === 'up' ? upstream : downstream).push(item);
+    }
+
+    return { upstream, downstream };
   }
 
   async function showLobby() {
@@ -1081,12 +1165,14 @@
           <span class="prop-val">${esc(String(v))}</span>
         </div>`).join('');
 
-      const edgeRows = (edges, dir) => edges.length
-        ? edges.map(e => {
+      const { upstream, downstream } = splitSemanticEdges(node.type, edges_out, edges_in);
+
+      const edgeRows = (items) => items.length
+        ? items.map(({ edge: e, rawDir }) => {
             if (!e || !e.node || !e.node.id || !e.node.type) {
               throw new Error('invalid edge payload');
             }
-            const label = humanEdgeLabel(node.type, e, dir);
+            const label = humanEdgeLabel(node.type, e, rawDir);
             return `<div class="edge-row" data-action="drawer-nav" data-id="${esc(e.node.id)}">
               <span class="edge-label">${esc(label)}</span>
               <span class="node-id-link">${esc(e.node.id)}</span>
@@ -1111,12 +1197,12 @@
         ${suspectBanner}
         <div class="prop-section">${props}</div>
         <div class="edge-section">
-          <div class="edge-section-title">Downstream (${edges_out.length})</div>
-          ${edgeRows(edges_out, 'out')}
+          <div class="edge-section-title">Downstream (${downstream.length})</div>
+          ${edgeRows(downstream)}
         </div>
         <div class="edge-section">
-          <div class="edge-section-title">Upstream (${edges_in.length})</div>
-          ${edgeRows(edges_in, 'in')}
+          <div class="edge-section-title">Upstream (${upstream.length})</div>
+          ${edgeRows(upstream)}
         </div>`;
     } catch (e) {
       console.error('drawer render failure', e, data);
@@ -1188,12 +1274,14 @@
           <button data-action="clear-suspect" data-id="${esc(node.id)}">Mark Reviewed</button>
         </div>` : '';
 
+      const { upstream, downstream } = splitSemanticEdges(node.type, edges_out, edges_in);
+
       container.innerHTML = `
         ${suspect}
         ${showProps ? `<div class="detail-props">${props}</div>` : ''}
         <div class="tree-sections">
-          ${_treeSection(node.type, 'Downstream', edges_out, 'out')}
-          ${_treeSection(node.type, 'Upstream', edges_in, 'in')}
+          ${_treeSection(node.type, 'Downstream', downstream)}
+          ${_treeSection(node.type, 'Upstream', upstream)}
         </div>`;
     } catch (e) {
       console.error('inline detail render failure', e, data);
@@ -1201,8 +1289,8 @@
     }
   }
 
-  function _treeSection(currentType, label, edges, dir) {
-    const items = edges.map(e => _treeNodeHtml(currentType, e, dir)).join('');
+  function _treeSection(currentType, label, edges) {
+    const items = edges.map(({ edge, rawDir }) => _treeNodeHtml(currentType, edge, rawDir)).join('');
     return `
       <div class="tree-section">
         <div class="tree-section-header" data-action="toggle-tree-section">
