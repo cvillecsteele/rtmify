@@ -1,9 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$server = Join-Path $root "rtmify-live.exe"
+$repoRoot = Resolve-Path (Join-Path $root "../..")
+$server = Join-Path $repoRoot "zig-out/bin/rtmify-live.exe"
 if (-not (Test-Path $server)) {
-    throw "rtmify-live.exe not found beside smoke.ps1"
+    throw "rtmify-live.exe not found at $server"
 }
 
 $port = 8000
@@ -17,7 +18,7 @@ try {
     $ready = $false
     while ((Get-Date) -lt $deadline) {
         try {
-            $resp = Invoke-RestMethod -Uri "http://localhost:$port/api/status" -TimeoutSec 2
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/status" -TimeoutSec 2
             if ($null -ne $resp.configured) {
                 $ready = $true
                 break
