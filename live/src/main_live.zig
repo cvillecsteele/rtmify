@@ -8,6 +8,8 @@ const connection_mod = @import("connection.zig");
 const secure_store_mod = @import("secure_store.zig");
 const online_provider = @import("online_provider.zig");
 const log_sink = @import("log_sink.zig");
+const test_results_auth = @import("test_results_auth.zig");
+const test_results_inbox = @import("test_results_inbox.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
 
@@ -27,6 +29,7 @@ const help_text =
     \\  --no-browser           Don't open browser on startup
     \\  --repo <path>          Repository path to scan (repeatable)
     \\  --profile <name>       Industry profile: medical|aerospace|automotive|generic
+    \\  --inbox-dir <path>     Test result inbox directory (default: ~/.rtmify/inbox)
     \\  --activate <key>       Activate license key
     \\  --deactivate           Deactivate license
     \\  --license-status-json  Print structured license status JSON and exit
@@ -54,6 +57,7 @@ pub fn main() !void {
     var do_deactivate = false;
     var repo_paths: std.ArrayList([]const u8) = .empty;
     var profile_name: ?[]const u8 = null;
+    var inbox_dir_override: ?[]const u8 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -86,6 +90,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--profile") and i + 1 < args.len) {
             i += 1;
             profile_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--inbox-dir") and i + 1 < args.len) {
+            i += 1;
+            inbox_dir_override = args[i];
         }
     }
 
@@ -165,6 +172,15 @@ pub fn main() !void {
 
     var secure_store = try secure_store_mod.initDefault(gpa);
     defer secure_store.deinit(gpa);
+    var ingestion_auth = try test_results_auth.AuthState.initDefault(gpa);
+    defer ingestion_auth.deinit(gpa);
+
+    const inbox_dir = if (inbox_dir_override) |path|
+        try gpa.dupe(u8, path)
+    else
+        try test_results_auth.defaultInboxDir(gpa);
+    defer gpa.free(inbox_dir);
+    try g.storeConfig("test_results_inbox_dir", inbox_dir);
 
     try connection_mod.migrateLegacyGoogleConfig(&g, &secure_store, gpa);
 
@@ -235,6 +251,18 @@ pub fn main() !void {
         t.detach();
         std.log.info("repo scan thread started", .{});
     }
+    {
+        const inbox_ctx = try gpa.create(test_results_inbox.InboxCtx);
+        inbox_ctx.* = .{
+            .db = &g,
+            .state = &state,
+            .inbox_dir = try gpa.dupe(u8, inbox_dir),
+            .alloc = gpa,
+        };
+        const t = try std.Thread.spawn(.{}, test_results_inbox.inboxThread, .{inbox_ctx});
+        t.detach();
+        std.log.info("test results inbox thread started dir={s}", .{inbox_dir});
+    }
 
     // Find first available port (8000-8010) via quick probe
     var actual_port = port;
@@ -269,6 +297,8 @@ pub fn main() !void {
         .secure_store = &secure_store,
         .state = &state,
         .license_service = &license_service,
+        .test_results_auth = &ingestion_auth,
+        .test_results_inbox_dir = inbox_dir,
         .alloc = gpa,
         .startSyncFn = startSyncCallback,
     };

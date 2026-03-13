@@ -8,6 +8,7 @@ const diagnostics = @import("diagnostics.zig");
 const repo = @import("repo.zig");
 const design_history = @import("design_history.zig");
 const reports = @import("reports.zig");
+const test_results = @import("test_results.zig");
 
 pub const index_html = @embedFile("../static/index.html");
 pub const app_js = @embedFile("../static/app.js");
@@ -75,6 +76,13 @@ pub const handleReportDhrPdf = reports.handleReportDhrPdf;
 pub const handleReportRtmPdf = reports.handleReportRtmPdf;
 pub const handleReportRtmMd = reports.handleReportRtmMd;
 pub const handleReportRtmDocx = reports.handleReportRtmDocx;
+
+pub const handlePostTestResults = test_results.handlePostTestResults;
+pub const handlePostTestResultsResponse = test_results.handlePostTestResultsResponse;
+pub const handleGetExecution = test_results.handleGetExecution;
+pub const handleGetExecutionResponse = test_results.handleGetExecutionResponse;
+pub const handleRegenerateTestResultsToken = test_results.handleRegenerateTestResultsToken;
+pub const handleRegenerateTestResultsTokenResponse = test_results.handleRegenerateTestResultsTokenResponse;
 
 const std = @import("std");
 const testing = std.testing;

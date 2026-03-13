@@ -1477,6 +1477,23 @@
         RTMify Live serves MCP over Streamable HTTP at <code>/mcp</code>. Keep the local server running while your AI client is connected.
       </div>
     </div>
+    <div class="card card--mb card--padded">
+      <div class="card-title mb-8">Test Results Ingestion API</div>
+      <div id="test-results-endpoint" class="mcp-endpoint">Loading…</div>
+      <div class="text-sm-subtle mt-8">
+        CI adapters can post execution evidence to the local ingestion API with <code>Authorization: Bearer ...</code>.
+      </div>
+      <div class="info-grid mt-12">
+        <div class="info-label">Bearer Token</div>
+        <div id="test-results-token" class="req-id">Loading…</div>
+        <div class="info-label">Inbox Directory</div>
+        <div id="test-results-inbox" class="req-id">Loading…</div>
+      </div>
+      <div class="license-inline-actions">
+        <button class="btn" onclick="copyTestResultsToken()">Copy Token</button>
+        <button class="btn" onclick="regenerateTestResultsToken()">Regenerate Token</button>
+      </div>
+    </div>
     <div class="mcp-grid">
       <div class="card card--padded">
         <h3 class="mb-10">Claude Code / Cowork</h3>

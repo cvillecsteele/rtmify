@@ -11,6 +11,7 @@ const license = rtmify.license;
 const graph_live = @import("graph_live.zig");
 const secure_store = @import("secure_store.zig");
 const sync_live = @import("sync_live.zig");
+const test_results_auth = @import("test_results_auth.zig");
 const routes = @import("routes.zig");
 
 pub const ServerCtx = struct {
@@ -18,6 +19,8 @@ pub const ServerCtx = struct {
     secure_store: *secure_store.Store,
     state: *sync_live.SyncState,
     license_service: *license.Service,
+    test_results_auth: *test_results_auth.AuthState,
+    test_results_inbox_dir: []const u8,
     alloc: Allocator,
     /// Called after POST /api/connection to (re)start the sync thread if not already running.
     /// Set by main_live.zig; null means auto-start is not configured.
@@ -255,10 +258,22 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/info")) {
-            const body = try routes.handleInfo(ctx.db, alloc);
+            const body = try routes.handleInfo(ctx.db, ctx.test_results_auth, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
+        } else if (std.mem.startsWith(u8, path, "/api/v1/test-results/")) {
+            const execution_id = try decodePathParam(path["/api/v1/test-results/".len..], alloc);
+            const resp = try routes.handleGetExecutionResponse(
+                ctx.db,
+                ctx.test_results_auth,
+                requestHeaderValue(req, "Authorization"),
+                execution_id,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = try queryParamDecoded(target, "profile", alloc);
             const body = try routes.handleProvisionPreview(ctx.db, ctx.secure_store, qprofile, alloc);
@@ -410,6 +425,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/test-results/token/regenerate")) {
+            const resp = try routes.handleRegenerateTestResultsTokenResponse(ctx.test_results_auth, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handlePostProfileResponse(ctx.db, body_bytes, alloc);
@@ -446,6 +466,26 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             if (resp.ok) {
                 if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
             }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/test-results")) {
+            const body_bytes = readBodyLimited(req, alloc, 10 * 1024 * 1024) catch |err| switch (err) {
+                error.StreamTooLong => {
+                    response_status = .payload_too_large;
+                    response_bytes = "{\"error\":\"payload_too_large\"}".len;
+                    try sendJsonWithStatus(req, "{\"error\":\"payload_too_large\"}", .payload_too_large);
+                    return;
+                },
+                else => return err,
+            };
+            const resp = try routes.handlePostTestResultsResponse(
+                ctx.db,
+                ctx.test_results_auth,
+                requestHeaderValue(req, "Authorization"),
+                body_bytes,
+                alloc,
+            );
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
@@ -679,12 +719,28 @@ fn send404(req: *std.http.Server.Request) !void {
 // ---------------------------------------------------------------------------
 
 fn readBody(req: *std.http.Server.Request, alloc: Allocator) ![]u8 {
-    var body_buf: [1024 * 1024]u8 = undefined; // 1 MB max
-    const reader = req.readerExpectNone(&body_buf);
-    var out: std.Io.Writer.Allocating = .init(alloc);
-    defer out.deinit();
-    _ = reader.streamRemaining(&out.writer) catch {};
-    return alloc.dupe(u8, out.writer.buffer[0..out.writer.end]);
+    return readBodyLimited(req, alloc, 1024 * 1024);
+}
+
+fn readBodyLimited(req: *std.http.Server.Request, alloc: Allocator, max_bytes: usize) ![]u8 {
+    const body_buf = try alloc.alloc(u8, max_bytes);
+    defer alloc.free(body_buf);
+    const reader = req.readerExpectNone(body_buf);
+    return readReaderLimited(reader, alloc, max_bytes);
+}
+
+fn readReaderLimited(reader: anytype, alloc: Allocator, max_bytes: usize) ![]u8 {
+    if (@TypeOf(reader) == *std.Io.Reader) {
+        return readIoReaderLimited(reader, alloc, max_bytes);
+    }
+    return reader.readAllAlloc(alloc, max_bytes);
+}
+
+fn readIoReaderLimited(reader: *std.Io.Reader, alloc: Allocator, max_bytes: usize) ![]u8 {
+    return reader.allocRemaining(alloc, .limited(max_bytes + 1)) catch |err| switch (err) {
+        error.StreamTooLong => error.StreamTooLong,
+        else => err,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +756,11 @@ fn queryParamRaw(target: []const u8, key: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, pair[0..eq], key)) return pair[eq + 1 ..];
     }
     return null;
+}
+
+test "readReaderLimited enforces max bytes" {
+    var stream = std.io.fixedBufferStream("abcdef");
+    try std.testing.expectError(error.StreamTooLong, readReaderLimited(stream.reader(), std.testing.allocator, 3));
 }
 
 fn queryParamDecoded(target: []const u8, key: []const u8, alloc: Allocator) !?[]const u8 {

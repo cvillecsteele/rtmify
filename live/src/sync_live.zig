@@ -22,6 +22,7 @@ const provision_mod = @import("provision.zig");
 const online_provider = @import("online_provider.zig");
 const provider_common = @import("provider_common.zig");
 const json_util = @import("json_util.zig");
+const test_results = @import("test_results.zig");
 
 const GraphDb = graph_live.GraphDb;
 const ProviderRuntime = online_provider.ProviderRuntime;
@@ -432,8 +433,16 @@ fn writeBackStatus(
         const header = req_rows[0];
         const id_col = findCol(header, "ID");
         const status_col = findCol(header, "Status");
+        const verification_col = findCol(header, "RTMify Verification") orelse header.len;
         if (id_col != null and status_col != null) {
             const scol = status_col.?;
+            if (verification_col == header.len) {
+                const header_col_letter = colLetterBuf(verification_col);
+                const header_range = try std.fmt.allocPrint(alloc, "Requirements!{s}1", .{header_col_letter});
+                const header_values = try alloc.alloc([]const u8, 1);
+                header_values[0] = try alloc.dupe(u8, "RTMify Verification");
+                try value_updates.append(alloc, .{ .a1_range = header_range, .values = header_values });
+            }
             for (req_rows[1..], 0..) |row, i| {
                 const row_num = i + 2; // 1-indexed sheet row
                 const req_id = if (id_col.? < row.len) row[id_col.?] else "";
@@ -444,11 +453,24 @@ fn writeBackStatus(
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
                 try value_updates.append(alloc, .{ .a1_range = range, .values = values });
+
+                var verification = try test_results.verificationForRequirement(db, req_id, alloc);
+                defer verification.deinit(alloc);
+                const verification_value: []const u8 = if (verification.linked_test_groups.len == 0 and verification.linked_tests.len == 0)
+                    ""
+                else
+                    @tagName(verification.state);
+                const verification_col_letter = colLetterBuf(verification_col);
+                const verification_range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ verification_col_letter, row_num });
+                const verification_values = try alloc.alloc([]const u8, 1);
+                verification_values[0] = try alloc.dupe(u8, verification_value);
+                try value_updates.append(alloc, .{ .a1_range = verification_range, .values = verification_values });
+
                 try row_formats.append(alloc, .{
                     .tab_title = "Requirements",
                     .row_1based = row_num,
                     .col_start_1based = 1,
-                    .col_end_1based = header.len,
+                    .col_end_1based = if (verification_col == header.len) header.len + 1 else header.len,
                     .fill_hex = statusColorHex(status),
                 });
             }

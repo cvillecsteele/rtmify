@@ -17,6 +17,14 @@ function binaryPath(): string {
   return process.env.RTMIFY_LIVE_BIN || path.join(sysRoot, 'zig-out', 'bin', 'rtmify-live');
 }
 
+function tokenFilePath(dbPath: string): string {
+  return `${dbPath}.api-token`;
+}
+
+function inboxDirPath(dbPath: string): string {
+  return `${dbPath}.inbox`;
+}
+
 async function waitForServer(basePort: number, timeoutMs = 20_000): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   let lastError = 'server did not respond';
@@ -55,6 +63,8 @@ export async function startServer(options: {
       RTMIFY_LOG_PATH: logPath,
       RTMIFY_SECURE_STORE_BACKEND: 'test-memory',
       RTMIFY_SECURE_STORE_TEST_FILE: secureStoreFilePath(options.dbPath),
+      RTMIFY_TEST_RESULTS_TOKEN_FILE: tokenFilePath(options.dbPath),
+      RTMIFY_TEST_RESULTS_INBOX_DIR: inboxDirPath(options.dbPath),
       ...options.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],

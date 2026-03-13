@@ -57,7 +57,7 @@
     if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
     if (name === 'guide-errors') loadGuideErrors();
     if (name === 'code') loadCodeTraceability();
-    if (name === 'mcp-ai') loadMcpHelp();
+    if (name === 'mcp-ai') { loadMcpHelp(); loadInfo(); }
     if (name === 'info') loadInfo();
   }
 
@@ -351,6 +351,9 @@
     const liveEl = document.getElementById('info-live-version');
     const dbEl = document.getElementById('info-db-path');
     const logEl = document.getElementById('info-log-path');
+    const testResultsEndpointEl = document.getElementById('test-results-endpoint');
+    const testResultsTokenEl = document.getElementById('test-results-token');
+    const testResultsInboxEl = document.getElementById('test-results-inbox');
     if (!errEl || !trayEl || !liveEl || !dbEl || !logEl || !licenseStateEl || !licenseProviderEl) return;
 
     errEl.style.display = 'none';
@@ -365,6 +368,7 @@
       liveEl.textContent = info.live_version || 'unknown';
       dbEl.textContent = info.db_path || 'unknown';
       logEl.textContent = info.log_path || 'unknown';
+      renderTestResultsApiInfo(info, testResultsEndpointEl, testResultsTokenEl, testResultsInboxEl);
     } catch (e) {
       errEl.textContent = 'Failed to load info: ' + e.message;
       errEl.style.display = 'block';
@@ -374,6 +378,36 @@
       liveEl.textContent = '—';
       dbEl.textContent = '—';
       logEl.textContent = '—';
+      if (testResultsEndpointEl) testResultsEndpointEl.textContent = '—';
+      if (testResultsTokenEl) testResultsTokenEl.textContent = '—';
+      if (testResultsInboxEl) testResultsInboxEl.textContent = '—';
+    }
+  }
+
+  function renderTestResultsApiInfo(info, endpointEl, tokenEl, inboxEl) {
+    if (endpointEl) endpointEl.textContent = info.test_results_endpoint || 'unknown';
+    if (tokenEl) tokenEl.textContent = info.test_results_token || 'unknown';
+    if (inboxEl) inboxEl.textContent = info.test_results_inbox_dir || 'unknown';
+  }
+
+  function copyTestResultsToken() {
+    const value = document.getElementById('test-results-token')?.textContent;
+    if (!value || value === 'Loading…' || value === '—') return;
+    navigator.clipboard.writeText(value).catch(() => {});
+  }
+
+  async function regenerateTestResultsToken() {
+    const errEl = document.getElementById('info-error');
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/v1/test-results/token/regenerate', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadInfo();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = 'Failed to regenerate ingestion token: ' + e.message;
+        errEl.style.display = 'block';
+      }
     }
   }
 

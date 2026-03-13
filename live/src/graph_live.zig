@@ -705,7 +705,13 @@ pub const GraphDb = struct {
             \\    t.id                                             AS test_id,
             \\    json_extract(t.properties, '$.test_type')        AS test_type,
             \\    json_extract(t.properties, '$.test_method')      AS test_method,
-            \\    json_extract(tr.properties, '$.result')          AS result,
+            \\    CASE
+            \\        WHEN json_extract(tr.properties, '$.result') IS NOT NULL THEN json_extract(tr.properties, '$.result')
+            \\        WHEN json_extract(tr.properties, '$.status') = 'passed' THEN 'PASS'
+            \\        WHEN json_extract(tr.properties, '$.status') IN ('failed', 'error', 'blocked') THEN 'FAIL'
+            \\        WHEN json_extract(tr.properties, '$.status') = 'skipped' THEN 'SKIP'
+            \\        ELSE NULL
+            \\    END                                              AS result,
             \\    r.suspect                                        AS req_suspect,
             \\    r.suspect_reason                                 AS req_suspect_reason
             \\FROM nodes r
@@ -715,8 +721,16 @@ pub const GraphDb = struct {
             \\LEFT JOIN nodes tg    ON tg.id = e_tb.to_id
             \\LEFT JOIN edges e_ht  ON e_ht.from_id = tg.id AND e_ht.label = 'HAS_TEST'
             \\LEFT JOIN nodes t     ON t.id = e_ht.to_id
-            \\LEFT JOIN edges e_ro  ON e_ro.to_id = t.id AND e_ro.label = 'RESULT_OF'
-            \\LEFT JOIN nodes tr    ON tr.id = e_ro.from_id
+            \\LEFT JOIN nodes tr    ON tr.id = (
+            \\    SELECT r2.id
+            \\    FROM edges eo2
+            \\    JOIN nodes r2 ON r2.id = eo2.from_id AND r2.type = 'TestResult'
+            \\    LEFT JOIN edges hr2 ON hr2.to_id = r2.id AND hr2.label = 'HAS_RESULT'
+            \\    LEFT JOIN nodes e2 ON e2.id = hr2.from_id AND e2.type = 'TestExecution'
+            \\    WHERE eo2.label = 'EXECUTION_OF' AND eo2.to_id = t.id
+            \\    ORDER BY json_extract(e2.properties, '$.executed_at') DESC, json_extract(r2.properties, '$.result_id') DESC
+            \\    LIMIT 1
+            \\)
             \\WHERE r.type = 'Requirement'
             \\ORDER BY r.id, tg.id, t.id
         );

@@ -9,6 +9,7 @@ const connection_mod = @import("../connection.zig");
 const provider_common = @import("../provider_common.zig");
 const secure_store_mod = @import("../secure_store.zig");
 const online_provider = @import("../online_provider.zig");
+const test_results_auth = @import("../test_results_auth.zig");
 const shared = @import("shared.zig");
 
 pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
@@ -84,7 +85,7 @@ pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Sto
     return alloc.dupe(u8, buf.items);
 }
 
-pub fn handleInfo(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
+pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, alloc: Allocator) ![]const u8 {
     const tray_version = (try db.getConfig("tray_app_version", alloc)) orelse try alloc.dupe(u8, "not available");
     defer alloc.free(tray_version);
     const live_version = (try db.getConfig("live_version", alloc)) orelse try alloc.dupe(u8, "unknown");
@@ -93,6 +94,14 @@ pub fn handleInfo(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
     defer alloc.free(db_path);
     const log_path = (try db.getConfig("log_path", alloc)) orelse try alloc.dupe(u8, "unknown");
     defer alloc.free(log_path);
+    const actual_port = (try db.getConfig("actual_port", alloc)) orelse try alloc.dupe(u8, "8000");
+    defer alloc.free(actual_port);
+    const inbox_dir = (try db.getConfig("test_results_inbox_dir", alloc)) orelse try alloc.dupe(u8, "unknown");
+    defer alloc.free(inbox_dir);
+    const token = try auth.currentToken(alloc);
+    defer alloc.free(token);
+    const endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/test-results", .{actual_port});
+    defer alloc.free(endpoint);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -104,6 +113,14 @@ pub fn handleInfo(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
     try shared.appendJsonStr(&buf, db_path, alloc);
     try buf.appendSlice(alloc, ",\"log_path\":");
     try shared.appendJsonStr(&buf, log_path, alloc);
+    try buf.appendSlice(alloc, ",\"test_results_endpoint\":");
+    try shared.appendJsonStr(&buf, endpoint, alloc);
+    try buf.appendSlice(alloc, ",\"test_results_token\":");
+    try shared.appendJsonStr(&buf, token, alloc);
+    try buf.appendSlice(alloc, ",\"test_results_inbox_dir\":");
+    try shared.appendJsonStr(&buf, inbox_dir, alloc);
+    try buf.appendSlice(alloc, ",\"test_results_auth_mode\":");
+    try shared.appendJsonStr(&buf, "bearer_token", alloc);
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
 }
@@ -240,8 +257,13 @@ test "handleInfo returns version and path details" {
     try db.storeConfig("live_version", "20260308-a");
     try db.storeConfig("db_path", "/tmp/graph.db");
     try db.storeConfig("log_path", "/tmp/server.log");
+    try db.storeConfig("actual_port", "8123");
+    try db.storeConfig("test_results_inbox_dir", "/tmp/inbox");
 
-    const resp = try handleInfo(&db, alloc);
+    var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token", alloc);
+    defer auth.deinit(alloc);
+
+    const resp = try handleInfo(&db, &auth, alloc);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
@@ -249,4 +271,7 @@ test "handleInfo returns version and path details" {
     try testing.expectEqualStrings("20260308-a", obj.get("live_version").?.string);
     try testing.expectEqualStrings("/tmp/graph.db", obj.get("db_path").?.string);
     try testing.expectEqualStrings("/tmp/server.log", obj.get("log_path").?.string);
+    try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/test-results", obj.get("test_results_endpoint").?.string);
+    try testing.expectEqualStrings("/tmp/inbox", obj.get("test_results_inbox_dir").?.string);
+    try testing.expectEqualStrings("bearer_token", obj.get("test_results_auth_mode").?.string);
 }

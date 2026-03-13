@@ -24,6 +24,12 @@ pub const handleLicenseActivateResponse = mod.handleLicenseActivateResponse;
 pub const handleLicenseDeactivateResponse = mod.handleLicenseDeactivateResponse;
 pub const handleLicenseRefreshResponse = mod.handleLicenseRefreshResponse;
 pub const handleInfo = mod.handleInfo;
+pub const handlePostTestResults = mod.handlePostTestResults;
+pub const handlePostTestResultsResponse = mod.handlePostTestResultsResponse;
+pub const handleGetExecution = mod.handleGetExecution;
+pub const handleGetExecutionResponse = mod.handleGetExecutionResponse;
+pub const handleRegenerateTestResultsToken = mod.handleRegenerateTestResultsToken;
+pub const handleRegenerateTestResultsTokenResponse = mod.handleRegenerateTestResultsTokenResponse;
 
 pub const handleConnectionValidate = mod.handleConnectionValidate;
 pub const handleConnectionValidateResponse = mod.handleConnectionValidateResponse;

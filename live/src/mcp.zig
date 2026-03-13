@@ -12,6 +12,7 @@ const secure_store = @import("secure_store.zig");
 const json_util = @import("json_util.zig");
 const profile_mod = @import("profile.zig");
 const chain_mod = @import("chain.zig");
+const test_results = @import("test_results.zig");
 
 const ToolPayload = struct {
     text: []const u8,
@@ -65,6 +66,11 @@ const tools_json =
     \\{"name":"blame_for_requirement","description":"Code annotations with blame data linked to a requirement.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string"},"limit":{"type":"integer"}},"required":["req_id"]}},
     \\{"name":"commit_history","description":"Commits linked to a requirement via COMMITTED_IN edges. Supports limit.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string"},"limit":{"type":"integer"}},"required":["req_id"]}},
     \\{"name":"design_history","description":"Full upstream/downstream chain for a requirement.","inputSchema":{"type":"object","properties":{"req_id":{"type":"string"}},"required":["req_id"]}},
+    \\{"name":"get_test_results","description":"Get ingested test results for a test case, newest first.","inputSchema":{"type":"object","properties":{"test_case_ref":{"type":"string"}},"required":["test_case_ref"]}},
+    \\{"name":"get_execution","description":"Get a stored test execution by execution_id.","inputSchema":{"type":"object","properties":{"execution_id":{"type":"string"}},"required":["execution_id"]}},
+    \\{"name":"get_verification_status","description":"Get verification rollup and latest results for a requirement.","inputSchema":{"type":"object","properties":{"requirement_ref":{"type":"string"}},"required":["requirement_ref"]}},
+    \\{"name":"get_dangling_results","description":"Get ingested test results that do not resolve to a known Test node.","inputSchema":{"type":"object","properties":{},"required":[]}},
+    \\{"name":"get_unit_history","description":"Get test execution history for a serial number, newest first.","inputSchema":{"type":"object","properties":{"serial_number":{"type":"string"}},"required":["serial_number"]}},
     \\{"name":"chain_gaps","description":"Traceability chain gaps for the active or requested industry profile. Supports severity, profile, limit, and offset.","inputSchema":{"type":"object","properties":{"profile":{"type":"string"},"severity":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]}},
     \\{"name":"implementation_changes_since","description":"Find requirements or user needs whose implementation files changed since an ISO timestamp. This uses file/commit history, not explicit COMMITTED_IN message references. Supports repo, limit, and offset.","inputSchema":{"type":"object","properties":{"since":{"type":"string"},"node_type":{"type":"string","enum":["Requirement","UserNeed"]},"repo":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":["since","node_type"]}},
     \\{"name":"requirement_trace","description":"Concise markdown trace summary for a requirement.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
@@ -280,6 +286,21 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         const req_id = try requireStringArg(args, "req_id");
         const data = try routes.handleDesignHistory(db, req_id, alloc);
         return .{ .text = data };
+    } else if (std.mem.eql(u8, name, "get_test_results")) {
+        const test_case_ref = try requireStringArg(args, "test_case_ref");
+        return .{ .text = try test_results.getTestResultsJson(db, test_case_ref, alloc) };
+    } else if (std.mem.eql(u8, name, "get_execution")) {
+        const execution_id = try requireStringArg(args, "execution_id");
+        const data = try test_results.getExecutionJson(db, execution_id, alloc);
+        return .{ .text = if (data) |value| value else try alloc.dupe(u8, "{\"error\":\"not_found\"}") };
+    } else if (std.mem.eql(u8, name, "get_verification_status")) {
+        const requirement_ref = try requireStringArg(args, "requirement_ref");
+        return .{ .text = try test_results.verificationJson(db, requirement_ref, alloc) };
+    } else if (std.mem.eql(u8, name, "get_dangling_results")) {
+        return .{ .text = try test_results.danglingResultsJson(db, alloc) };
+    } else if (std.mem.eql(u8, name, "get_unit_history")) {
+        const serial_number = try requireStringArg(args, "serial_number");
+        return .{ .text = try test_results.unitHistoryJson(db, serial_number, alloc) };
     } else if (std.mem.eql(u8, name, "chain_gaps")) {
         return chainGapsToolPayload(db, args, alloc);
     } else if (std.mem.eql(u8, name, "implementation_changes_since")) {
@@ -1232,6 +1253,10 @@ test "tools list contains legacy and new tools" {
     try testing.expect(std.mem.indexOf(u8, tools_json, "requirement_trace") != null);
     try testing.expect(std.mem.indexOf(u8, tools_json, "gap_explanation") != null);
     try testing.expect(std.mem.indexOf(u8, tools_json, "implementation_changes_since") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_execution") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_verification_status") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_dangling_results") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_unit_history") != null);
 }
 
 test "mcp headers do not advertise wildcard cors" {
