@@ -316,6 +316,8 @@ fn nodeIdLt(_: void, a: *const graph.Node, b: *const graph.Node) bool {
 fn rtmRowLt(_: void, a: RtmRow, b: RtmRow) bool {
     const c = std.mem.order(u8, a.req_id, b.req_id);
     if (c != .eq) return c == .lt;
+    const tg = std.mem.order(u8, a.test_group_id orelse "", b.test_group_id orelse "");
+    if (tg != .eq) return tg == .lt;
     return std.mem.order(u8, a.test_id orelse "", b.test_id orelse "") == .lt;
 }
 
@@ -477,14 +479,24 @@ fn buildDocument(
     // === Tests ===
     try writePara(w, "Heading1", false, "Tests");
     try tableStart(w, &COL_TST);
-    try writeHeaderRow(w, &[_][]const u8{ "Test Group", "Test ID", "Type", "Method", "Linked Req" }, &COL_TST);
+    try writeHeaderRow(w, &[_][]const u8{ "Test Group", "Test ID", "Type", "Method", "Linked Reqs" }, &COL_TST);
     for (test_rows.items) |row| {
+        var linked_reqs = std.ArrayList(u8).empty;
+        defer linked_reqs.deinit(alloc);
+        var edges_in: std.ArrayList(graph.Edge) = .empty;
+        defer edges_in.deinit(alloc);
+        try g.edgesTo(row.tg_id, alloc, &edges_in);
+        for (edges_in.items) |e| {
+            if (e.label != .tested_by) continue;
+            if (linked_reqs.items.len > 0) try linked_reqs.appendSlice(alloc, ", ");
+            try linked_reqs.appendSlice(alloc, e.from_id);
+        }
         const cells = [_][]const u8{
             row.tg_id,
             row.test_id,
             row.test_type,
             row.test_method,
-            row.req_id orelse DASH,
+            if (linked_reqs.items.len > 0) linked_reqs.items else DASH,
         };
         try writeDataRow(w, &cells, &COL_TST, null);
     }
@@ -644,6 +656,31 @@ test "render_docx no gaps no yellow" {
     try testing.expect(std.mem.indexOf(u8, out, "FFFF00") == null);
     try testing.expect(std.mem.indexOf(u8, out, "0 gap(s) found.") != null);
     try testing.expect(std.mem.indexOf(u8, out, "Untested Requirements") == null);
+}
+
+test "render_docx includes multiple test groups and plural linked requirements" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    try g.addNode("REQ-001", .requirement, &.{.{ .key = "statement", .value = "One" }});
+    try g.addNode("REQ-002", .requirement, &.{.{ .key = "statement", .value = "Two" }});
+    try g.addNode("TG-001", .test_group, &.{});
+    try g.addNode("TG-002", .test_group, &.{});
+    try g.addNode("T-001", .test_case, &.{});
+    try g.addNode("T-002", .test_case, &.{});
+    try g.addEdge("REQ-001", "TG-001", .tested_by);
+    try g.addEdge("REQ-001", "TG-002", .tested_by);
+    try g.addEdge("REQ-002", "TG-001", .tested_by);
+    try g.addEdge("TG-001", "T-001", .has_test);
+    try g.addEdge("TG-002", "T-002", .has_test);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderDocx(&g, "test.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+
+    const out = buf.items;
+    try testing.expect(std.mem.indexOf(u8, out, "TG-001") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "TG-002") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "REQ-001, REQ-002") != null);
 }
 
 test "render_docx xml escape" {

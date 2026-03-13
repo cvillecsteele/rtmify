@@ -281,7 +281,7 @@ const req_id_syns     = &[_][]const u8{ "Requirement ID", "Req ID", "REQ #", "It
 const req_un_syns     = &[_][]const u8{ "User Need ID", "User Need iD", "User Need", "Traces To", "Parent Need", "Source Need", "UN ID", "Derived From", "Source", "Stakeholder Need" };
 const req_stmt_syns   = &[_][]const u8{ "Requirement Statement", "Description", "Requirement Text", "Requirement Description", "Req Statement" };
 const req_pri_syns    = &[_][]const u8{ "Importance", "Criticality", "Rank", "Level" };
-const req_tg_syns     = &[_][]const u8{ "Test Group", "Verification Method", "Verification ID", "TG ID", "Verified By", "Test Ref", "Verification", "Test ID" };
+const req_tg_syns     = &[_][]const u8{ "Test Group ID", "Test Group", "Verification Method", "Verification ID", "TG ID", "Verified By", "Test Ref", "Verification", "Test ID" };
 const req_status_syns = &[_][]const u8{ "Status", "State", "Requirement Status", "Lifecycle" };
 const req_notes_syns  = &[_][]const u8{ "Comments", "Remarks", "Additional Notes", "Comment" };
 
@@ -740,7 +740,7 @@ fn ingestRequirements(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *I
     const c_un     = resolveCol(headers, &.{}, "User Need iD",     req_un_syns,     sheet.name, diag, false);
     const c_stmt   = resolveCol(headers, &.{}, "Statement",        req_stmt_syns,   sheet.name, diag, false);
     const c_pri    = resolveCol(headers, &.{}, "Priority",         req_pri_syns,    sheet.name, diag, false);
-    const c_tgid   = resolveCol(headers, &.{}, "Test Group ID",    req_tg_syns,     sheet.name, diag, false);
+    const c_tgid   = resolveCol(headers, &.{}, "Test Group IDs",   req_tg_syns,     sheet.name, diag, false);
     const c_status = resolveCol(headers, &.{}, "Lifecycle Status", req_status_syns, sheet.name, diag, false);
     const c_notes  = resolveCol(headers, &.{}, "Notes",            req_notes_syns,  sheet.name, diag, false);
 
@@ -1968,6 +1968,70 @@ test "isBlankEquivalent prevents dangling edges" {
     defer edges.deinit(testing.allocator);
     try g.edgesFrom("REQ-001", testing.allocator, &edges);
     try testing.expectEqual(@as(usize, 0), edges.items.len);
+}
+
+test "requirements accepts plural Test Group IDs header" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement", "Test Group IDs" },
+            &.{ "REQ-001", "The system shall work", "TG-001, TG-002" },
+        }},
+        .{ .name = "Tests", .rows = &.{
+            &.{ "Test Group ID", "Test ID" },
+            &.{ "TG-001", "T-001" },
+            &.{ "TG-002", "T-002" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    _ = try ingestValidated(&g, sheets, &d);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-001", testing.allocator, &edges);
+
+    var tested_by_count: usize = 0;
+    for (edges.items) |e| {
+        if (e.label == .tested_by) tested_by_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), tested_by_count);
+}
+
+test "requirements keeps legacy Test Group ID header compatibility" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement", "Test Group ID" },
+            &.{ "REQ-001", "The system shall work", "TG-001, TG-002" },
+        }},
+        .{ .name = "Tests", .rows = &.{
+            &.{ "Test Group ID", "Test ID" },
+            &.{ "TG-001", "T-001" },
+            &.{ "TG-002", "T-002" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    _ = try ingestValidated(&g, sheets, &d);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-001", testing.allocator, &edges);
+
+    var tested_by_count: usize = 0;
+    for (edges.items) |e| {
+        if (e.label == .tested_by) tested_by_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), tested_by_count);
 }
 
 test "resolveTab emits INFO for missing optional tabs" {

@@ -55,7 +55,7 @@ const HDR_B: f32 = 0.851;
 // ---------------------------------------------------------------------------
 
 const COL_UN = [4]f32{ 42, 240, 108, 78 };
-const COL_RTM = [11]f32{ 36, 36, 92, 28, 28, 36, 36, 44, 54, 54, 24 };
+const COL_RTM = [11]f32{ 40, 36, 84, 46, 46, 34, 34, 40, 34, 34, 40 };
 const COL_TST = [5]f32{ 42, 42, 90, 90, 204 };
 const COL_RISK = [10]f32{ 36, 180, 24, 24, 24, 72, 36, 24, 24, 24 };
 
@@ -474,14 +474,24 @@ pub fn renderPdf(
 
     // Tests
     try pb.drawSection("Tests");
-    try pb.drawTableHeader(&.{ "Test Group", "Test ID", "Type", "Method", "Linked Req" }, &COL_TST);
+    try pb.drawTableHeader(&.{ "Test Group", "Test ID", "Type", "Method", "Linked Reqs" }, &COL_TST);
     for (test_rows.items) |row| {
+        var linked_reqs = std.ArrayList(u8).empty;
+        defer linked_reqs.deinit(alloc);
+        var edges_in: std.ArrayList(graph.Edge) = .empty;
+        defer edges_in.deinit(alloc);
+        try g.edgesTo(row.tg_id, alloc, &edges_in);
+        for (edges_in.items) |e| {
+            if (e.label != .tested_by) continue;
+            if (linked_reqs.items.len > 0) try linked_reqs.appendSlice(alloc, ", ");
+            try linked_reqs.appendSlice(alloc, e.from_id);
+        }
         const cells = [5][]const u8{
             row.tg_id,
             row.test_id,
             row.test_type,
             row.test_method,
-            row.req_id orelse "-",
+            if (linked_reqs.items.len > 0) linked_reqs.items else "-",
         };
         try pb.drawDataRow(&cells, &COL_TST, false);
     }
@@ -742,6 +752,8 @@ fn nodeIdLt(_: void, a: *const graph.Node, b: *const graph.Node) bool {
 fn rtmRowLt(_: void, a: RtmRow, b: RtmRow) bool {
     const c = std.mem.order(u8, a.req_id, b.req_id);
     if (c != .eq) return c == .lt;
+    const tg = std.mem.order(u8, a.test_group_id orelse "", b.test_group_id orelse "");
+    if (tg != .eq) return tg == .lt;
     return std.mem.order(u8, a.test_id orelse "", b.test_id orelse "") == .lt;
 }
 
@@ -863,6 +875,61 @@ test "render_pdf pdf string escaping" {
     // Raw unescaped ( or ) inside a string context should not appear unescaped
     // (we can't easily verify the absence without a full PDF parser, so just
     //  verify the escape sequences are present)
+}
+
+test "render_pdf includes multiple test groups and plural linked requirements" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+
+    try g.addNode("REQ-001", .requirement, &.{.{ .key = "statement", .value = "One" }});
+    try g.addNode("REQ-002", .requirement, &.{.{ .key = "statement", .value = "Two" }});
+    try g.addNode("TG-001", .test_group, &.{});
+    try g.addNode("TG-002", .test_group, &.{});
+    try g.addNode("T-001", .test_case, &.{});
+    try g.addNode("T-002", .test_case, &.{});
+    try g.addEdge("REQ-001", "TG-001", .tested_by);
+    try g.addEdge("REQ-001", "TG-002", .tested_by);
+    try g.addEdge("REQ-002", "TG-001", .tested_by);
+    try g.addEdge("TG-001", "T-001", .has_test);
+    try g.addEdge("TG-002", "T-002", .has_test);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderPdf(&g, "test.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+
+    const out = buf.items;
+    try testing.expect(std.mem.indexOf(u8, out, "TG-001") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "TG-002") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "REQ-001, REQ-002") != null);
+}
+
+test "render_pdf sorts RTM rows by requirement and preserves test group and test id text" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+
+    try g.addNode("REQ-B", .requirement, &.{.{ .key = "statement", .value = "Second" }});
+    try g.addNode("REQ-A", .requirement, &.{.{ .key = "statement", .value = "First" }});
+    try g.addNode("TG-002", .test_group, &.{});
+    try g.addNode("TG-001", .test_group, &.{});
+    try g.addNode("T-002-01", .test_case, &.{});
+    try g.addNode("T-001-01", .test_case, &.{});
+    try g.addEdge("REQ-B", "TG-002", .tested_by);
+    try g.addEdge("REQ-A", "TG-001", .tested_by);
+    try g.addEdge("TG-002", "T-002-01", .has_test);
+    try g.addEdge("TG-001", "T-001-01", .has_test);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderPdf(&g, "test.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+
+    const out = buf.items;
+    const reqAIndex = std.mem.indexOf(u8, out, "REQ-A") orelse unreachable;
+    const reqBIndex = std.mem.indexOf(u8, out, "REQ-B") orelse unreachable;
+    try testing.expect(reqAIndex < reqBIndex);
+    try testing.expect(std.mem.indexOf(u8, out, "TG-001") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "TG-002") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "T-001-01") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "T-002-01") != null);
 }
 
 test "appendPdfStr em dash and arrow" {

@@ -69,6 +69,8 @@ pub const TestRow = struct {
     test_id: ?[]const u8,
     test_type: ?[]const u8,
     test_method: ?[]const u8,
+    req_ids: [][]const u8,
+    req_statements: [][]const u8,
     req_id: ?[]const u8,
     req_statement: ?[]const u8,
     test_suspect: bool,
@@ -772,6 +774,31 @@ pub const GraphDb = struct {
     }
 
     pub fn tests(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(TestRow)) !void {
+        const JoinRow = struct {
+            test_group_id: []const u8,
+            test_id: ?[]const u8,
+            test_type: ?[]const u8,
+            test_method: ?[]const u8,
+            req_id: ?[]const u8,
+            req_statement: ?[]const u8,
+            test_suspect: bool,
+            test_suspect_reason: ?[]const u8,
+        };
+
+        var join_rows: std.ArrayList(JoinRow) = .empty;
+        defer {
+            for (join_rows.items) |row| {
+                alloc.free(row.test_group_id);
+                if (row.test_id) |v| alloc.free(v);
+                if (row.test_type) |v| alloc.free(v);
+                if (row.test_method) |v| alloc.free(v);
+                if (row.req_id) |v| alloc.free(v);
+                if (row.req_statement) |v| alloc.free(v);
+                if (row.test_suspect_reason) |v| alloc.free(v);
+            }
+            join_rows.deinit(alloc);
+        }
+
         var st = try g.db.prepare(
             \\SELECT
             \\    tg.id                                            AS test_group_id,
@@ -792,7 +819,7 @@ pub const GraphDb = struct {
         );
         defer st.finalize();
         while (try st.step()) {
-            try result.append(alloc, .{
+            try join_rows.append(alloc, .{
                 .test_group_id = try alloc.dupe(u8, st.columnText(0)),
                 .test_id = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
                 .test_type = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
@@ -802,6 +829,75 @@ pub const GraphDb = struct {
                 .test_suspect = st.columnInt(6) != 0,
                 .test_suspect_reason = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
             });
+        }
+
+        for (join_rows.items) |row| {
+            var existing: ?*TestRow = null;
+            for (result.items) |*candidate| {
+                const same_group = std.mem.eql(u8, candidate.test_group_id, row.test_group_id);
+                const same_test = if (candidate.test_id == null and row.test_id == null)
+                    true
+                else if (candidate.test_id) |candidate_id|
+                    if (row.test_id) |row_id| std.mem.eql(u8, candidate_id, row_id) else false
+                else
+                    false;
+                if (same_group and same_test) {
+                    existing = candidate;
+                    break;
+                }
+            }
+
+            if (existing == null) {
+                try result.append(alloc, .{
+                    .test_group_id = try alloc.dupe(u8, row.test_group_id),
+                    .test_id = if (row.test_id) |v| try alloc.dupe(u8, v) else null,
+                    .test_type = if (row.test_type) |v| try alloc.dupe(u8, v) else null,
+                    .test_method = if (row.test_method) |v| try alloc.dupe(u8, v) else null,
+                    .req_ids = &.{},
+                    .req_statements = &.{},
+                    .req_id = null,
+                    .req_statement = null,
+                    .test_suspect = row.test_suspect,
+                    .test_suspect_reason = if (row.test_suspect_reason) |v| try alloc.dupe(u8, v) else null,
+                });
+                existing = &result.items[result.items.len - 1];
+            }
+
+            if (row.req_id) |req_id| {
+                var seen = false;
+                for (existing.?.req_ids) |existing_req_id| {
+                    if (std.mem.eql(u8, existing_req_id, req_id)) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) {
+                    const next_ids = try alloc.alloc([]const u8, existing.?.req_ids.len + 1);
+                    @memcpy(next_ids[0..existing.?.req_ids.len], existing.?.req_ids);
+                    next_ids[existing.?.req_ids.len] = try alloc.dupe(u8, req_id);
+                    if (existing.?.req_ids.len > 0) alloc.free(existing.?.req_ids);
+                    existing.?.req_ids = next_ids;
+
+                    const next_statements = try alloc.alloc([]const u8, existing.?.req_statements.len + 1);
+                    @memcpy(next_statements[0..existing.?.req_statements.len], existing.?.req_statements);
+                    next_statements[existing.?.req_statements.len] = if (row.req_statement) |statement|
+                        try alloc.dupe(u8, statement)
+                    else
+                        try alloc.dupe(u8, "");
+                    if (existing.?.req_statements.len > 0) alloc.free(existing.?.req_statements);
+                    existing.?.req_statements = next_statements;
+                }
+            }
+        }
+
+        for (result.items) |*row| {
+            if (row.req_ids.len == 1) {
+                row.req_id = row.req_ids[0];
+                row.req_statement = row.req_statements[0];
+            } else {
+                row.req_id = null;
+                row.req_statement = null;
+            }
         }
     }
 
@@ -1267,6 +1363,69 @@ test "rtm basic" {
     try testing.expectEqual(@as(usize, 1), rows.items.len);
     try testing.expectEqualStrings("REQ-001", rows.items[0].req_id);
     try testing.expectEqualStrings("UN-001", rows.items[0].user_need_id.?);
+}
+
+test "rtm emits multiple rows for multiple linked test groups" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"SHALL work\",\"status\":\"approved\"}", null);
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addNode("TG-002", "TestGroup", "{}", null);
+    try g.addNode("T-001", "Test", "{\"result\":\"PASS\"}", null);
+    try g.addNode("T-002", "Test", "{\"result\":\"PENDING\"}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try g.addEdge("REQ-001", "TG-002", "TESTED_BY");
+    try g.addEdge("TG-001", "T-001", "HAS_TEST");
+    try g.addEdge("TG-002", "T-002", "HAS_TEST");
+
+    var rows: std.ArrayList(RtmRow) = .empty;
+    try g.rtm(alloc, &rows);
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+    try testing.expectEqualStrings("TG-001", rows.items[0].test_group_id.?);
+    try testing.expectEqualStrings("TG-002", rows.items[1].test_group_id.?);
+}
+
+test "tests aggregates multiple linked requirements for shared test group" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = try GraphDb.init(":memory:");
+    defer g.deinit();
+    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"One\"}", null);
+    try g.addNode("REQ-002", "Requirement", "{\"statement\":\"Two\"}", null);
+    try g.addNode("TG-001", "TestGroup", "{}", null);
+    try g.addNode("TEST-001", "Test", "{\"test_type\":\"Verification\",\"test_method\":\"Test\"}", null);
+    try g.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try g.addEdge("REQ-002", "TG-001", "TESTED_BY");
+    try g.addEdge("TG-001", "TEST-001", "HAS_TEST");
+
+    var rows: std.ArrayList(TestRow) = .empty;
+    defer {
+        for (rows.items) |row| {
+            alloc.free(row.test_group_id);
+            if (row.test_id) |v| alloc.free(v);
+            if (row.test_type) |v| alloc.free(v);
+            if (row.test_method) |v| alloc.free(v);
+            for (row.req_ids) |v| alloc.free(v);
+            if (row.req_ids.len > 0) alloc.free(row.req_ids);
+            for (row.req_statements) |v| alloc.free(v);
+            if (row.req_statements.len > 0) alloc.free(row.req_statements);
+            if (row.test_suspect_reason) |v| alloc.free(v);
+        }
+        rows.deinit(alloc);
+    }
+    try g.tests(alloc, &rows);
+
+    try testing.expectEqual(@as(usize, 1), rows.items.len);
+    try testing.expectEqual(@as(usize, 2), rows.items[0].req_ids.len);
+    try testing.expect(rows.items[0].req_id == null);
+    try testing.expectEqualStrings("REQ-001", rows.items[0].req_ids[0]);
+    try testing.expectEqualStrings("REQ-002", rows.items[0].req_ids[1]);
 }
 
 test "risks basic" {

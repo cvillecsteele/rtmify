@@ -19,7 +19,7 @@ Generated: 2024-01-01T00:00:00Z
 
 ## Tests
 
-| Test Group | Test ID | Type | Method | Linked Req |
+| Test Group | Test ID | Type | Method | Linked Reqs |
 | --- | --- | --- | --- | --- |
 | TG-001 | T-001 | Verification | Inspection | REQ-002 |
 | TG-001 | T-002 | Validation | Demonstration | REQ-002 |

@@ -20,7 +20,7 @@ const TabHeaders = struct { name: []const u8, headers: []const []const u8 };
 
 const tab_header_map = &[_]TabHeaders{
     .{ .name = "Requirements", .headers = &.{
-        "ID", "Statement", "Priority", "User Need ID", "Test Group ID", "Lifecycle Status", "Notes",
+        "ID", "Statement", "Priority", "User Need ID", "Test Group IDs", "Lifecycle Status", "Notes",
     }},
     .{ .name = "User Needs", .headers = &.{
         "ID", "Statement", "Source of Need Statement", "Priority",

@@ -354,11 +354,11 @@ pub const Graph = struct {
                 }
             }
 
-            var test_group_id: ?[]const u8 = null;
+            var test_group_ids: std.ArrayList([]const u8) = .empty;
+            defer test_group_ids.deinit(alloc);
             for (self.edges.items) |e| {
                 if (e.label == .tested_by and std.mem.eql(u8, e.from_id, req.id)) {
-                    test_group_id = e.to_id;
-                    break;
+                    try test_group_ids.append(alloc, e.to_id);
                 }
             }
 
@@ -389,7 +389,7 @@ pub const Graph = struct {
                 }
             }
 
-            if (test_group_id == null) {
+            if (test_group_ids.items.len == 0) {
                 try result.append(alloc, .{
                     .req_id = req.id,
                     .statement = statement,
@@ -406,40 +406,42 @@ pub const Graph = struct {
                 continue;
             }
 
-            var found_tests = false;
-            for (self.edges.items) |e| {
-                if (e.label == .has_test and std.mem.eql(u8, e.from_id, test_group_id.?)) {
-                    found_tests = true;
-                    const t = self.nodes.get(e.to_id);
+            for (test_group_ids.items) |test_group_id| {
+                var found_tests = false;
+                for (self.edges.items) |e| {
+                    if (e.label == .has_test and std.mem.eql(u8, e.from_id, test_group_id)) {
+                        found_tests = true;
+                        const t = self.nodes.get(e.to_id);
+                        try result.append(alloc, .{
+                            .req_id = req.id,
+                            .statement = statement,
+                            .status = status,
+                            .user_need_id = user_need_id,
+                            .test_group_id = test_group_id,
+                            .test_id = e.to_id,
+                            .test_type = if (t) |n| n.get("test_type") else null,
+                            .test_method = if (t) |n| n.get("test_method") else null,
+                            .source_file = source_file_id,
+                            .test_file = test_file_id,
+                            .last_commit = last_commit,
+                        });
+                    }
+                }
+                if (!found_tests) {
                     try result.append(alloc, .{
                         .req_id = req.id,
                         .statement = statement,
                         .status = status,
                         .user_need_id = user_need_id,
                         .test_group_id = test_group_id,
-                        .test_id = e.to_id,
-                        .test_type = if (t) |n| n.get("test_type") else null,
-                        .test_method = if (t) |n| n.get("test_method") else null,
+                        .test_id = null,
+                        .test_type = null,
+                        .test_method = null,
                         .source_file = source_file_id,
                         .test_file = test_file_id,
                         .last_commit = last_commit,
                     });
                 }
-            }
-            if (!found_tests) {
-                try result.append(alloc, .{
-                    .req_id = req.id,
-                    .statement = statement,
-                    .status = status,
-                    .user_need_id = user_need_id,
-                    .test_group_id = test_group_id,
-                    .test_id = null,
-                    .test_type = null,
-                    .test_method = null,
-                    .source_file = source_file_id,
-                    .test_file = test_file_id,
-                    .last_commit = last_commit,
-                });
             }
         }
     }
@@ -697,6 +699,50 @@ test "rtm multiple tests in group" {
     try testing.expectEqual(2, rows.items.len);
     try testing.expectEqualStrings("REQ-001", rows.items[0].req_id);
     try testing.expectEqualStrings("REQ-001", rows.items[1].req_id);
+}
+
+test "rtm includes multiple test groups for one requirement" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    try g.addNode("REQ-001", .requirement, &.{.{ .key = "statement", .value = "SHALL work" }});
+    try g.addNode("TG-001", .test_group, &.{});
+    try g.addNode("TG-002", .test_group, &.{});
+    try g.addNode("T-001", .test_case, &.{});
+    try g.addNode("T-002", .test_case, &.{});
+    try g.addEdge("REQ-001", "TG-001", .tested_by);
+    try g.addEdge("REQ-001", "TG-002", .tested_by);
+    try g.addEdge("TG-001", "T-001", .has_test);
+    try g.addEdge("TG-002", "T-002", .has_test);
+
+    var rows: std.ArrayList(RtmRow) = .empty;
+    defer rows.deinit(testing.allocator);
+    try g.rtm(testing.allocator, &rows);
+
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+    try testing.expectEqualStrings("TG-001", rows.items[0].test_group_id.?);
+    try testing.expectEqualStrings("TG-002", rows.items[1].test_group_id.?);
+}
+
+test "rtm includes empty linked test groups instead of dropping them" {
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    try g.addNode("REQ-001", .requirement, &.{.{ .key = "statement", .value = "SHALL work" }});
+    try g.addNode("TG-001", .test_group, &.{});
+    try g.addNode("TG-002", .test_group, &.{});
+    try g.addNode("T-001", .test_case, &.{});
+    try g.addEdge("REQ-001", "TG-001", .tested_by);
+    try g.addEdge("REQ-001", "TG-002", .tested_by);
+    try g.addEdge("TG-001", "T-001", .has_test);
+
+    var rows: std.ArrayList(RtmRow) = .empty;
+    defer rows.deinit(testing.allocator);
+    try g.rtm(testing.allocator, &rows);
+
+    try testing.expectEqual(@as(usize, 2), rows.items.len);
+    try testing.expectEqualStrings("TG-001", rows.items[0].test_group_id.?);
+    try testing.expectEqualStrings("T-001", rows.items[0].test_id.?);
+    try testing.expectEqualStrings("TG-002", rows.items[1].test_group_id.?);
+    try testing.expect(rows.items[1].test_id == null);
 }
 
 test "rtm multiple requirements" {

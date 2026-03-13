@@ -85,7 +85,7 @@ The input must be an XLSX file with four tabs:
 | Tab | Key columns |
 |---|---|
 | **User Needs** | ID, Statement, Source, Priority |
-| **Requirements** | ID, Statement, Source (→ User Need), Test Group ID, Status |
+| **Requirements** | ID, Statement, Source (→ User Need), Test Group IDs, Status |
 | **Tests** | Test Group ID, Test ID, Type, Method |
 | **Risks** | ID, Description, Severity, Likelihood, Mitigation, Linked Req |
 
