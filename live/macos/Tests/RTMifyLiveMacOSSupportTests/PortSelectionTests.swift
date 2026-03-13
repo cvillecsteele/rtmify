@@ -49,4 +49,19 @@ final class PortSelectionTests: XCTestCase {
         XCTAssertEqual(payload.lastSyncAt, "1773175875")
         XCTAssertEqual(payload.lastScanAt, "2026-03-10T20:00:00Z")
     }
+
+    func testLicenseStatusPayloadParsesPermitsUseTrue() {
+        let json = Data(#"{"permits_use":true}"#.utf8)
+        XCTAssertEqual(LicenseStatusPayload.from(data: json), LicenseStatusPayload(permitsUse: true))
+    }
+
+    func testLicenseStatusPayloadRejectsInvalidJson() {
+        let json = Data("not-json".utf8)
+        XCTAssertNil(LicenseStatusPayload.from(data: json))
+    }
+
+    func testLicenseStatusPayloadRejectsMissingPermitsUse() {
+        let json = Data(#"{"detail_code":3}"#.utf8)
+        XCTAssertNil(LicenseStatusPayload.from(data: json))
+    }
 }

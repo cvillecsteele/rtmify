@@ -355,6 +355,15 @@ pub fn build(b: *std.Build) void {
     });
     const run_windows_status_probe_tests = b.addRunArtifact(windows_status_probe_tests);
 
+    const windows_license_gate_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/license_gate.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_windows_license_gate_tests = b.addRunArtifact(windows_license_gate_tests);
+
     const test_lib_step = b.step("test-lib", "Run librtmify unit tests");
     test_lib_step.dependOn(&run_lib_tests.step);
 
@@ -367,6 +376,7 @@ pub fn build(b: *std.Build) void {
     test_live_step.dependOn(&run_windows_lifecycle_tests.step);
     test_live_step.dependOn(&run_windows_process_tests.step);
     test_live_step.dependOn(&run_windows_status_probe_tests.step);
+    test_live_step.dependOn(&run_windows_license_gate_tests.step);
 
     const test_cadcruncher_step = b.step("test-cadcruncher", "Run libcadcruncher unit tests");
     test_cadcruncher_step.dependOn(&run_cadcruncher_tests.step);
@@ -379,6 +389,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_windows_lifecycle_tests.step);
     test_step.dependOn(&run_windows_process_tests.step);
     test_step.dependOn(&run_windows_status_probe_tests.step);
+    test_step.dependOn(&run_windows_license_gate_tests.step);
     test_step.dependOn(&run_cadcruncher_tests.step);
 
     const win_gui_exe = b.addExecutable(.{

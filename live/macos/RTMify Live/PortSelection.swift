@@ -40,3 +40,17 @@ struct StatusPayload {
         return StatusPayload(lastSyncAt: lastSyncAt, lastScanAt: lastScanAt)
     }
 }
+
+struct LicenseStatusPayload: Equatable {
+    let permitsUse: Bool
+
+    static func from(data: Data) -> LicenseStatusPayload? {
+        guard
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let permitsUse = json["permits_use"] as? Bool
+        else {
+            return nil
+        }
+        return LicenseStatusPayload(permitsUse: permitsUse)
+    }
+}

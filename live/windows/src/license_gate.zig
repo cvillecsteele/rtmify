@@ -112,6 +112,10 @@ fn licenseMessage(status: RtmifyLicenseStatus) []const u8 {
     };
 }
 
+fn licensePermitsUseForStatus(status: RtmifyLicenseStatus) bool {
+    return status.permits_use != 0;
+}
+
 fn browseLicenseJson(hwnd: HWND, buf: []u8) ?[]u8 {
     const filter = [_:0]u16{
         'L', 'i', 'c', 'e', 'n', 's', 'e', ' ', 'F', 'i', 'l', 'e', 's', 0,
@@ -227,7 +231,7 @@ pub var g_notify_hwnd: ?HWND = null;
 
 pub fn licensePermitsUse() bool {
     var status: RtmifyLicenseStatus = undefined;
-    return rtmify_live_license_get_status(&status) == 0 and status.permits_use != 0;
+    return rtmify_live_license_get_status(&status) == 0 and licensePermitsUseForStatus(status);
 }
 
 pub fn handleCommand(hwnd: HWND, ctrl_id: c_int) void {
@@ -263,4 +267,53 @@ pub fn handleCommand(hwnd: HWND, ctrl_id: c_int) void {
             g_license_hwnd = null;
         }
     }
+}
+
+test "license message describes missing file" {
+    const status = RtmifyLicenseStatus{
+        .state = 0,
+        .permits_use = 0,
+        .using_free_run = 0,
+        .expires_at = -1,
+        .issued_at = -1,
+        .detail_code = 3,
+    };
+    try std.testing.expectEqualStrings(
+        "No license file found. Import a signed RTMify Live license file or place it at ~/.rtmify/license.json.",
+        licenseMessage(status),
+    );
+}
+
+test "license message describes wrong product" {
+    const status = RtmifyLicenseStatus{
+        .state = 0,
+        .permits_use = 0,
+        .using_free_run = 0,
+        .expires_at = -1,
+        .issued_at = -1,
+        .detail_code = 6,
+    };
+    try std.testing.expectEqualStrings(
+        "This license file is for a different RTMify product.",
+        licenseMessage(status),
+    );
+}
+
+test "license permits use follows status bit" {
+    try std.testing.expect(licensePermitsUseForStatus(.{
+        .state = 0,
+        .permits_use = 1,
+        .using_free_run = 0,
+        .expires_at = -1,
+        .issued_at = -1,
+        .detail_code = 0,
+    }));
+    try std.testing.expect(!licensePermitsUseForStatus(.{
+        .state = 0,
+        .permits_use = 0,
+        .using_free_run = 0,
+        .expires_at = -1,
+        .issued_at = -1,
+        .detail_code = 0,
+    }));
 }

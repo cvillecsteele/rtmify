@@ -15,6 +15,12 @@ enum AppState {
 
 @MainActor
 final class ViewModel: ObservableObject {
+    struct CommandResult: Equatable {
+        let exitCode: Int32
+        let stdout: String
+        let stderr: String
+    }
+
     @Published var state: AppState = .stopped
     @Published var lastSyncAt: String? = nil
     @Published var lastScanAt: String? = nil
@@ -51,11 +57,10 @@ final class ViewModel: ObservableObject {
         let result = await runCommand(binary, args: ["--license-status-json"])
         guard result.exitCode == 0 else { return false }
         guard let data = result.stdout.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let permitsUse = json["permits_use"] as? Bool else {
+              let payload = LicenseStatusPayload.from(data: data) else {
             return false
         }
-        return permitsUse
+        return payload.permitsUse
     }
 
     func importLicense() {
@@ -385,12 +390,6 @@ final class ViewModel: ObservableObject {
         return withUnsafeBytes(of: &addr) { ptr in
             bind(sock, ptr.baseAddress!.assumingMemoryBound(to: sockaddr.self), socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
         }
-    }
-
-    private struct CommandResult {
-        let exitCode: Int32
-        let stdout: String
-        let stderr: String
     }
 
     private func runCommand(_ path: String, args: [String]) async -> CommandResult {

@@ -2,6 +2,29 @@ import Foundation
 import SwiftUI
 import AppKit
 
+#if SWIFT_PACKAGE
+struct BridgeError: Error {
+    let message: String
+}
+
+struct LicenseStatus {
+    let state: Int32
+    let permitsUse: Bool
+    let usingFreeRun: Bool
+    let detailCode: Int32
+}
+
+func rtmifyLoad(path: String) async throws -> OpaquePointer { throw BridgeError(message: "not available in tests") }
+func rtmifyGenerate(graph: OpaquePointer, format: String, outputPath: String, projectName: String) async throws {}
+func rtmifyLicenseStatus() throws -> LicenseStatus { throw BridgeError(message: "not available in tests") }
+func rtmifyInstallLicense(path: String) async throws -> LicenseStatus { throw BridgeError(message: "not available in tests") }
+func rtmifyClearLicense() async throws -> LicenseStatus { throw BridgeError(message: "not available in tests") }
+func rtmifyRecordSuccessfulUse() async throws {}
+func rtmify_free(_ graph: OpaquePointer) {}
+func rtmify_gap_count(_ graph: OpaquePointer) -> Int32 { 0 }
+func rtmify_warning_count() -> Int32 { 0 }
+#endif
+
 struct FileSummary {
     let path: String
     let displayName: String
@@ -24,6 +47,11 @@ enum AppState {
 
 @MainActor
 final class ViewModel: ObservableObject {
+    typealias LicenseStatusFetcher = () throws -> LicenseStatus
+    typealias LicenseInstaller = (String) async throws -> LicenseStatus
+    typealias LicenseClearer = () async throws -> LicenseStatus
+    typealias SuccessfulUseRecorder = () async throws -> Void
+
     @Published var state: AppState = .dropZone
     @Published var errorMessage: String? = nil
     @Published var licenseError: String? = nil
@@ -32,12 +60,28 @@ final class ViewModel: ObservableObject {
 
     private var graph: OpaquePointer? = nil
     private var loadedPath: String? = nil
+    private let fetchLicenseStatus: LicenseStatusFetcher
+    private let installLicenseAtPath: LicenseInstaller
+    private let clearInstalledLicense: LicenseClearer
+    private let recordSuccessfulUse: SuccessfulUseRecorder
+
+    init(
+        fetchLicenseStatus: @escaping LicenseStatusFetcher = rtmifyLicenseStatus,
+        installLicenseAtPath: @escaping LicenseInstaller = rtmifyInstallLicense,
+        clearInstalledLicense: @escaping LicenseClearer = rtmifyClearLicense,
+        recordSuccessfulUse: @escaping SuccessfulUseRecorder = rtmifyRecordSuccessfulUse
+    ) {
+        self.fetchLicenseStatus = fetchLicenseStatus
+        self.installLicenseAtPath = installLicenseAtPath
+        self.clearInstalledLicense = clearInstalledLicense
+        self.recordSuccessfulUse = recordSuccessfulUse
+    }
 
     // MARK: - License
 
     func checkLicense() {
         do {
-            let status = try rtmifyLicenseStatus()
+            let status = try fetchLicenseStatus()
             licenseStatusMessage = message(for: status)
             state = status.permitsUse ? .dropZone : .licenseGate
         } catch {
@@ -55,11 +99,15 @@ final class ViewModel: ObservableObject {
         panel.message = "Select a signed RTMify Trace license file."
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        importLicense(atPath: url.path)
+    }
+
+    func importLicense(atPath path: String) {
         isInstallingLicense = true
         licenseError = nil
         Task {
             do {
-                let status = try await rtmifyInstallLicense(path: url.path)
+                let status = try await installLicenseAtPath(path)
                 isInstallingLicense = false
                 licenseStatusMessage = message(for: status)
                 state = status.permitsUse ? .dropZone : .licenseGate
@@ -76,7 +124,7 @@ final class ViewModel: ObservableObject {
     func clearLicense() {
         Task {
             do {
-                let status = try await rtmifyClearLicense()
+                let status = try await clearInstalledLicense()
                 licenseStatusMessage = message(for: status)
                 freeGraph()
                 state = status.permitsUse ? .dropZone : .licenseGate
@@ -136,13 +184,13 @@ final class ViewModel: ObservableObject {
                                                  outputPath: out, projectName: projectName)
                         paths.append(out)
                     }
-                    try? await rtmifyRecordSuccessfulUse()
+                    try? await recordSuccessfulUse()
                     state = .done(result: GenerateResult(outputPaths: paths, gapCount: gapCount))
                 } else {
                     let out = outputPath(forInput: inputPath, format: format)
                     try await rtmifyGenerate(graph: g, format: format,
                                              outputPath: out, projectName: projectName)
-                    try? await rtmifyRecordSuccessfulUse()
+                    try? await recordSuccessfulUse()
                     state = .done(result: GenerateResult(outputPaths: [out], gapCount: gapCount))
                 }
             } catch let e as BridgeError {

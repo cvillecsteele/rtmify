@@ -165,3 +165,54 @@ test "canonical payload serialization is stable" {
         canonical,
     );
 }
+
+test "signed envelope JSON round-trips through parse and verify" {
+    const alloc = std.testing.allocator;
+    const key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    var payload = types.LicensePayload{
+        .schema = 1,
+        .license_id = try alloc.dupe(u8, "LIVE-2026-0042"),
+        .product = .live,
+        .tier = .site,
+        .issued_to = try alloc.dupe(u8, "ops@example.com"),
+        .issued_at = 1_741_824_000,
+        .expires_at = 1_772_409_600,
+        .org = try alloc.dupe(u8, "Acme Medical Devices"),
+    };
+    defer payload.deinit(alloc);
+
+    const key_bytes = try std.fmt.allocPrint(alloc, "{s}", .{key});
+    defer alloc.free(key_bytes);
+
+    const decoded_key = try @import("license.zig").decodeHexKey(alloc, key_bytes);
+    defer alloc.free(decoded_key);
+
+    const sig = try signPayloadHex(alloc, payload, decoded_key);
+    defer alloc.free(sig);
+
+    const original = types.LicenseEnvelope{
+        .payload = try payload.clone(alloc),
+        .sig = try alloc.dupe(u8, sig),
+    };
+    defer {
+        var owned = original;
+        owned.deinit(alloc);
+    }
+
+    const json_bytes = try envelopeJsonAlloc(alloc, original);
+    defer alloc.free(json_bytes);
+
+    var parsed = try parseEnvelope(alloc, json_bytes);
+    defer parsed.deinit(alloc);
+
+    try std.testing.expect(try verifyEnvelope(alloc, &parsed, decoded_key));
+    try std.testing.expectEqualStrings(original.payload.license_id, parsed.payload.license_id);
+    try std.testing.expectEqual(original.payload.product, parsed.payload.product);
+    try std.testing.expectEqual(original.payload.tier, parsed.payload.tier);
+    try std.testing.expectEqualStrings(original.payload.issued_to, parsed.payload.issued_to);
+    try std.testing.expectEqual(original.payload.issued_at, parsed.payload.issued_at);
+    try std.testing.expectEqual(original.payload.expires_at, parsed.payload.expires_at);
+    try std.testing.expectEqualStrings(original.payload.org.?, parsed.payload.org.?);
+    try std.testing.expectEqualStrings(original.sig, parsed.sig);
+}
