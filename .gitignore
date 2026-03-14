@@ -1,6 +1,7 @@
 # Zig build and cache outputs (any depth)
 .zig-cache/
 zig-out/
+dist/
 
 # macOS app build outputs
 live/macos/.build/
