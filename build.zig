@@ -123,7 +123,8 @@ fn loadLicenseHmacKeyHex(b: *std.Build, optimize: std.builtin.OptimizeMode) []co
 }
 
 pub fn build(b: *std.Build) void {
-    const version = "20260308-a";
+    const default_version = "20260314-b";
+    const version = b.option([]const u8, "release-version", "Release version string") orelse default_version;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 

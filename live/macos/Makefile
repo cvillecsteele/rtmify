@@ -2,6 +2,7 @@ ZIG_DIR  = ../..
 SCHEME   = RTMify Live
 PROJECT  = RTMify Live.xcodeproj
 LICENSE_HMAC_KEY_FILE ?=
+RELEASE_VERSION ?=
 
 ifeq ($(strip $(LICENSE_HMAC_KEY_FILE)),)
 ifneq ($(strip $(RTMIFY_LICENSE_HMAC_KEY_FILE)),)
@@ -14,11 +15,15 @@ RESOLVED_LICENSE_HMAC_KEY_FILE = $(LICENSE_HMAC_KEY_FILE)
 endif
 
 LICENSE_HMAC_FLAG = -Dlicense-hmac-key-file=$(RESOLVED_LICENSE_HMAC_KEY_FILE)
+VERSION_FLAG =
+ifneq ($(strip $(RELEASE_VERSION)),)
+VERSION_FLAG = -Drelease-version=$(RELEASE_VERSION)
+endif
 
 .PHONY: bin app clean
 
 bin:
-	cd $(ZIG_DIR) && zig build live -Dtarget=aarch64-macos -Doptimize=ReleaseSafe $(LICENSE_HMAC_FLAG)
+	cd $(ZIG_DIR) && zig build live -Dtarget=aarch64-macos -Doptimize=ReleaseSafe $(LICENSE_HMAC_FLAG) $(VERSION_FLAG)
 	mkdir -p "RTMify Live/Resources"
 	cp $(ZIG_DIR)/zig-out/bin/rtmify-live "RTMify Live/Resources/rtmify-live"
 	chmod +x "RTMify Live/Resources/rtmify-live"

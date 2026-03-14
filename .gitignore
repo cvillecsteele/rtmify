@@ -26,6 +26,8 @@ trace/zig-out/
 *.db-shm
 *.db-wal
 *.log
+__pycache__/
+*.pyc
 
 # Editor / IDE files
 .vscode/

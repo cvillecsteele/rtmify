@@ -1,0 +1,11 @@
+{
+  "name": "rtmify-trace-validation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render-pdf": "node render_pdf.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0"
+  }
+}

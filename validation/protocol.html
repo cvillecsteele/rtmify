@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RTMify Trace IQ/OQ Protocol v{{version}}</title>
+    <style>{{PRINT_CSS}}</style>
+  </head>
+  <body>
+    <header>
+      <h1>RTMify Trace IQ/OQ Protocol</h1>
+      <p class="meta">Version: v{{version}}</p>
+      <p class="meta">Fixture: {{fixture_filename}}</p>
+      <p class="meta">Generated: {{release_date}}</p>
+    </header>
+
+    <section>
+      <h2>Section A — Installation Qualification (IQ)</h2>
+      <table>
+        <thead>
+          <tr><th>Step</th><th>Action</th><th>Acceptance criterion</th><th>Pass/Fail</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>IQ-01</td><td>Record target OS and version.</td><td>Matches one of: macOS 13+, Windows 10+, Linux (glibc 2.31+).</td><td></td></tr>
+          <tr><td>IQ-02</td><td>Record Trace binary version: <code>rtmify-trace --version</code></td><td>Output matches v{{version}}.</td><td></td></tr>
+          <tr><td>IQ-03</td><td>Record SHA-256 hash of the binary.</td><td>Matches the hash published in <code>checksums.txt</code>.</td><td></td></tr>
+          <tr><td>IQ-04</td><td>Run <code>rtmify-trace --help</code>.</td><td>Help text prints without error.</td><td></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Section B — Operational Qualification (OQ)</h2>
+      <table>
+        <thead>
+          <tr><th>Step</th><th>Action</th><th>Acceptance criterion</th><th>Pass/Fail</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>OQ-01</td><td>Run <code>rtmify-trace {{fixture_filename}} --format pdf -o customer.pdf</code></td><td>Exits 0. <code>customer.pdf</code> is created.</td><td></td></tr>
+          <tr><td>OQ-02</td><td>Run <code>rtmify-trace {{fixture_filename}} --format docx -o customer.docx</code></td><td>Exits 0. <code>customer.docx</code> is created.</td><td></td></tr>
+          <tr><td>OQ-03</td><td>Run <code>rtmify-trace {{fixture_filename}} --format md -o customer.md</code></td><td>Exits 0. <code>customer.md</code> is created.</td><td></td></tr>
+          <tr><td>OQ-04</td><td>Run <code>rtmify-trace {{fixture_filename}} --strict</code></td><td>Exit code equals 5.</td><td></td></tr>
+          <tr><td>OQ-05</td><td>Run <code>rtmify-trace {{fixture_filename}} --strict --gaps-json customer-gaps.json</code></td><td>Exit code equals 5. <code>customer-gaps.json</code> is created.</td><td></td></tr>
+          <tr><td>OQ-06</td><td>Compare <code>customer-gaps.json</code> to <code>golden/golden-gaps.json</code>.</td><td>Counts and entries match the validation package expectation file.</td><td></td></tr>
+          <tr><td>OQ-07</td><td>Open <code>customer.pdf</code> alongside <code>golden/golden.pdf</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-08 all pass.</td><td></td></tr>
+          <tr><td>OQ-08</td><td>Open <code>customer.docx</code> alongside <code>golden/golden.docx</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-08 all pass.</td><td></td></tr>
+          <tr><td>OQ-09</td><td>Open <code>customer.md</code> alongside <code>golden/golden.md</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-08 all pass.</td><td></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Appendix — Output Verification Checkpoints</h2>
+      <p>
+        Use these checkpoints when completing OQ-07, OQ-08, and OQ-09. Each rendered
+        output format must satisfy every checkpoint below when compared to the shipped
+        golden artifact in this validation package.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Checkpoint</th><th>Verification criterion</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>CP-OQ-01</td><td>User Needs table contains exactly 5 rows with IDs <code>UN-OQ-001</code> through <code>UN-OQ-005</code>.</td></tr>
+          <tr><td>CP-OQ-02</td><td>RTM table contains exactly 10 requirement rows. Row for <code>REQ-OQ-009</code> (missing ID) appears with a missing-ID indicator.</td></tr>
+          <tr><td>CP-OQ-03</td><td>Coverage status column for each requirement matches the expected result for this fixture.</td></tr>
+          <tr><td>CP-OQ-04</td><td>Test table contains exactly 6 rows. <code>TST-OQ-003</code> shows <code>Fail</code> status but <code>OK</code> traceability.</td></tr>
+          <tr><td>CP-OQ-05</td><td>Risk Register contains exactly 4 rows. Mitigation column is populated for <code>RSK-OQ-001</code> and <code>RSK-OQ-003</code>, and empty for <code>RSK-OQ-002</code>.</td></tr>
+          <tr><td>CP-OQ-06</td><td>Gap Summary section lists exactly 9 gaps matching the validation package expectation for this fixture.</td></tr>
+          <tr><td>CP-OQ-07</td><td>Warning section lists exactly 7 warnings matching the validation package expectation for this fixture.</td></tr>
+          <tr><td>CP-OQ-08</td><td>Gap rows are visually distinguished in the rendered output format.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Section C — Signatures</h2>
+      <table>
+        <thead>
+          <tr><th>Role</th><th>Name</th><th>Signature</th><th>Date</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Executor (ran the protocol)</td><td></td><td></td><td></td></tr>
+          <tr><td>Reviewer (verified results)</td><td></td><td></td><td></td></tr>
+          <tr><td>Quality approver</td><td></td><td></td><td></td></tr>
+        </tbody>
+      </table>
+    </section>
+  </body>
+</html>
