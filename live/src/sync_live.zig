@@ -613,6 +613,12 @@ pub const RepoScanCtx = struct {
     git_timeout_ms_override: ?u64 = null,
 };
 
+pub fn destroyRepoScanCtx(ctx: *RepoScanCtx) void {
+    for (ctx.repo_paths) |repo_path| ctx.alloc.free(repo_path);
+    ctx.alloc.free(ctx.repo_paths);
+    ctx.alloc.destroy(ctx);
+}
+
 /// Background thread: scans repos for source files + annotations + commits.
 /// Loops every 60 seconds. Each cycle:
 ///   1. Builds list of known req IDs from the graph DB.
@@ -621,6 +627,8 @@ pub const RepoScanCtx = struct {
 ///   4. Runs git log, upserts Commit nodes + COMMITTED_IN edges.
 ///   5. Rate-limited blame: first 50 annotations per cycle.
 pub fn repoScanThread(ctx: *RepoScanCtx) void {
+    defer destroyRepoScanCtx(ctx);
+
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();

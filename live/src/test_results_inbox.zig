@@ -12,11 +12,13 @@ pub const InboxCtx = struct {
     alloc: Allocator,
 };
 
+pub fn destroyInboxCtx(ctx: *InboxCtx) void {
+    ctx.alloc.free(ctx.inbox_dir);
+    ctx.alloc.destroy(ctx);
+}
+
 pub fn inboxThread(ctx: *InboxCtx) void {
-    defer {
-        ctx.alloc.free(ctx.inbox_dir);
-        ctx.alloc.destroy(ctx);
-    }
+    defer destroyInboxCtx(ctx);
 
     while (true) {
         if (!ctx.state.product_enabled.load(.seq_cst)) {

@@ -334,25 +334,13 @@ pub fn main() !void {
 
     // Always spawn repo scan thread (picks up repos from DB dynamically each cycle)
     {
-        const scan_ctx = try gpa.create(sync_live.RepoScanCtx);
-        scan_ctx.* = .{
-            .db = &g,
-            .repo_paths = try repo_paths.toOwnedSlice(gpa),
-            .state = &state,
-            .alloc = gpa,
-        };
+        const scan_ctx = try createRepoScanThreadCtx(std.heap.page_allocator, &g, repo_paths.items, &state);
         const t = try std.Thread.spawn(.{}, sync_live.repoScanThread, .{scan_ctx});
         t.detach();
         std.log.info("repo scan thread started", .{});
     }
     {
-        const inbox_ctx = try gpa.create(test_results_inbox.InboxCtx);
-        inbox_ctx.* = .{
-            .db = &g,
-            .state = &state,
-            .inbox_dir = try gpa.dupe(u8, inbox_dir),
-            .alloc = gpa,
-        };
+        const inbox_ctx = try createInboxThreadCtx(std.heap.page_allocator, &g, &state, inbox_dir);
         const t = try std.Thread.spawn(.{}, test_results_inbox.inboxThread, .{inbox_ctx});
         t.detach();
         std.log.info("test results inbox thread started dir={s}", .{inbox_dir});
@@ -404,6 +392,102 @@ fn resolveDbPath(alloc: std.mem.Allocator, db_path: []const u8) ![]u8 {
     const cwd_real = try std.fs.cwd().realpathAlloc(alloc, ".");
     defer alloc.free(cwd_real);
     return std.fs.path.resolve(alloc, &.{ cwd_real, db_path });
+}
+
+fn createRepoScanThreadCtx(
+    alloc: std.mem.Allocator,
+    db: *graph_live.GraphDb,
+    repo_paths: []const []const u8,
+    state: *sync_live.SyncState,
+) !*sync_live.RepoScanCtx {
+    const owned_repo_paths = try duplicateStringSlice(alloc, repo_paths);
+    errdefer {
+        for (owned_repo_paths) |repo_path| alloc.free(repo_path);
+        alloc.free(owned_repo_paths);
+    }
+
+    const ctx = try alloc.create(sync_live.RepoScanCtx);
+    errdefer alloc.destroy(ctx);
+    ctx.* = .{
+        .db = db,
+        .repo_paths = owned_repo_paths,
+        .state = state,
+        .alloc = alloc,
+    };
+    return ctx;
+}
+
+fn createInboxThreadCtx(
+    alloc: std.mem.Allocator,
+    db: *graph_live.GraphDb,
+    state: *sync_live.SyncState,
+    inbox_dir: []const u8,
+) !*test_results_inbox.InboxCtx {
+    const owned_inbox_dir = try alloc.dupe(u8, inbox_dir);
+    errdefer alloc.free(owned_inbox_dir);
+
+    const ctx = try alloc.create(test_results_inbox.InboxCtx);
+    errdefer alloc.destroy(ctx);
+    ctx.* = .{
+        .db = db,
+        .state = state,
+        .inbox_dir = owned_inbox_dir,
+        .alloc = alloc,
+    };
+    return ctx;
+}
+
+fn duplicateStringSlice(alloc: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    const out = try alloc.alloc([]const u8, values.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (out[0..initialized]) |value| {
+            alloc.free(value);
+        }
+        alloc.free(out);
+    }
+
+    for (values, 0..) |value, idx| {
+        out[idx] = try alloc.dupe(u8, value);
+        initialized += 1;
+    }
+    return out;
+}
+
+test "repo scan thread context cleanup releases owned memory" {
+    var gpa: std.heap.DebugAllocator(.{ .enable_memory_limit = true }) = .{};
+    defer testing.expect(gpa.deinit() == .ok) catch @panic("repo scan context leaked");
+    const alloc = gpa.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: sync_live.SyncState = .{};
+    const ctx = try createRepoScanThreadCtx(alloc, &db, &.{ "/tmp/repo-a", "/tmp/repo-b" }, &state);
+
+    try testing.expect(gpa.total_requested_bytes > 0);
+    try testing.expectEqual(@as(usize, 2), ctx.repo_paths.len);
+    try testing.expectEqualStrings("/tmp/repo-a", ctx.repo_paths[0]);
+    try testing.expectEqualStrings("/tmp/repo-b", ctx.repo_paths[1]);
+
+    sync_live.destroyRepoScanCtx(ctx);
+    try testing.expectEqual(@as(usize, 0), gpa.total_requested_bytes);
+}
+
+test "inbox thread context cleanup releases owned memory" {
+    var gpa: std.heap.DebugAllocator(.{ .enable_memory_limit = true }) = .{};
+    defer testing.expect(gpa.deinit() == .ok) catch @panic("inbox context leaked");
+    const alloc = gpa.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: sync_live.SyncState = .{};
+    const ctx = try createInboxThreadCtx(alloc, &db, &state, "/tmp/inbox");
+
+    try testing.expect(gpa.total_requested_bytes > 0);
+    try testing.expectEqualStrings("/tmp/inbox", ctx.inbox_dir);
+
+    test_results_inbox.destroyInboxCtx(ctx);
+    try testing.expectEqual(@as(usize, 0), gpa.total_requested_bytes);
 }
 
 /// Callback passed to ServerCtx so that POST /api/connection can trigger sync start.
