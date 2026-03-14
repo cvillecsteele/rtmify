@@ -25,11 +25,20 @@ struct LicenseGateView: View {
                 Text("Import a signed RTMify Live license file, or place it manually at ~/.rtmify/license.json.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
 
                 if let err = vm.activationError {
                     Text(err)
                         .font(.caption)
                         .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let fingerprint = vm.expectedKeyFingerprint {
+                    Text("Build fingerprint: \(fingerprint.prefix(12))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 40)
@@ -53,7 +62,7 @@ struct LicenseGateView: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
 
-            Link("Need a license?", destination: URL(string: "https://store.rtmify.io")!)
+            Link("Need a license?", destination: URL(string: "https://rtmify.io/pricing/")!)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

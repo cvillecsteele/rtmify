@@ -84,12 +84,16 @@ const RtmifyLicenseStatus = extern struct {
     expires_at: i64,
     issued_at: i64,
     detail_code: i32,
+    expected_key_fingerprint: [65]u8,
+    license_signing_key_fingerprint: [65]u8,
 };
 
 extern fn rtmify_last_error() [*:0]const u8;
 extern fn rtmify_live_license_get_status(out_status: *RtmifyLicenseStatus) i32;
 extern fn rtmify_live_license_install(path: [*:0]const u8, out_status: *RtmifyLicenseStatus) i32;
 extern fn rtmify_live_license_clear(out_status: *RtmifyLicenseStatus) i32;
+
+threadlocal var license_message_buf: [512]u8 = .{0} ** 512;
 
 fn W(comptime s: []const u8) [:0]const u16 {
     return std.unicode.utf8ToUtf16LeStringLiteral(s);
@@ -102,10 +106,39 @@ fn toUtf16Message(text: []const u8, buf: []u16) [*:0]const u16 {
     return @ptrCast(buf.ptr);
 }
 
+fn cStringSlice(buf: []const u8) ?[]const u8 {
+    const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    if (len == 0) return null;
+    return buf[0..len];
+}
+
+fn shortFingerprint(buf: []const u8) ?[]const u8 {
+    const value = cStringSlice(buf) orelse return null;
+    return value[0..@min(value.len, 12)];
+}
+
 fn licenseMessage(status: RtmifyLicenseStatus) []const u8 {
     return switch (status.detail_code) {
         3 => "No license file found. Import a signed RTMify Live license file or place it at ~/.rtmify/license.json.",
-        5 => "The license file signature is invalid or the file was modified.",
+        5 => blk: {
+            if (shortFingerprint(status.license_signing_key_fingerprint[0..])) |file_fp| {
+                if (shortFingerprint(status.expected_key_fingerprint[0..])) |expected_fp| {
+                    break :blk std.fmt.bufPrint(
+                        &license_message_buf,
+                        "This license was signed with key {s}, but this build expects {s}.",
+                        .{ file_fp, expected_fp },
+                    ) catch "This license signature does not match this build.";
+                }
+            }
+            if (shortFingerprint(status.expected_key_fingerprint[0..])) |expected_fp| {
+                break :blk std.fmt.bufPrint(
+                    &license_message_buf,
+                    "This build expects licenses signed with key {s}.",
+                    .{expected_fp},
+                ) catch "This license signature does not match this build.";
+            }
+            break :blk "This license signature does not match this build.";
+        },
         6 => "This license file is for a different RTMify product.",
         8 => "The installed license file has expired.",
         else => "Import a signed RTMify Live license file, or place it manually at ~/.rtmify/license.json.",
@@ -148,7 +181,7 @@ pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) voi
         100,
         100,
         420,
-        215,
+        245,
         notify_hwnd,
         null,
         hInstance,
@@ -163,7 +196,7 @@ pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) voi
         20,
         20,
         380,
-        36,
+        68,
         hwnd,
         @ptrFromInt(IDC_STATUS_LABEL),
         hInstance,
@@ -176,7 +209,7 @@ pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) voi
         W("Import License File"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
         20,
-        80,
+        112,
         180,
         30,
         hwnd,
@@ -191,7 +224,7 @@ pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) voi
         W("Clear Installed License"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         220,
-        80,
+        112,
         180,
         30,
         hwnd,
@@ -206,7 +239,7 @@ pub fn showLicenseDialog(hInstance: HINSTANCE, notify_hwnd: HWND, port: u16) voi
         W("Cancel"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         140,
-        130,
+        165,
         140,
         30,
         hwnd,
@@ -277,6 +310,8 @@ test "license message describes missing file" {
         .expires_at = -1,
         .issued_at = -1,
         .detail_code = 3,
+        .expected_key_fingerprint = std.mem.zeroes([65]u8),
+        .license_signing_key_fingerprint = std.mem.zeroes([65]u8),
     };
     try std.testing.expectEqualStrings(
         "No license file found. Import a signed RTMify Live license file or place it at ~/.rtmify/license.json.",
@@ -292,6 +327,8 @@ test "license message describes wrong product" {
         .expires_at = -1,
         .issued_at = -1,
         .detail_code = 6,
+        .expected_key_fingerprint = std.mem.zeroes([65]u8),
+        .license_signing_key_fingerprint = std.mem.zeroes([65]u8),
     };
     try std.testing.expectEqualStrings(
         "This license file is for a different RTMify product.",
@@ -307,6 +344,8 @@ test "license permits use follows status bit" {
         .expires_at = -1,
         .issued_at = -1,
         .detail_code = 0,
+        .expected_key_fingerprint = std.mem.zeroes([65]u8),
+        .license_signing_key_fingerprint = std.mem.zeroes([65]u8),
     }));
     try std.testing.expect(!licensePermitsUseForStatus(.{
         .state = 0,
@@ -315,5 +354,7 @@ test "license permits use follows status bit" {
         .expires_at = -1,
         .issued_at = -1,
         .detail_code = 0,
+        .expected_key_fingerprint = std.mem.zeroes([65]u8),
+        .license_signing_key_fingerprint = std.mem.zeroes([65]u8),
     }));
 }

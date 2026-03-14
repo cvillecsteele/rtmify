@@ -12,6 +12,26 @@ zig build trace                   # build trace CLI
 zig-out/bin/rtmify-trace --help
 ```
 
+## Release Flow
+
+The supported operator release flow is now a single script:
+
+```sh
+cd /Users/colinsteele/Projects/rtmify/sys
+./release.sh
+```
+
+Key resolution order for release builds and license generation:
+
+1. `--key-file /path/to/key.txt`
+2. `RTMIFY_LICENSE_HMAC_KEY_FILE`
+3. `~/.rtmify/secrets/license-hmac-key.txt`
+
+The key file must contain exactly 64 lowercase hex characters. `release.sh`
+builds Trace, Live, `rtmify-license-gen`, the macOS shells, the Windows shells,
+then generates smoke licenses and verifies them against the freshly built
+binaries before writing `dist/<version>/`.
+
 ## Usage
 
 ```
@@ -111,6 +131,25 @@ rtmify-trace license info --json
 rtmify-trace license install /path/to/license.json
 rtmify-trace license clear
 ```
+
+Operator license generation uses the dedicated generator:
+
+```sh
+cd /Users/colinsteele/Projects/rtmify/sys
+zig build license-gen -Doptimize=ReleaseSafe
+zig-out/bin/rtmify-license-gen \
+  --product live \
+  --tier site \
+  --to ops@example.com \
+  --org "Example Co" \
+  --perpetual \
+  --out /tmp/license.json
+```
+
+`rtmify-license-gen` resolves the signing key using the same order as
+`release.sh`. Generated envelopes also carry a non-secret
+`signing_key_fingerprint` hint so mismatched app builds show an explicit
+build/signing mismatch instead of a generic tamper failure.
 
 ## C ABI
 

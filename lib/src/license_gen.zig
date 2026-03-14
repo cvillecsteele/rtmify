@@ -4,9 +4,34 @@ const license = rtmify.license;
 
 fn usage() []const u8 {
     return
-        \\rtmify-license-gen --product <trace|live> --tier <lab|individual|team|site> --to <email> [--org <name>] (--perpetual | --expires <YYYY-MM-DD>) --out <path>
+        \\rtmify-license-gen [--key-file <path> | RTMIFY_LICENSE_HMAC_KEY_FILE=/path/to/key.txt] [--allow-dev-key] --product <trace|live> --tier <lab|individual|team|site> --to <email> [--org <name>] (--perpetual | --expires <YYYY-MM-DD>) --out <path>
         \\
     ;
+}
+
+fn readKeyFile(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    const bytes = try std.fs.cwd().readFileAlloc(alloc, path, 1024);
+    defer alloc.free(bytes);
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    return license.decodeHexKey(alloc, trimmed);
+}
+
+fn resolveSigningKey(alloc: std.mem.Allocator, key_file: ?[]const u8, allow_dev_key: bool) ![]u8 {
+    const resolved_path = license.resolveKeyFilePath(alloc, key_file) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    defer if (resolved_path) |path| alloc.free(path);
+    if (resolved_path) |path| {
+        return readKeyFile(alloc, path) catch |err| switch (err) {
+            error.FileNotFound => if (allow_dev_key) license.decodeHexKey(alloc, license.development_hmac_key_hex) else error.MissingSigningKeyFile,
+            else => err,
+        };
+    }
+    if (allow_dev_key) {
+        return license.decodeHexKey(alloc, license.development_hmac_key_hex);
+    }
+    return error.MissingSigningKeyFile;
 }
 
 fn parseProduct(value: []const u8) !license.LicenseProduct {
@@ -79,6 +104,8 @@ pub fn main() !void {
     var expires_at: ?i64 = null;
     var perpetual = false;
     var out_path: ?[]const u8 = null;
+    var key_file: ?[]const u8 = null;
+    var allow_dev_key = false;
 
     var args = try std.process.argsWithAllocator(gpa);
     defer args.deinit();
@@ -98,6 +125,10 @@ pub fn main() !void {
             perpetual = true;
         } else if (std.mem.eql(u8, arg, "--out")) {
             out_path = args.next() orelse return error.MissingValue;
+        } else if (std.mem.eql(u8, arg, "--key-file")) {
+            key_file = args.next() orelse return error.MissingValue;
+        } else if (std.mem.eql(u8, arg, "--allow-dev-key")) {
+            allow_dev_key = true;
         } else if (std.mem.eql(u8, arg, "--help")) {
             try std.fs.File.stdout().deprecatedWriter().writeAll(usage());
             return;
@@ -112,6 +143,24 @@ pub fn main() !void {
     const resolved_tier = tier orelse return error.MissingTier;
     const resolved_to = issued_to orelse return error.MissingIssuedTo;
     const resolved_out = out_path orelse return error.MissingOutput;
+    const key = resolveSigningKey(gpa, key_file, allow_dev_key) catch |err| switch (err) {
+        error.MissingSigningKeyFile => {
+            try std.fs.File.stderr().deprecatedWriter().writeAll(
+                "Error: missing signing key file.\n" ++
+                    "Checked: --key-file, RTMIFY_LICENSE_HMAC_KEY_FILE, ~/.rtmify/secrets/license-hmac-key.txt\n" ++
+                    "Use --allow-dev-key only for local debug-only licenses.\n",
+            );
+            std.process.exit(2);
+        },
+        error.InvalidHmacKey => {
+            try std.fs.File.stderr().deprecatedWriter().writeAll(
+                "Error: signing key file must contain exactly 64 lowercase hex characters.\n",
+            );
+            std.process.exit(2);
+        },
+        else => return err,
+    };
+    defer gpa.free(key);
     const seq = try nextSequence(gpa, resolved_product);
     const year = 1970 + @divFloor(std.time.timestamp(), 31_536_000);
 
@@ -126,13 +175,14 @@ pub fn main() !void {
         .org = if (org) |value| try gpa.dupe(u8, value) else null,
     };
     defer payload.deinit(gpa);
-    const key = try license.defaultHmacKeyBytes(gpa);
-    defer gpa.free(key);
     const sig = try license.license_file.signPayloadHex(gpa, payload, key);
     defer gpa.free(sig);
+    const signing_key_fingerprint = try license.keyFingerprintHex(gpa, key);
+    defer gpa.free(signing_key_fingerprint);
     const envelope = license.LicenseEnvelope{
         .payload = try payload.clone(gpa),
         .sig = try gpa.dupe(u8, sig),
+        .signing_key_fingerprint = try gpa.dupe(u8, signing_key_fingerprint),
     };
     defer {
         var owned = envelope;
@@ -141,4 +191,8 @@ pub fn main() !void {
     const json_bytes = try license.license_file.envelopeJsonAlloc(gpa, envelope);
     defer gpa.free(json_bytes);
     try std.fs.cwd().writeFile(.{ .sub_path = resolved_out, .data = json_bytes });
+    try std.fs.File.stdout().deprecatedWriter().print(
+        "Generated {s} -> {s} (signing key {s})\n",
+        .{ payload.license_id, resolved_out, license.displayFingerprint(signing_key_fingerprint) },
+    );
 }

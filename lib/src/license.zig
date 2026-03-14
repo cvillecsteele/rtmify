@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 
 pub const license_types = @import("license_types.zig");
@@ -11,6 +12,8 @@ pub const license_store = @import("license_store.zig");
 pub const license_store_fs = @import("license_store_fs.zig");
 pub const license_store_memory = @import("license_store_memory.zig");
 pub const license_support = @import("license_support.zig");
+pub const development_hmac_key_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+pub const canonical_key_path_suffix = ".rtmify/secrets/license-hmac-key.txt";
 
 pub const LicenseProduct = license_types.LicenseProduct;
 pub const LicenseTier = license_types.LicenseTier;
@@ -69,56 +72,73 @@ pub const Service = struct {
 
     pub fn getStatus(self: *Service, alloc: Allocator) !LicenseStatus {
         const license_path = try resolveLicensePath(alloc, self.deps.license_path_override);
+        const expected_key_fingerprint = try defaultKeyFingerprintHex(alloc);
         var envelope = self.deps.store.readEnvelope(alloc) catch |err| switch (err) {
-            error.InvalidLicenseFile => return makeStatus(alloc, .invalid, false, .invalid_json, "license file is not valid JSON", license_path, null, false),
+            error.InvalidLicenseFile => return makeStatus(alloc, .invalid, false, .invalid_json, "license file is not valid JSON", license_path, expected_key_fingerprint, null, null, false),
             else => return err,
         };
         defer if (envelope) |*value| value.deinit(alloc);
 
         if (envelope == null) {
-            return statusWithoutInstalledLicense(self, alloc, license_path);
+            return statusWithoutInstalledLicense(self, alloc, license_path, expected_key_fingerprint);
         }
 
         const now = self.deps.clock.now();
         var outcome = self.deps.provider.verifyEnvelope(alloc, &envelope.?, self.deps.product, now);
         defer outcome.deinit(alloc);
         return switch (outcome) {
-            .valid => |payload| makeStatusFromPayload(alloc, .valid, true, .none, null, license_path, payload, false),
-            .expired => |payload| makeStatusFromPayload(alloc, .expired, false, .expired, "license has expired", license_path, payload, false),
-            .invalid => |failure| makeStatus(alloc, .invalid, false, failure.code, failure.message, license_path, null, false),
-            .tampered => |failure| makeStatus(alloc, .tampered, false, failure.code, failure.message, license_path, null, false),
+            .valid => |payload| makeStatusFromPayload(alloc, .valid, true, .none, null, license_path, expected_key_fingerprint, envelope.?.signing_key_fingerprint, payload, false),
+            .expired => |payload| makeStatusFromPayload(alloc, .expired, false, .expired, "license has expired", license_path, expected_key_fingerprint, envelope.?.signing_key_fingerprint, payload, false),
+            .invalid => |failure| makeStatus(alloc, .invalid, false, failure.code, failure.message, license_path, expected_key_fingerprint, envelope.?.signing_key_fingerprint, null, false),
+            .tampered => |failure| makeStatus(alloc, .tampered, false, failure.code, failure.message, license_path, expected_key_fingerprint, envelope.?.signing_key_fingerprint, null, false),
         };
     }
 
     pub fn getInfo(self: *Service, alloc: Allocator) !LicenseInfo {
         const license_path = try resolveLicensePath(alloc, self.deps.license_path_override);
+        const expected_key_fingerprint = try defaultKeyFingerprintHex(alloc);
         var envelope = self.deps.store.readEnvelope(alloc) catch |err| switch (err) {
             error.InvalidLicenseFile => {
                 alloc.free(license_path);
+                alloc.free(expected_key_fingerprint);
                 return error.InvalidLicenseFile;
             },
             else => {
                 alloc.free(license_path);
+                alloc.free(expected_key_fingerprint);
                 return err;
             },
         };
         defer if (envelope) |*value| value.deinit(alloc);
         if (envelope == null) {
             alloc.free(license_path);
+            alloc.free(expected_key_fingerprint);
             return error.FileNotFound;
         }
         const now = self.deps.clock.now();
         var outcome = self.deps.provider.verifyEnvelope(alloc, &envelope.?, self.deps.product, now);
         defer outcome.deinit(alloc);
         return switch (outcome) {
-            .valid => |payload| .{ .payload = try payload.clone(alloc), .license_path = license_path },
-            .expired => |payload| .{ .payload = try payload.clone(alloc), .license_path = license_path },
+            .valid => |payload| .{
+                .payload = try payload.clone(alloc),
+                .license_path = license_path,
+                .expected_key_fingerprint = expected_key_fingerprint,
+                .license_signing_key_fingerprint = if (envelope.?.signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
+            },
+            .expired => |payload| .{
+                .payload = try payload.clone(alloc),
+                .license_path = license_path,
+                .expected_key_fingerprint = expected_key_fingerprint,
+                .license_signing_key_fingerprint = if (envelope.?.signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
+            },
             .invalid => {
                 alloc.free(license_path);
+                alloc.free(expected_key_fingerprint);
                 return error.InvalidLicense;
             },
             .tampered => {
                 alloc.free(license_path);
+                alloc.free(expected_key_fingerprint);
                 return error.InvalidLicense;
             },
         };
@@ -133,20 +153,22 @@ pub const Service = struct {
     pub fn installFromBytes(self: *Service, alloc: Allocator, license_json: []const u8) !LicenseStatus {
         var envelope = license_file.parseEnvelope(alloc, license_json) catch {
             const path = try resolveLicensePath(alloc, self.deps.license_path_override);
-            return makeStatus(alloc, .invalid, false, .invalid_json, "license file is not valid JSON", path, null, false);
+            const expected_key_fingerprint = try defaultKeyFingerprintHex(alloc);
+            return makeStatus(alloc, .invalid, false, .invalid_json, "license file is not valid JSON", path, expected_key_fingerprint, null, null, false);
         };
         defer envelope.deinit(alloc);
         const license_path = try resolveLicensePath(alloc, self.deps.license_path_override);
+        const expected_key_fingerprint = try defaultKeyFingerprintHex(alloc);
         const now = self.deps.clock.now();
         var outcome = self.deps.provider.verifyEnvelope(alloc, &envelope, self.deps.product, now);
         defer outcome.deinit(alloc);
         switch (outcome) {
             .valid => {},
             .expired => |payload| {
-                return makeStatusFromPayload(alloc, .expired, false, .expired, "license has expired", license_path, payload, false);
+                return makeStatusFromPayload(alloc, .expired, false, .expired, "license has expired", license_path, expected_key_fingerprint, envelope.signing_key_fingerprint, payload, false);
             },
-            .invalid => |failure| return makeStatus(alloc, .invalid, false, failure.code, failure.message, license_path, null, false),
-            .tampered => |failure| return makeStatus(alloc, .tampered, false, failure.code, failure.message, license_path, null, false),
+            .invalid => |failure| return makeStatus(alloc, .invalid, false, failure.code, failure.message, license_path, expected_key_fingerprint, envelope.signing_key_fingerprint, null, false),
+            .tampered => |failure| return makeStatus(alloc, .tampered, false, failure.code, failure.message, license_path, expected_key_fingerprint, envelope.signing_key_fingerprint, null, false),
         }
         try self.deps.store.writeEnvelope(alloc, envelope);
         return self.getStatus(alloc);
@@ -241,8 +263,31 @@ pub fn initDefaultStub(alloc: Allocator, cfg: StubConfig) !Service {
 }
 
 pub fn defaultHmacKeyBytes(alloc: Allocator) ![]u8 {
-    const key_hex = if (build_options.license_hmac_key_hex.len != 0) build_options.license_hmac_key_hex else "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    const key_hex = if (build_options.license_hmac_key_hex.len != 0) build_options.license_hmac_key_hex else development_hmac_key_hex;
     return decodeHexKey(alloc, key_hex);
+}
+
+pub fn keyFingerprintHex(alloc: Allocator, key_bytes: []const u8) ![]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(key_bytes, &digest, .{});
+    return alloc.dupe(u8, std.fmt.bytesToHex(&digest, .lower)[0..]);
+}
+
+pub fn defaultKeyFingerprintHex(alloc: Allocator) ![]u8 {
+    if (build_options.license_hmac_key_fingerprint_hex.len != 0) {
+        return alloc.dupe(u8, build_options.license_hmac_key_fingerprint_hex);
+    }
+    const key = try defaultHmacKeyBytes(alloc);
+    defer alloc.free(key);
+    return keyFingerprintHex(alloc, key);
+}
+
+pub fn displayFingerprint(full_hex: []const u8) []const u8 {
+    return if (full_hex.len > 12) full_hex[0..12] else full_hex;
+}
+
+pub fn usingDevelopmentHmacKey() bool {
+    return std.mem.eql(u8, build_options.license_hmac_key_hex, development_hmac_key_hex);
 }
 
 pub fn decodeHexKey(alloc: Allocator, key_hex: []const u8) ![]u8 {
@@ -251,6 +296,21 @@ pub fn decodeHexKey(alloc: Allocator, key_hex: []const u8) ![]u8 {
     errdefer alloc.free(out);
     _ = try std.fmt.hexToBytes(out, key_hex);
     return out;
+}
+
+pub fn defaultKeyFilePath(alloc: Allocator) ![]u8 {
+    const home_var = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
+    const home = try std.process.getEnvVarOwned(alloc, home_var);
+    defer alloc.free(home);
+    return std.fs.path.join(alloc, &.{ home, canonical_key_path_suffix });
+}
+
+pub fn resolveKeyFilePath(alloc: Allocator, override_path: ?[]const u8) ![]u8 {
+    if (override_path) |path| return alloc.dupe(u8, path);
+    if (std.process.getEnvVarOwned(alloc, "RTMIFY_LICENSE_HMAC_KEY_FILE")) |env_path| {
+        return env_path;
+    } else |_| {}
+    return defaultKeyFilePath(alloc);
 }
 
 pub fn resolveLicensePath(alloc: Allocator, override_path: ?[]const u8) ![]u8 {
@@ -278,14 +338,14 @@ fn markerExists(self: *Service, alloc: Allocator) bool {
     return true;
 }
 
-fn statusWithoutInstalledLicense(self: *Service, alloc: Allocator, license_path: []u8) !LicenseStatus {
+fn statusWithoutInstalledLicense(self: *Service, alloc: Allocator, license_path: []u8, expected_key_fingerprint: []u8) !LicenseStatus {
     return switch (self.deps.trial_policy) {
         .single_free_run => if (markerExists(self, alloc))
-            makeStatus(alloc, .not_licensed, false, .trial_exhausted, "trial exhausted; install a signed license file to continue", license_path, null, false)
+            makeStatus(alloc, .not_licensed, false, .trial_exhausted, "trial exhausted; install a signed license file to continue", license_path, expected_key_fingerprint, null, null, false)
         else
-            makeStatus(alloc, .not_licensed, true, .free_run_available, "one free run is available before a license is required", license_path, null, true),
-        .requires_license => makeStatus(alloc, .not_licensed, false, .file_not_found, "license file not found", license_path, null, false),
-        .unlimited => makeStatus(alloc, .valid, true, .none, null, license_path, null, false),
+            makeStatus(alloc, .not_licensed, true, .free_run_available, "one free run is available before a license is required", license_path, expected_key_fingerprint, null, null, true),
+        .requires_license => makeStatus(alloc, .not_licensed, false, .file_not_found, "license file not found", license_path, expected_key_fingerprint, null, null, false),
+        .unlimited => makeStatus(alloc, .valid, true, .none, null, license_path, expected_key_fingerprint, null, null, false),
     };
 }
 
@@ -296,6 +356,8 @@ fn makeStatusFromPayload(
     detail_code: LicenseDetailCode,
     message: ?[]const u8,
     license_path: []u8,
+    expected_key_fingerprint: []u8,
+    license_signing_key_fingerprint: ?[]const u8,
     payload: LicensePayload,
     using_free_run: bool,
 ) !LicenseStatus {
@@ -305,6 +367,8 @@ fn makeStatusFromPayload(
         .detail_code = detail_code,
         .message = if (message) |msg| try alloc.dupe(u8, msg) else null,
         .license_path = license_path,
+        .expected_key_fingerprint = expected_key_fingerprint,
+        .license_signing_key_fingerprint = if (license_signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
         .issued_to = try alloc.dupe(u8, payload.issued_to),
         .org = if (payload.org) |org| try alloc.dupe(u8, org) else null,
         .license_id = try alloc.dupe(u8, payload.license_id),
@@ -323,15 +387,25 @@ fn makeStatus(
     detail_code: LicenseDetailCode,
     message: ?[]const u8,
     license_path: []u8,
+    expected_key_fingerprint: []u8,
+    license_signing_key_fingerprint: ?[]const u8,
     payload: ?LicensePayload,
     using_free_run: bool,
 ) !LicenseStatus {
+    const resolved_message = if (detail_code == .bad_signature)
+        try mismatchMessage(alloc, expected_key_fingerprint, license_signing_key_fingerprint)
+    else if (message) |msg|
+        try alloc.dupe(u8, msg)
+    else
+        null;
     return .{
         .state = state,
         .permits_use = permits_use,
         .detail_code = detail_code,
-        .message = if (message) |msg| try alloc.dupe(u8, msg) else null,
+        .message = resolved_message,
         .license_path = license_path,
+        .expected_key_fingerprint = expected_key_fingerprint,
+        .license_signing_key_fingerprint = if (license_signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
         .issued_to = if (payload) |value| try alloc.dupe(u8, value.issued_to) else null,
         .org = if (payload) |value| if (value.org) |org| try alloc.dupe(u8, org) else null else null,
         .license_id = if (payload) |value| try alloc.dupe(u8, value.license_id) else null,
@@ -343,6 +417,23 @@ fn makeStatus(
     };
 }
 
+fn mismatchMessage(alloc: Allocator, expected_key_fingerprint: []const u8, license_signing_key_fingerprint: ?[]const u8) !?[]u8 {
+    if (license_signing_key_fingerprint) |file_fp| {
+        const message = try std.fmt.allocPrint(
+            alloc,
+            "license was signed with key {s}, but this build expects {s}",
+            .{ displayFingerprint(file_fp), displayFingerprint(expected_key_fingerprint) },
+        );
+        return message;
+    }
+    const message = try std.fmt.allocPrint(
+        alloc,
+        "license signature does not match this build; expected key {s}",
+        .{displayFingerprint(expected_key_fingerprint)},
+    );
+    return message;
+}
+
 fn makeDetachedStatus(
     alloc: Allocator,
     state: LicenseState,
@@ -350,12 +441,15 @@ fn makeDetachedStatus(
     detail_code: LicenseDetailCode,
     message: ?[]const u8,
 ) !LicenseStatus {
+    const expected_key_fingerprint = try defaultKeyFingerprintHex(alloc);
     return .{
         .state = state,
         .permits_use = permits_use,
         .detail_code = detail_code,
         .message = if (message) |msg| try alloc.dupe(u8, msg) else null,
         .license_path = try alloc.dupe(u8, ""),
+        .expected_key_fingerprint = expected_key_fingerprint,
+        .license_signing_key_fingerprint = null,
         .issued_to = null,
         .org = null,
         .license_id = null,

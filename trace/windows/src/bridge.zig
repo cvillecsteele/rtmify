@@ -45,6 +45,8 @@ pub const RtmifyLicenseStatus = extern struct {
     expires_at: i64,
     issued_at: i64,
     detail_code: i32,
+    expected_key_fingerprint: [65]u8,
+    license_signing_key_fingerprint: [65]u8,
 };
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,18 @@ This directory contains the native desktop shells for RTMify Trace:
 
 If you just need the build commands, use these.
 
+For operator/release work, use the single supported release flow:
+
+```sh
+cd /Users/colinsteele/Projects/rtmify/sys
+./release.sh
+```
+
+`release.sh` resolves the signing key once, builds Trace, Live,
+`rtmify-license-gen`, the macOS apps, the Windows shells, and then smoke-checks
+generated licenses against the freshly built binaries before packaging
+`dist/<version>/`.
+
 ## macOS app
 
 Build the native SwiftUI app:
@@ -27,6 +39,12 @@ cd /Users/colinsteele/Projects/rtmify/sys/trace/macos
 make lib
 open "RTMify Trace.xcodeproj"
 ```
+
+Release builds resolve the signing key in this order:
+
+1. `LICENSE_HMAC_KEY_FILE=/path/to/key.txt`
+2. `RTMIFY_LICENSE_HMAC_KEY_FILE`
+3. `~/.rtmify/secrets/license-hmac-key.txt`
 
 For a universal app build, see:
 

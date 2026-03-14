@@ -143,17 +143,48 @@ extern "gdi32" fn DeleteObject(ho: *anyopaque) callconv(.winapi) BOOL;
 
 var g_state: state.AppState = .{};
 var g_hinstance: ?*anyopaque = null;
+threadlocal var license_message_buf: [512]u8 = .{0} ** 512;
+
+fn cStringSlice(buf: []const u8) ?[]const u8 {
+    const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    if (len == 0) return null;
+    return buf[0..len];
+}
+
+fn shortFingerprint(buf: []const u8) ?[]const u8 {
+    const value = cStringSlice(buf) orelse return null;
+    return value[0..@min(value.len, 12)];
+}
 
 fn licenseStatusMessage(status: bridge.RtmifyLicenseStatus) [*:0]const u8 {
-    return switch (status.detail_code) {
+    const message = switch (status.detail_code) {
         1 => "One full free run is available. The first successful report will consume it.",
         2 => "Your free Trace run has been used. Import a signed license file or place it at ~/.rtmify/license.json.",
         3 => "No license file found. Import a signed license file or place it at ~/.rtmify/license.json.",
-        5 => "The license file signature is invalid or the file was modified.",
+        5 => blk: {
+            if (shortFingerprint(&status.license_signing_key_fingerprint)) |file_fp| {
+                if (shortFingerprint(&status.expected_key_fingerprint)) |expected_fp| {
+                    break :blk std.fmt.bufPrintZ(
+                        &license_message_buf,
+                        "This license was signed with key {s}, but this build expects {s}.",
+                        .{ file_fp, expected_fp },
+                    ) catch "This license signature does not match this build.";
+                }
+            }
+            if (shortFingerprint(&status.expected_key_fingerprint)) |expected_fp| {
+                break :blk std.fmt.bufPrintZ(
+                    &license_message_buf,
+                    "This build expects licenses signed with key {s}.",
+                    .{expected_fp},
+                ) catch "This license signature does not match this build.";
+            }
+            break :blk "This license signature does not match this build.";
+        },
         6 => "This license file is for a different RTMify product.",
         8 => "The installed license file has expired.",
         else => "Import a signed RTMify Trace license file to unlock the app.",
     };
+    return @ptrCast(message.ptr);
 }
 
 // ---------------------------------------------------------------------------

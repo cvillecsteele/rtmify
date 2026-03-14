@@ -32,6 +32,16 @@ Or build entirely from the command line:
 make build   # runs make lib then xcodebuild Release
 ```
 
+For release packaging, prefer:
+
+```sh
+cd /Users/colinsteele/Projects/rtmify/sys
+./release.sh
+```
+
+That script resolves the signing key once and smoke-verifies generated
+licenses against the built Trace and Live binaries before packaging artifacts.
+
 ---
 
 ## Make Targets
@@ -44,6 +54,12 @@ make build   # runs make lib then xcodebuild Release
 | `make clean` | Removes `lib/` and `.build/` |
 
 `lib/librtmify.a` is not committed — always build it from source first.
+
+Signing key resolution order for release builds:
+
+1. `LICENSE_HMAC_KEY_FILE=/path/to/key.txt`
+2. `RTMIFY_LICENSE_HMAC_KEY_FILE`
+3. `~/.rtmify/secrets/license-hmac-key.txt`
 
 ---
 

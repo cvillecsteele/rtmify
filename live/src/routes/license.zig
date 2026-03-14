@@ -25,6 +25,14 @@ pub fn handleLicenseInfo(service: *license.Service, alloc: Allocator) !shared.Js
     const writer = buf.writer(alloc);
     try writer.writeAll("{\"license_path\":");
     try license.license_file.writeJsonString(writer, info.license_path);
+    try writer.writeAll(",\"expected_key_fingerprint\":");
+    try license.license_file.writeJsonString(writer, info.expected_key_fingerprint);
+    try writer.writeAll(",\"license_signing_key_fingerprint\":");
+    if (info.license_signing_key_fingerprint) |value| {
+        try license.license_file.writeJsonString(writer, value);
+    } else {
+        try writer.writeAll("null");
+    }
     try writer.writeAll(",\"payload\":");
     try license.license_file.writePayloadJson(writer, info.payload);
     try writer.writeByte('}');

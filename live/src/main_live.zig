@@ -146,11 +146,27 @@ pub fn main() !void {
     if (show_license_status_json) {
         var status = try license_service.getStatus(gpa);
         defer status.deinit(gpa);
-        try stdout.print("{{\"state\":\"{s}\",\"permits_use\":{s},\"detail_code\":\"{s}\"}}\n", .{
-            @tagName(status.state),
-            if (status.permits_use) "true" else "false",
-            @tagName(status.detail_code),
-        });
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(gpa);
+        const writer = buf.writer(gpa);
+        try writer.writeAll("{\"state\":");
+        try license.license_file.writeJsonString(writer, @tagName(status.state));
+        try writer.writeAll(",\"permits_use\":");
+        try writer.writeAll(if (status.permits_use) "true" else "false");
+        try writer.writeAll(",\"detail_code\":");
+        try license.license_file.writeJsonString(writer, @tagName(status.detail_code));
+        try writer.writeAll(",\"license_path\":");
+        try license.license_file.writeJsonString(writer, status.license_path);
+        try writer.writeAll(",\"expected_key_fingerprint\":");
+        try license.license_file.writeJsonString(writer, status.expected_key_fingerprint);
+        try writer.writeAll(",\"license_signing_key_fingerprint\":");
+        if (status.license_signing_key_fingerprint) |value| {
+            try license.license_file.writeJsonString(writer, value);
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeAll("}\n");
+        try stdout.writeAll(buf.items);
         return;
     }
 
@@ -168,6 +184,14 @@ pub fn main() !void {
                     const writer = buf.writer(gpa);
                     try writer.writeAll("{\"license_path\":");
                     try license.license_file.writeJsonString(writer, info.license_path);
+                    try writer.writeAll(",\"expected_key_fingerprint\":");
+                    try license.license_file.writeJsonString(writer, info.expected_key_fingerprint);
+                    try writer.writeAll(",\"license_signing_key_fingerprint\":");
+                    if (info.license_signing_key_fingerprint) |value| {
+                        try license.license_file.writeJsonString(writer, value);
+                    } else {
+                        try writer.writeAll("null");
+                    }
                     try writer.writeAll(",\"payload\":");
                     try license.license_file.writePayloadJson(writer, info.payload);
                     try writer.writeAll("}\n");
@@ -184,6 +208,10 @@ pub fn main() !void {
                         try stdout.print("Expires At: {d}\n", .{expires_at});
                     } else {
                         try stdout.writeAll("Expires At: perpetual\n");
+                    }
+                    try stdout.print("Expected Key: {s}\n", .{license.displayFingerprint(info.expected_key_fingerprint)});
+                    if (info.license_signing_key_fingerprint) |value| {
+                        try stdout.print("File Key: {s}\n", .{license.displayFingerprint(value)});
                     }
                     try stdout.print("Path: {s}\n", .{info.license_path});
                 }

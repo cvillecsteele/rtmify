@@ -16,6 +16,7 @@ pub fn parseEnvelope(alloc: Allocator, json_bytes: []const u8) !types.LicenseEnv
     const ParsedEnvelope = struct {
         payload: ParsedPayload,
         sig: []const u8,
+        signing_key_fingerprint: ?[]const u8 = null,
     };
 
     var parsed = try std.json.parseFromSlice(ParsedEnvelope, alloc, json_bytes, .{
@@ -35,6 +36,7 @@ pub fn parseEnvelope(alloc: Allocator, json_bytes: []const u8) !types.LicenseEnv
             .org = if (parsed.value.payload.org) |org| try alloc.dupe(u8, org) else null,
         },
         .sig = try alloc.dupe(u8, parsed.value.sig),
+        .signing_key_fingerprint = if (parsed.value.signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
     };
 }
 
@@ -98,6 +100,10 @@ pub fn envelopeJsonAlloc(alloc: Allocator, envelope: types.LicenseEnvelope) ![]u
     try writePayloadJson(writer, envelope.payload);
     try writer.writeAll(",\"sig\":");
     try writeJsonString(writer, envelope.sig);
+    if (envelope.signing_key_fingerprint) |value| {
+        try writer.writeAll(",\"signing_key_fingerprint\":");
+        try writeJsonString(writer, value);
+    }
     try writer.writeAll("}");
     return buf.toOwnedSlice(alloc);
 }

@@ -37,6 +37,17 @@ zig build live -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
 zig build check-live-windows
 ```
 
+For operator/release builds, use:
+
+```sh
+cd /Users/colinsteele/Projects/rtmify/sys
+./release.sh
+```
+
+That script resolves the signing key once, builds the native binaries and apps,
+generates smoke licenses, and verifies those licenses against the binaries from
+that same run before packaging artifacts.
+
 On a native Windows host, also run:
 
 ```powershell

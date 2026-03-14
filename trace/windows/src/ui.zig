@@ -566,7 +566,7 @@ fn paintLicenseGate(hdc: HDC, client: *const RECT) void {
     _ = DrawTextW(hdc, &free_run, @intCast(free_run.len - 1), &free_run_rect, DT_CENTER | DT_WORDBREAK);
 
     // "Need a license?" link text (bottom)
-    const link = comptime makeW("Need a license? Visit store.rtmify.io");
+    const link = comptime makeW("Need a license? Visit rtmify.io/pricing");
     var link_rect = RECT{
         .left = 0,
         .top = client.bottom - 60,

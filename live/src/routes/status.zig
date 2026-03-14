@@ -104,6 +104,8 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     defer alloc.free(endpoint);
     const license_path = try license.resolveLicensePath(alloc, license_service.deps.license_path_override);
     defer alloc.free(license_path);
+    const license_key_fingerprint = try license.defaultKeyFingerprintHex(alloc);
+    defer alloc.free(license_key_fingerprint);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -125,6 +127,8 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     try shared.appendJsonStr(&buf, "bearer_token", alloc);
     try buf.appendSlice(alloc, ",\"license_path\":");
     try shared.appendJsonStr(&buf, license_path, alloc);
+    try buf.appendSlice(alloc, ",\"license_key_fingerprint\":");
+    try shared.appendJsonStr(&buf, license_key_fingerprint, alloc);
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
 }
@@ -147,6 +151,10 @@ pub fn appendLicenseStatusJson(buf: *std.ArrayList(u8), status: license.LicenseS
     try buf.appendSlice(alloc, if (status.using_free_run) "true" else "false");
     try buf.appendSlice(alloc, ",\"license_path\":");
     try shared.appendJsonStr(buf, status.license_path, alloc);
+    try buf.appendSlice(alloc, ",\"expected_key_fingerprint\":");
+    try shared.appendJsonStr(buf, status.expected_key_fingerprint, alloc);
+    try buf.appendSlice(alloc, ",\"license_signing_key_fingerprint\":");
+    try shared.appendJsonStrOpt(buf, status.license_signing_key_fingerprint, alloc);
     try buf.appendSlice(alloc, ",\"issued_to\":");
     try shared.appendJsonStrOpt(buf, status.issued_to, alloc);
     try buf.appendSlice(alloc, ",\"org\":");

@@ -56,6 +56,8 @@ pub const RtmifyLicenseStatus = extern struct {
     expires_at: i64,
     issued_at: i64,
     detail_code: c_int,
+    expected_key_fingerprint: [65]u8,
+    license_signing_key_fingerprint: [65]u8,
 };
 
 // ---------------------------------------------------------------------------
@@ -287,6 +289,14 @@ fn mapLicenseDetail(code: license.LicenseDetailCode) RtmifyLicenseDetailCode {
     };
 }
 
+fn writeCString(dest: *[65]u8, src: ?[]const u8) void {
+    @memset(dest, 0);
+    if (src) |value| {
+        const len = @min(value.len, dest.len - 1);
+        @memcpy(dest[0..len], value[0..len]);
+    }
+}
+
 fn fillLicenseStatus(out_status: *RtmifyLicenseStatus, status: license.LicenseStatus) void {
     out_status.* = .{
         .state = @intFromEnum(mapLicenseState(status.state)),
@@ -295,7 +305,11 @@ fn fillLicenseStatus(out_status: *RtmifyLicenseStatus, status: license.LicenseSt
         .expires_at = nullableTime(status.expires_at),
         .issued_at = nullableTime(status.issued_at),
         .detail_code = @intFromEnum(mapLicenseDetail(status.detail_code)),
+        .expected_key_fingerprint = undefined,
+        .license_signing_key_fingerprint = undefined,
     };
+    writeCString(&out_status.expected_key_fingerprint, status.expected_key_fingerprint);
+    writeCString(&out_status.license_signing_key_fingerprint, status.license_signing_key_fingerprint);
 }
 
 fn withLicenseService(comptime product: license.LicenseProduct, comptime trial_policy: license.TrialPolicy, func: anytype) RtmifyStatus {
@@ -411,6 +425,29 @@ fn infoJsonForProduct(product: license.LicenseProduct, trial_policy: license.Tri
         setError("license info serialization failed", .{});
         return 1;
     };
+    w.writeAll(",\"expected_key_fingerprint\":") catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    license.license_file.writeJsonString(w, info.expected_key_fingerprint) catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    w.writeAll(",\"license_signing_key_fingerprint\":") catch {
+        setError("license info serialization failed", .{});
+        return 1;
+    };
+    if (info.license_signing_key_fingerprint) |value| {
+        license.license_file.writeJsonString(w, value) catch {
+            setError("license info serialization failed", .{});
+            return 1;
+        };
+    } else {
+        w.writeAll("null") catch {
+            setError("license info serialization failed", .{});
+            return 1;
+        };
+    }
     w.writeAll(",\"payload\":") catch {
         setError("license info serialization failed", .{});
         return 1;

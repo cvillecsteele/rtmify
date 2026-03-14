@@ -43,14 +43,20 @@ struct StatusPayload {
 
 struct LicenseStatusPayload: Equatable {
     let permitsUse: Bool
+    let expectedKeyFingerprint: String?
+    let licenseSigningKeyFingerprint: String?
 
     static func from(data: Data) -> LicenseStatusPayload? {
         guard
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let permitsUse = json["permits_use"] as? Bool
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return nil
         }
-        return LicenseStatusPayload(permitsUse: permitsUse)
+        guard let permitsUse = json["permits_use"] as? Bool else { return nil }
+        return LicenseStatusPayload(
+            permitsUse: permitsUse,
+            expectedKeyFingerprint: json["expected_key_fingerprint"] as? String,
+            licenseSigningKeyFingerprint: json["license_signing_key_fingerprint"] as? String
+        )
     }
 }

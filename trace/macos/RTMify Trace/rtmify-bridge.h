@@ -10,6 +10,8 @@ typedef struct RtmifyLicenseStatus {
     int64_t expires_at;
     int64_t issued_at;
     int32_t detail_code;
+    char expected_key_fingerprint[65];
+    char license_signing_key_fingerprint[65];
 } RtmifyLicenseStatus;
 
 #define RTMIFY_OK                  0

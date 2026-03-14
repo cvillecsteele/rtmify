@@ -27,6 +27,7 @@ final class ViewModel: ObservableObject {
     @Published var activationError: String? = nil
     @Published var isActivating: Bool = false
     @Published var launchAtLogin: Bool = false
+    @Published var expectedKeyFingerprint: String? = nil
 
     private var serverProcess: Process? = nil
     private var statusTimer: Timer? = nil
@@ -47,20 +48,21 @@ final class ViewModel: ObservableObject {
 
     func checkLicense() {
         Task {
-            let ok = await runLicenseCheck()
-            state = ok ? .stopped : .licenseGate
+            let payload = await fetchLicenseStatus()
+            expectedKeyFingerprint = payload?.expectedKeyFingerprint
+            state = (payload?.permitsUse ?? false) ? .stopped : .licenseGate
         }
     }
 
-    private func runLicenseCheck() async -> Bool {
-        guard let binary = binaryPath() else { return false }
+    private func fetchLicenseStatus() async -> LicenseStatusPayload? {
+        guard let binary = binaryPath() else { return nil }
         let result = await runCommand(binary, args: ["--license-status-json"])
-        guard result.exitCode == 0 else { return false }
+        guard result.exitCode == 0 else { return nil }
         guard let data = result.stdout.data(using: .utf8),
               let payload = LicenseStatusPayload.from(data: data) else {
-            return false
+            return nil
         }
-        return payload.permitsUse
+        return payload
     }
 
     func importLicense() {
@@ -83,9 +85,11 @@ final class ViewModel: ObservableObject {
             let result = await runCommand(binary, args: ["license", "install", url.path])
             isActivating = false
             if result.exitCode == 0 {
+                let payload = await fetchLicenseStatus()
+                expectedKeyFingerprint = payload?.expectedKeyFingerprint
                 state = .stopped
             } else {
-                activationError = result.stderr.isEmpty ? "License import failed." : result.stderr
+                activationError = friendlyLicenseImportError(result.stderr)
             }
         }
     }
@@ -97,6 +101,12 @@ final class ViewModel: ObservableObject {
             stop()
             state = .licenseGate
         }
+    }
+
+    private func friendlyLicenseImportError(_ stderr: String) -> String {
+        let trimmed = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "License import failed." }
+        return trimmed
     }
 
     // MARK: - Server control

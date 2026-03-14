@@ -12,6 +12,8 @@ struct LicenseStatus {
     let permitsUse: Bool
     let usingFreeRun: Bool
     let detailCode: Int32
+    let expectedKeyFingerprint: String? = nil
+    let licenseSigningKeyFingerprint: String? = nil
 }
 
 func rtmifyLoad(path: String) async throws -> OpaquePointer { throw BridgeError(message: "not available in tests") }
@@ -57,6 +59,7 @@ final class ViewModel: ObservableObject {
     @Published var licenseError: String? = nil
     @Published var licenseStatusMessage: String? = nil
     @Published var isInstallingLicense: Bool = false
+    @Published var expectedKeyFingerprint: String? = nil
 
     private var graph: OpaquePointer? = nil
     private var loadedPath: String? = nil
@@ -82,9 +85,11 @@ final class ViewModel: ObservableObject {
     func checkLicense() {
         do {
             let status = try fetchLicenseStatus()
+            expectedKeyFingerprint = status.expectedKeyFingerprint
             licenseStatusMessage = message(for: status)
             state = status.permitsUse ? .dropZone : .licenseGate
         } catch {
+            expectedKeyFingerprint = nil
             licenseStatusMessage = "Install a signed RTMify Trace license file to unlock future runs."
             state = .licenseGate
         }
@@ -109,6 +114,7 @@ final class ViewModel: ObservableObject {
             do {
                 let status = try await installLicenseAtPath(path)
                 isInstallingLicense = false
+                expectedKeyFingerprint = status.expectedKeyFingerprint
                 licenseStatusMessage = message(for: status)
                 state = status.permitsUse ? .dropZone : .licenseGate
             } catch let e as BridgeError {
@@ -125,6 +131,7 @@ final class ViewModel: ObservableObject {
         Task {
             do {
                 let status = try await clearInstalledLicense()
+                expectedKeyFingerprint = status.expectedKeyFingerprint
                 licenseStatusMessage = message(for: status)
                 freeGraph()
                 state = status.permitsUse ? .dropZone : .licenseGate
@@ -244,7 +251,14 @@ final class ViewModel: ObservableObject {
         case 8:
             return "The installed license file has expired."
         case 5:
-            return "The license file signature is invalid or the file was modified."
+            if let file = status.licenseSigningKeyFingerprint,
+               let expected = status.expectedKeyFingerprint {
+                return "This license was signed with key \(shortFingerprint(file)), but this build expects \(shortFingerprint(expected))."
+            }
+            if let expected = status.expectedKeyFingerprint {
+                return "This build expects licenses signed with key \(shortFingerprint(expected))."
+            }
+            return "The license file signature does not match this build."
         case 6:
             return "This license file is for a different RTMify product."
         case 4, 7:
@@ -258,5 +272,9 @@ final class ViewModel: ObservableObject {
             }
             return "Install a signed RTMify Trace license file to continue."
         }
+    }
+
+    private func shortFingerprint(_ fingerprint: String) -> String {
+        String(fingerprint.prefix(12))
     }
 }

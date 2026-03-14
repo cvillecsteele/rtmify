@@ -52,7 +52,14 @@ final class PortSelectionTests: XCTestCase {
 
     func testLicenseStatusPayloadParsesPermitsUseTrue() {
         let json = Data(#"{"permits_use":true}"#.utf8)
-        XCTAssertEqual(LicenseStatusPayload.from(data: json), LicenseStatusPayload(permitsUse: true))
+        XCTAssertEqual(
+            LicenseStatusPayload.from(data: json),
+            LicenseStatusPayload(
+                permitsUse: true,
+                expectedKeyFingerprint: nil,
+                licenseSigningKeyFingerprint: nil
+            )
+        )
     }
 
     func testLicenseStatusPayloadRejectsInvalidJson() {

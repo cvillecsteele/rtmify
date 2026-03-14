@@ -13,6 +13,17 @@ struct LicenseStatus {
     let permitsUse: Bool
     let usingFreeRun: Bool
     let detailCode: Int32
+    let expectedKeyFingerprint: String?
+    let licenseSigningKeyFingerprint: String?
+}
+
+private func stringFromTupleCString<T>(_ value: inout T) -> String? {
+    withUnsafePointer(to: &value) { ptr in
+        ptr.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) { cString in
+            guard cString[0] != 0 else { return nil }
+            return String(cString: cString)
+        }
+    }
 }
 
 func rtmifyLoad(path: String) async throws -> OpaquePointer {
@@ -59,7 +70,9 @@ func rtmifyLicenseStatus() throws -> LicenseStatus {
             state: status.state,
             permitsUse: status.permits_use != 0,
             usingFreeRun: status.using_free_run != 0,
-            detailCode: status.detail_code
+            detailCode: status.detail_code,
+            expectedKeyFingerprint: stringFromTupleCString(&status.expected_key_fingerprint),
+            licenseSigningKeyFingerprint: stringFromTupleCString(&status.license_signing_key_fingerprint)
         )
     }
     throw BridgeError(message: lastError())
@@ -75,7 +88,9 @@ func rtmifyInstallLicense(path: String) async throws -> LicenseStatus {
                     state: status.state,
                     permitsUse: status.permits_use != 0,
                     usingFreeRun: status.using_free_run != 0,
-                    detailCode: status.detail_code
+                    detailCode: status.detail_code,
+                    expectedKeyFingerprint: stringFromTupleCString(&status.expected_key_fingerprint),
+                    licenseSigningKeyFingerprint: stringFromTupleCString(&status.license_signing_key_fingerprint)
                 ))
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))
@@ -94,7 +109,9 @@ func rtmifyClearLicense() async throws -> LicenseStatus {
                     state: status.state,
                     permitsUse: status.permits_use != 0,
                     usingFreeRun: status.using_free_run != 0,
-                    detailCode: status.detail_code
+                    detailCode: status.detail_code,
+                    expectedKeyFingerprint: stringFromTupleCString(&status.expected_key_fingerprint),
+                    licenseSigningKeyFingerprint: stringFromTupleCString(&status.license_signing_key_fingerprint)
                 ))
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))

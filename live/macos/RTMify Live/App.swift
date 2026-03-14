@@ -30,7 +30,7 @@ struct RTMifyLiveApp: App {
         Window("License", id: "license") {
             LicenseGateView()
                 .environmentObject(vm)
-                .frame(width: 400, height: 320)
+                .frame(width: 460, height: 420)
         }
         .windowResizability(.contentSize)
     }

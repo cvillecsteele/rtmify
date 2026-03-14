@@ -53,10 +53,12 @@ pub const LicensePayload = struct {
 pub const LicenseEnvelope = struct {
     payload: LicensePayload,
     sig: []const u8,
+    signing_key_fingerprint: ?[]const u8 = null,
 
     pub fn deinit(self: *LicenseEnvelope, alloc: Allocator) void {
         self.payload.deinit(alloc);
         alloc.free(self.sig);
+        if (self.signing_key_fingerprint) |value| alloc.free(value);
         self.* = undefined;
     }
 
@@ -64,6 +66,7 @@ pub const LicenseEnvelope = struct {
         return .{
             .payload = try self.payload.clone(alloc),
             .sig = try alloc.dupe(u8, self.sig),
+            .signing_key_fingerprint = if (self.signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
         };
     }
 };
@@ -96,6 +99,8 @@ pub const LicenseStatus = struct {
     detail_code: LicenseDetailCode,
     message: ?[]const u8,
     license_path: []const u8,
+    expected_key_fingerprint: []const u8,
+    license_signing_key_fingerprint: ?[]const u8,
     issued_to: ?[]const u8,
     org: ?[]const u8,
     license_id: ?[]const u8,
@@ -107,7 +112,9 @@ pub const LicenseStatus = struct {
 
     pub fn deinit(self: *LicenseStatus, alloc: Allocator) void {
         alloc.free(self.license_path);
+        alloc.free(self.expected_key_fingerprint);
         if (self.message) |message| alloc.free(message);
+        if (self.license_signing_key_fingerprint) |value| alloc.free(value);
         if (self.issued_to) |issued_to| alloc.free(issued_to);
         if (self.org) |org| alloc.free(org);
         if (self.license_id) |license_id| alloc.free(license_id);
@@ -121,6 +128,8 @@ pub const LicenseStatus = struct {
             .detail_code = self.detail_code,
             .message = if (self.message) |message| try alloc.dupe(u8, message) else null,
             .license_path = try alloc.dupe(u8, self.license_path),
+            .expected_key_fingerprint = try alloc.dupe(u8, self.expected_key_fingerprint),
+            .license_signing_key_fingerprint = if (self.license_signing_key_fingerprint) |value| try alloc.dupe(u8, value) else null,
             .issued_to = if (self.issued_to) |issued_to| try alloc.dupe(u8, issued_to) else null,
             .org = if (self.org) |org| try alloc.dupe(u8, org) else null,
             .license_id = if (self.license_id) |license_id| try alloc.dupe(u8, license_id) else null,
@@ -136,10 +145,14 @@ pub const LicenseStatus = struct {
 pub const LicenseInfo = struct {
     payload: LicensePayload,
     license_path: []const u8,
+    expected_key_fingerprint: []const u8,
+    license_signing_key_fingerprint: ?[]const u8,
 
     pub fn deinit(self: *LicenseInfo, alloc: Allocator) void {
         self.payload.deinit(alloc);
         alloc.free(self.license_path);
+        alloc.free(self.expected_key_fingerprint);
+        if (self.license_signing_key_fingerprint) |value| alloc.free(value);
         self.* = undefined;
     }
 };

@@ -342,6 +342,9 @@ pub export fn wWinMain(
     g_hwnd = hwnd;
 
     trayIcon(hwnd, NIM_ADD);
+    if (g_srv_state == .license_gate) {
+        license_mod.showLicenseDialog(g_hinstance, hwnd, g_port);
+    }
 
     var msg_struct: MSG = undefined;
     while (GetMessageW(&msg_struct, null, 0, 0) > 0) {

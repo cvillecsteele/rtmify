@@ -940,6 +940,11 @@
     }
   }
 
+  function shortFingerprint(value) {
+    if (!value) return '—';
+    return String(value).slice(0, 12);
+  }
+
   function syncLicenseInfo(status) {
     const stateEl = document.getElementById('info-license-state');
     const idEl = document.getElementById('info-license-id');
@@ -948,8 +953,13 @@
     const tierEl = document.getElementById('info-license-tier');
     const expiresEl = document.getElementById('info-license-expires');
     const pathEl = document.getElementById('info-license-path');
+    const buildFpEl = document.getElementById('info-license-key-fingerprint');
+    const fileFpEl = document.getElementById('info-license-file-fingerprint');
     const clearBtn = document.getElementById('info-license-clear');
     const gateClearBtn = document.getElementById('license-clear-btn');
+    const gateFpEl = document.getElementById('license-gate-fingerprint');
+    const gateFileFpEl = document.getElementById('license-gate-file-fingerprint');
+    const gateFileFpRowEl = document.getElementById('license-gate-file-fingerprint-row');
     if (stateEl) stateEl.textContent = status?.state || 'unknown';
     if (idEl) idEl.textContent = status?.license_id || '—';
     if (issuedToEl) issuedToEl.textContent = status?.issued_to || '—';
@@ -957,6 +967,11 @@
     if (tierEl) tierEl.textContent = status?.tier || '—';
     if (expiresEl) expiresEl.textContent = status?.expires_at == null ? 'perpetual' : String(status.expires_at);
     if (pathEl) pathEl.textContent = status?.license_path || '—';
+    if (buildFpEl) buildFpEl.textContent = shortFingerprint(status?.expected_key_fingerprint);
+    if (fileFpEl) fileFpEl.textContent = shortFingerprint(status?.license_signing_key_fingerprint);
+    if (gateFpEl) gateFpEl.textContent = shortFingerprint(status?.expected_key_fingerprint);
+    if (gateFileFpEl) gateFileFpEl.textContent = shortFingerprint(status?.license_signing_key_fingerprint);
+    if (gateFileFpRowEl) gateFileFpRowEl.style.display = status?.license_signing_key_fingerprint ? 'inline' : 'none';
     if (clearBtn) clearBtn.style.display = status?.license_id ? 'inline-block' : 'none';
     if (gateClearBtn) gateClearBtn.style.display = status?.license_id ? 'inline-block' : 'none';
   }

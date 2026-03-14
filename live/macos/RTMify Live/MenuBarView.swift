@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MenuBarView: View {
     @EnvironmentObject var vm: ViewModel
@@ -12,6 +13,27 @@ struct MenuBarView: View {
             Divider()
             settingsActions
         }
+        .task {
+            presentLicenseGateIfNeeded(vm.state)
+        }
+        .onChange(of: vmIsLicenseGate) { isLicenseGate in
+            if isLicenseGate {
+                presentLicenseGateIfNeeded(vm.state)
+            }
+        }
+    }
+
+    private var vmIsLicenseGate: Bool {
+        if case .licenseGate = vm.state {
+            return true
+        }
+        return false
+    }
+
+    private func presentLicenseGateIfNeeded(_ state: AppState) {
+        guard case .licenseGate = state else { return }
+        openWindow(id: "license")
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @ViewBuilder

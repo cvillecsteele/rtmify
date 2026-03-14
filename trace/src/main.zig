@@ -425,9 +425,16 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
                     var buf: std.ArrayList(u8) = .empty;
                     defer buf.deinit(gpa);
                     const w = buf.writer(gpa);
-                    try w.writeAll("{\"license_path\":\"");
+                    try w.writeAll("{\"license_path\":");
                     try license.license_file.writeJsonString(w, info.license_path);
-                    try w.writeByte('"');
+                    try w.writeAll(",\"expected_key_fingerprint\":");
+                    try license.license_file.writeJsonString(w, info.expected_key_fingerprint);
+                    try w.writeAll(",\"license_signing_key_fingerprint\":");
+                    if (info.license_signing_key_fingerprint) |value| {
+                        try license.license_file.writeJsonString(w, value);
+                    } else {
+                        try w.writeAll("null");
+                    }
                     try w.writeAll(",\"payload\":");
                     try license.license_file.writePayloadJson(w, info.payload);
                     try w.writeAll("}\n");
@@ -444,6 +451,10 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
                         try stdout.print("Expires At: {d}\n", .{expires_at});
                     } else {
                         try stdout.writeAll("Expires At: perpetual\n");
+                    }
+                    try stdout.print("Expected Key: {s}\n", .{license.displayFingerprint(info.expected_key_fingerprint)});
+                    if (info.license_signing_key_fingerprint) |value| {
+                        try stdout.print("File Key: {s}\n", .{license.displayFingerprint(value)});
                     }
                     try stdout.print("Path: {s}\n", .{info.license_path});
                 }

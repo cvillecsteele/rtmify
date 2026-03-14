@@ -32,14 +32,36 @@ cd sys
 zig build win-gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
 ```
 
+For operator/release packaging, use:
+
+```sh
+cd /Users/colinsteele/Projects/rtmify/sys
+./release.sh
+```
+
 ## Development Licensing
 
-Debug builds use the deterministic development HMAC key baked in by `sys/build.zig`. Generate a signed dev license with:
+Release and operator flows resolve the signing key in this order:
+
+1. `--key-file /path/to/key.txt`
+2. `RTMIFY_LICENSE_HMAC_KEY_FILE`
+3. `~/.rtmify/secrets/license-hmac-key.txt`
+
+Debug builds can still use the deterministic development HMAC key, but
+`rtmify-license-gen` now requires an explicit key path unless `--allow-dev-key`
+is passed. For local debug-only work:
 
 ```sh
 cd sys
 zig build license-gen
-./zig-out/bin/rtmify-license-gen --product trace --tier individual --to dev@example.com --org "Local Dev" --perpetual --out /tmp/trace-license.json
+./zig-out/bin/rtmify-license-gen \
+  --allow-dev-key \
+  --product trace \
+  --tier individual \
+  --to dev@example.com \
+  --org "Local Dev" \
+  --perpetual \
+  --out /tmp/trace-license.json
 ```
 
 Then either:
