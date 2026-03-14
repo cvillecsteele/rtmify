@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 pub const graph = @import("graph.zig");
 pub const xlsx = @import("xlsx.zig");
 pub const schema = @import("schema.zig");
+pub const id = @import("id.zig");
 pub const render_md = @import("render_md.zig");
 pub const render_docx = @import("render_docx.zig");
 pub const license = @import("license.zig");

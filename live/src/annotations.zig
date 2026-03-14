@@ -7,6 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const GraphDb = @import("graph_live.zig").GraphDb;
+const structured_id = @import("rtmify").id;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -253,23 +254,19 @@ fn containsId(known_req_ids: []const []const u8, candidate: []const u8) bool {
 }
 
 fn looksLikeKnownIdPattern(candidate: []const u8, known_req_ids: []const []const u8) bool {
-    const dash_idx = std.mem.indexOfScalar(u8, candidate, '-') orelse return false;
-    if (dash_idx == 0 or dash_idx + 1 >= candidate.len) return false;
-
-    const prefix = candidate[0..dash_idx];
-    const suffix = candidate[dash_idx + 1 ..];
-    var suffix_has_alnum = false;
-    for (suffix) |c| {
-        if (!isIdChar(c)) return false;
-        if (std.ascii.isAlphanumeric(c)) suffix_has_alnum = true;
-    }
-    if (!suffix_has_alnum) return false;
+    if (!structured_id.isStructuredId(candidate)) return false;
+    const prefix = firstSegment(candidate);
 
     for (known_req_ids) |known| {
-        const known_dash_idx = std.mem.indexOfScalar(u8, known, '-') orelse continue;
-        if (std.mem.eql(u8, known[0..known_dash_idx], prefix)) return true;
+        if (!structured_id.isStructuredId(known)) continue;
+        if (std.mem.eql(u8, firstSegment(known), prefix)) return true;
     }
     return false;
+}
+
+fn firstSegment(value: []const u8) []const u8 {
+    const dash_idx = std.mem.indexOfScalar(u8, value, '-') orelse return value;
+    return value[0..dash_idx];
 }
 
 // ---------------------------------------------------------------------------
@@ -438,4 +435,72 @@ test "scanFileDetailed reports unknown requirement references in comments" {
     try testing.expectEqual(@as(usize, 1), scan.unknown_refs.len);
     try testing.expectEqualStrings("REQ-999", scan.unknown_refs[0].ref_id);
     try testing.expectEqual(@as(u32, 2), scan.unknown_refs[0].line_number);
+}
+
+test "scanFile matches exact complex known ID in comments" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const f = try tmp_dir.dir.createFile("complex.c", .{});
+        defer f.close();
+        try f.writeAll("// Foo-1AF5-Bar-Q5 implemented here\n");
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("complex.c", &path_buf);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const ids = &[_][]const u8{"Foo-1AF5-Bar-Q5"};
+    const annotations = try scanFile(tmp, ids, alloc);
+    try testing.expectEqual(@as(usize, 1), annotations.len);
+    try testing.expectEqualStrings("Foo-1AF5-Bar-Q5", annotations[0].req_id);
+}
+
+test "scanFile matches underscore-bearing known ID in comments" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const f = try tmp_dir.dir.createFile("underscore.c", .{});
+        defer f.close();
+        try f.writeAll("// ABC_DEF-01_A verified here\n");
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("underscore.c", &path_buf);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const ids = &[_][]const u8{"ABC_DEF-01_A"};
+    const annotations = try scanFile(tmp, ids, alloc);
+    try testing.expectEqual(@as(usize, 1), annotations.len);
+    try testing.expectEqualStrings("ABC_DEF-01_A", annotations[0].req_id);
+}
+
+test "scanFileDetailed reports related unknown complex structured IDs" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const f = try tmp_dir.dir.createFile("unknown-complex.c", .{});
+        defer f.close();
+        try f.writeAll(
+            \\// Foo-1AF5-Bar-Q5 implemented here
+            \\// Foo-1AF5-Bar-Q9 is stale
+            \\// ordinary prose should not trigger
+        );
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("unknown-complex.c", &path_buf);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const ids = &[_][]const u8{"Foo-1AF5-Bar-Q5"};
+    const scan = try scanFileDetailed(tmp, ids, alloc);
+    try testing.expectEqual(@as(usize, 1), scan.annotations.len);
+    try testing.expectEqual(@as(usize, 1), scan.unknown_refs.len);
+    try testing.expectEqualStrings("Foo-1AF5-Bar-Q9", scan.unknown_refs[0].ref_id);
 }

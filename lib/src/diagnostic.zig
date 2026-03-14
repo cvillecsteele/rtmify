@@ -250,7 +250,7 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 606, .title = "Text severity/likelihood value mapped to number", .category = .row_parsing },
     .{ .code = 607, .title = "Fractional severity/likelihood value — ignored", .category = .row_parsing },
     .{ .code = 608, .title = "Unrecognized severity/likelihood value — ignored", .category = .row_parsing },
-    .{ .code = 609, .title = "ID does not match expected RTM pattern — skipped", .category = .row_parsing },
+    .{ .code = 609, .title = "ID is not a valid structured ID — skipped", .category = .row_parsing },
     .{ .code = 701, .title = "Requirement has no statement text", .category = .semantic_validation },
     .{ .code = 702, .title = "Requirement statement is very short (< 10 characters)", .category = .semantic_validation },
     .{ .code = 703, .title = "Requirement has no 'shall'", .category = .semantic_validation },

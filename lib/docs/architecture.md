@@ -172,13 +172,15 @@ Each expected column is matched against the header row using the same tiered
 approach with full synonym lists per field (e.g. "Req ID", "Requirement Number",
 "Item ID" all map to the ID column). Two headers matching the same field →
 leftmost wins + WARN. If no ID column is found by header, a heuristic scans
-all columns for one where the majority of data cells match `/^[A-Z]+-[0-9]+$/`
+all columns for one where the majority of data cells look like structured IDs
+using the shared identifier validator:
+`[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+`
 — used + WARN. Heuristic also fails → `IDColumnNotFound` hard error.
 
 **Layer 5 — row normalization:**
 
-- `normalizeId`: calls `normalizeCell`, then strips parenthetical suffixes
-  (`"REQ-001 (old)"` → `"REQ-001"`) and leading/trailing hyphens, uppercases
+- `normalizeId`: calls `normalizeCell`, trims surrounding whitespace, and
+  preserves the authored identifier spelling exactly
 - `isSectionDivider`: silent skip for decorative rows (empty ID, short or
   all-caps content, `---`/`===` separators)
 - `parseNumericField`: maps textual severity/likelihood values (`"High"` → `"4"`,

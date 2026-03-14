@@ -6,6 +6,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const graph = @import("graph.zig");
+const structured_id = @import("id.zig");
 const xlsx = @import("xlsx.zig");
 const diagnostic = @import("diagnostic.zig");
 const Diagnostics = diagnostic.Diagnostics;
@@ -379,7 +380,7 @@ fn resolveCol(
         return found;
     }
 
-    // Tier 3 (ID columns only): pattern heuristic — column where >50% of cells look like IDs
+    // Tier 3 (ID columns only): pattern heuristic — column where >50% of cells look like structured IDs
     if (is_id_col and data_rows.len > 0) {
         const col_count = headers.len;
         var best_col: ?usize = null;
@@ -387,7 +388,7 @@ fn resolveCol(
         for (0..col_count) |ci| {
             var matches: usize = 0;
             for (data_rows) |row| {
-                if (ci < row.len and looksLikeId(row[ci])) matches += 1;
+                if (ci < row.len and structured_id.looksLikeStructuredIdForInference(row[ci])) matches += 1;
             }
             if (matches > data_rows.len / 2 and matches > best_score) {
                 best_score = matches;
@@ -404,20 +405,6 @@ fn resolveCol(
     }
 
     return null;
-}
-
-/// Return true if a cell value looks like a typed ID: 1–6 uppercase letters, dash, 1–6 digits.
-fn looksLikeId(s: []const u8) bool {
-    if (s.len < 3 or s.len > 20) return false;
-    var i: usize = 0;
-    var lc: usize = 0;
-    while (i < s.len and s[i] >= 'A' and s[i] <= 'Z') : (i += 1) lc += 1;
-    if (lc == 0 or lc > 6) return false;
-    if (i >= s.len or s[i] != '-') return false;
-    i += 1;
-    var dc: usize = 0;
-    while (i < s.len and s[i] >= '0' and s[i] <= '9') : (i += 1) dc += 1;
-    return dc > 0 and i == s.len;
 }
 
 // ---------------------------------------------------------------------------
@@ -469,40 +456,17 @@ fn isSectionDivider(row: Row, id_col: ?usize) bool {
     return all_caps;
 }
 
-/// Normalize an ID cell: BOM/whitespace via normalizeCell, strip parenthetical
-/// suffix, strip leading/trailing hyphens, uppercase. Warns on non-trivial changes.
+/// Normalize an ID cell: remove BOM and trim surrounding whitespace only.
+/// IDs are otherwise preserved exactly as authored.
 fn normalizeId(raw: []const u8, alloc: Allocator, diag: *Diagnostics, tab: []const u8, row_num: u32) ![]const u8 {
-    const normed = try xlsx.normalizeCell(raw, alloc);
-    if (normed.len == 0) return normed;
-
-    // Strip parenthetical suffix: "REQ-001 (old)" → "REQ-001"
-    var result = normed;
-    if (std.mem.indexOf(u8, normed, "(")) |paren_pos| {
-        const before = std.mem.trimRight(u8, normed[0..paren_pos], " ");
-        if (before.len > 0) {
-            try diag.warn(diagnostic.E.id_paren_stripped, .row_parsing, tab, row_num,
-                "ID '{s}': stripped parenthetical suffix → '{s}'", .{ normed, before });
-            result = try alloc.dupe(u8, before);
-        }
-    }
-
-    // Strip leading/trailing hyphens: "-REQ-001-" → "REQ-001"
-    const stripped = std.mem.trim(u8, result, "-");
-    if (stripped.len < result.len) {
-        try diag.warn(diagnostic.E.id_hyphen_stripped, .row_parsing, tab, row_num,
-            "ID '{s}': stripped leading/trailing hyphens → '{s}'", .{ result, stripped });
-        result = try alloc.dupe(u8, stripped);
-    }
-
-    // Uppercase all characters
-    const upper = try alloc.alloc(u8, result.len);
-    for (result, 0..) |c, i| upper[i] = std.ascii.toUpper(c);
-    if (!looksLikeId(upper)) {
+    const normalized = try structured_id.normalizeStructuredId(raw, alloc);
+    if (normalized.len == 0) {
+        const normed = try xlsx.normalizeCell(raw, alloc);
         try diag.warn(diagnostic.E.id_invalid, .row_parsing, tab, row_num,
-            "ID '{s}' does not match expected RTM pattern (e.g. REQ-001) — skipping", .{upper});
+            "ID '{s}' is not a valid structured ID (use hyphen-separated alphanumeric/underscore segments) — skipping", .{normed});
         return "";
     }
-    return upper;
+    return normalized;
 }
 
 /// Parse a severity/likelihood numeric field that may be expressed as text
@@ -1654,14 +1618,28 @@ test "resolveCol heuristic ID detection" {
     try testing.expect(found_warn);
 }
 
-test "looksLikeId" {
-    try testing.expect(looksLikeId("REQ-001"));
-    try testing.expect(looksLikeId("UN-12"));
-    try testing.expect(looksLikeId("RSK-101"));
-    try testing.expect(!looksLikeId("hello"));
-    try testing.expect(!looksLikeId("REQ001"));  // no dash
-    try testing.expect(!looksLikeId("req-001"));  // lowercase
-    try testing.expect(!looksLikeId(""));
+test "structured ID validator accepts multi-segment mixed-case IDs" {
+    try testing.expect(structured_id.isStructuredId("REQ-001"));
+    try testing.expect(structured_id.isStructuredId("REQ-OQ-001"));
+    try testing.expect(structured_id.isStructuredId("Foo-1AF5-Bar-Q5"));
+    try testing.expect(structured_id.isStructuredId("ABC_DEF-01_A"));
+    try testing.expect(!structured_id.isStructuredId("hello"));
+    try testing.expect(!structured_id.isStructuredId("REQ001"));
+    try testing.expect(!structured_id.isStructuredId("REQ/001"));
+    try testing.expect(!structured_id.isStructuredId(""));
+}
+
+test "resolveCol heuristic detects complex structured IDs" {
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+    const headers: Row = &.{ "Whatever", "Random Col" };
+    const data_rows: []const Row = &.{
+        &.{ "REQ-OQ-001", "foo" },
+        &.{ "Foo-1AF5-Bar-Q5", "bar" },
+        &.{ "ABC_DEF-01_A", "baz" },
+    };
+    const col = resolveCol(headers, data_rows, "ID", req_id_syns, "Reqs", &d, true);
+    try testing.expectEqual(@as(?usize, 0), col);
 }
 
 test "splitIds comma and semicolon" {
@@ -1838,12 +1816,12 @@ test "normalizeId basic" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const result = try normalizeId("req-001", a, &d, "Test", 1);
-    try testing.expectEqualStrings("REQ-001", result);
-    try testing.expectEqual(@as(u32, 0), d.warning_count); // lowercase→uppercase is silent
+    const result = try normalizeId(" req-001 ", a, &d, "Test", 1);
+    try testing.expectEqualStrings("req-001", result);
+    try testing.expectEqual(@as(u32, 0), d.warning_count);
 }
 
-test "normalizeId strips parenthetical suffix" {
+test "normalizeId rejects parenthetical suffix without repair" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1851,11 +1829,11 @@ test "normalizeId strips parenthetical suffix" {
     defer d.deinit();
 
     const result = try normalizeId("REQ-001 (old)", a, &d, "Test", 1);
-    try testing.expectEqualStrings("REQ-001", result);
-    try testing.expect(d.warning_count >= 1);
+    try testing.expectEqual(@as(usize, 0), result.len);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
 }
 
-test "normalizeId strips leading/trailing hyphens" {
+test "normalizeId rejects leading and trailing hyphens without repair" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1863,8 +1841,8 @@ test "normalizeId strips leading/trailing hyphens" {
     defer d.deinit();
 
     const result = try normalizeId("-REQ-001-", a, &d, "Test", 1);
-    try testing.expectEqualStrings("REQ-001", result);
-    try testing.expect(d.warning_count >= 1);
+    try testing.expectEqual(@as(usize, 0), result.len);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
 }
 
 test "normalizeId rejects URL-like IDs" {
@@ -1900,6 +1878,43 @@ test "invalid requirement ID row is skipped during ingest" {
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
 }
 
+test "requirement row with qualification-style ID ingests successfully" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement" },
+            &.{ "REQ-OQ-001", "The system shall work" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 1), stats.requirement_count);
+    try testing.expect(g.getNode("REQ-OQ-001") != null);
+}
+
+test "requirement row with exact-case complex ID is preserved" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement" },
+            &.{ "Foo-1AF5-Bar-Q5", "The system shall work" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 1), stats.requirement_count);
+    try testing.expect(g.getNode("Foo-1AF5-Bar-Q5") != null);
+    try testing.expect(g.getNode("FOO-1AF5-BAR-Q5") == null);
+}
+
 test "invalid reference token is skipped during ingest" {
     const sheets: []const SheetData = &.{
         .{ .name = "User Needs", .rows = &.{
@@ -1928,6 +1943,66 @@ test "invalid reference token is skipped during ingest" {
     }
     try testing.expect(!found_derives);
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
+}
+
+test "requirement references complex user need ID exactly" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "User Needs", .rows = &.{
+            &.{ "ID", "Statement" },
+            &.{ "UN-OQ-005", "Need one" },
+        }},
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement", "User Need ID" },
+            &.{ "REQ-OQ-001", "The system shall work", "UN-OQ-005" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    _ = try ingestValidated(&g, sheets, &d);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-OQ-001", testing.allocator, &edges);
+
+    var found = false;
+    for (edges.items) |e| {
+        if (e.label == .derives_from and std.mem.eql(u8, e.to_id, "UN-OQ-005")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "risk references complex mitigation requirement exactly" {
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = &.{
+            &.{ "ID", "Statement" },
+            &.{ "Foo-1AF5-Bar-Q5", "The system shall work" },
+        }},
+        .{ .name = "Risks", .rows = &.{
+            &.{ "Risk ID", "Description", "Linked REQ" },
+            &.{ "RSK-PQ-012", "Thing goes wrong", "Foo-1AF5-Bar-Q5" },
+        }},
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    _ = try ingestValidated(&g, sheets, &d);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("RSK-PQ-012", testing.allocator, &edges);
+
+    var found = false;
+    for (edges.items) |e| {
+        if (e.label == .mitigated_by and std.mem.eql(u8, e.to_id, "Foo-1AF5-Bar-Q5")) found = true;
+    }
+    try testing.expect(found);
 }
 
 test "parseNumericField text mappings" {
