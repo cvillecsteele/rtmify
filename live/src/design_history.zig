@@ -59,13 +59,17 @@ pub fn deinitDhrReport(report: *DhrReport, alloc: Allocator) void {
 }
 
 pub fn buildRequirementHistory(db: *graph_live.GraphDb, req_id: []const u8, alloc: Allocator) !?RequirementHistory {
-    const requirement = try db.getNode(req_id, alloc);
-    if (requirement == null) return null;
-    return try buildRequirementHistoryFromNode(db, requirement.?, alloc);
+    return buildRequirementHistoryForProfile(db, .generic, req_id, alloc);
 }
 
-pub fn buildDhrReport(db: *graph_live.GraphDb, alloc: Allocator) !DhrReport {
-    const pid = try loadProfileId(db, alloc);
+pub fn buildRequirementHistoryForProfile(db: *graph_live.GraphDb, pid: profile_mod.ProfileId, req_id: []const u8, alloc: Allocator) !?RequirementHistory {
+    const requirement = try db.getNode(req_id, alloc);
+    if (requirement == null) return null;
+    return try buildRequirementHistoryFromNode(db, requirement.?, pid, alloc);
+}
+
+pub fn buildDhrReport(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) !DhrReport {
+    const pid = profile_mod.fromString(profile_name) orelse .generic;
 
     var user_needs: std.ArrayList(graph_live.Node) = .empty;
     try db.nodesByType("UserNeed", alloc, &user_needs);
@@ -90,7 +94,7 @@ pub fn buildDhrReport(db: *graph_live.GraphDb, alloc: Allocator) !DhrReport {
             req_histories.deinit(alloc);
         }
         for (req_nodes.items) |req_node| {
-            try req_histories.append(alloc, try buildRequirementHistoryFromNode(db, req_node, alloc));
+            try req_histories.append(alloc, try buildRequirementHistoryFromNode(db, req_node, pid, alloc));
         }
         req_nodes.deinit(alloc);
 
@@ -111,7 +115,7 @@ pub fn buildDhrReport(db: *graph_live.GraphDb, alloc: Allocator) !DhrReport {
         unlinked_histories.deinit(alloc);
     }
     for (unlinked_nodes.items) |req_node| {
-        try unlinked_histories.append(alloc, try buildRequirementHistoryFromNode(db, req_node, alloc));
+        try unlinked_histories.append(alloc, try buildRequirementHistoryFromNode(db, req_node, pid, alloc));
     }
 
     return .{
@@ -121,8 +125,7 @@ pub fn buildDhrReport(db: *graph_live.GraphDb, alloc: Allocator) !DhrReport {
     };
 }
 
-fn buildRequirementHistoryFromNode(db: *graph_live.GraphDb, requirement: graph_live.Node, alloc: Allocator) !RequirementHistory {
-    const pid = try loadProfileId(db, alloc);
+fn buildRequirementHistoryFromNode(db: *graph_live.GraphDb, requirement: graph_live.Node, pid: profile_mod.ProfileId, alloc: Allocator) !RequirementHistory {
     const prof = profile_mod.get(pid);
 
     var user_needs: std.ArrayList(graph_live.Node) = .empty;
@@ -205,12 +208,6 @@ fn buildRequirementHistoryFromNode(db: *graph_live.GraphDb, requirement: graph_l
         .chain_gaps = try filtered_gaps.toOwnedSlice(alloc),
         .profile = pid,
     };
-}
-
-fn loadProfileId(db: *graph_live.GraphDb, alloc: Allocator) !profile_mod.ProfileId {
-    const profile_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer alloc.free(profile_name);
-    return profile_mod.fromString(profile_name) orelse .generic;
 }
 
 fn freeNode(node: graph_live.Node, alloc: Allocator) void {
@@ -394,8 +391,6 @@ test "buildRequirementHistory builds full bundle and dedupes downstream nodes" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
-    try db.storeConfig("profile", "medical");
-
     try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need GPS\",\"source\":\"Customer\",\"priority\":\"High\"}", null);
     try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Detect GPS loss\",\"status\":\"Approved\"}", null);
     try db.addNode("RSK-001", "Risk", "{\"description\":\"Clock drift\"}", null);
@@ -419,7 +414,7 @@ test "buildRequirementHistory builds full bundle and dedupes downstream nodes" {
     try db.addEdge("REQ-001", "src/gps.c:10", "ANNOTATED_AT");
     try db.addEdge("REQ-001", "abc123", "COMMITTED_IN");
 
-    var history = (try buildRequirementHistory(&db, "REQ-001", alloc)).?;
+    var history = (try buildRequirementHistoryForProfile(&db, .medical, "REQ-001", alloc)).?;
     defer deinitRequirementHistory(&history, alloc);
 
     try testing.expectEqual(profile_mod.ProfileId.medical, history.profile);
@@ -442,16 +437,15 @@ test "buildDhrReport includes unlinked requirements" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
-    try db.storeConfig("profile", "generic");
     try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need GPS\"}", null);
     try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Linked req\"}", null);
     try db.addNode("REQ-002", "Requirement", "{\"statement\":\"Orphan req\"}", null);
     try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
 
-    var report = try buildDhrReport(&db, alloc);
+    var report = try buildDhrReport(&db, "medical", alloc);
     defer deinitDhrReport(&report, alloc);
 
-    try testing.expectEqual(profile_mod.ProfileId.generic, report.profile);
+    try testing.expectEqual(profile_mod.ProfileId.medical, report.profile);
     try testing.expectEqual(@as(usize, 1), report.user_need_sections.len);
     try testing.expectEqual(@as(usize, 1), report.user_need_sections[0].requirements.len);
     try testing.expectEqual(@as(usize, 1), report.unlinked_requirements.len);

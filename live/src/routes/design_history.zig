@@ -7,11 +7,9 @@ const design_history_core = @import("../design_history.zig");
 const chain_mod = @import("../chain.zig");
 const shared = @import("shared.zig");
 
-pub fn handleDesignHistory(db: *graph_live.GraphDb, req_id: []const u8, alloc: Allocator) ![]const u8 {
-    var history = (try design_history_core.buildRequirementHistory(db, req_id, alloc)) orelse {
-        const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-        defer alloc.free(prof_name);
-        const pid = profile_mod.fromString(prof_name) orelse .generic;
+pub fn handleDesignHistory(db: *graph_live.GraphDb, profile_name: []const u8, req_id: []const u8, alloc: Allocator) ![]const u8 {
+    const pid = profile_mod.fromString(profile_name) orelse .generic;
+    var history = (try design_history_core.buildRequirementHistoryForProfile(db, pid, req_id, alloc)) orelse {
         return std.fmt.allocPrint(alloc, "{{\"profile\":\"{s}\",\"requirement\":null,\"user_needs\":[],\"risks\":[],\"design_inputs\":[],\"design_outputs\":[],\"configuration_items\":[],\"source_files\":[],\"test_files\":[],\"annotations\":[],\"commits\":[],\"chain_gaps\":[]}}", .{@tagName(pid)});
     };
     defer design_history_core.deinitRequirementHistory(&history, alloc);
@@ -67,8 +65,6 @@ pub fn handleDesignHistory(db: *graph_live.GraphDb, req_id: []const u8, alloc: A
 }
 
 pub fn seedDhrFixture(db: *graph_live.GraphDb) !void {
-    try db.storeConfig("profile", "medical");
-
     try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need GPS\",\"source\":\"Customer\",\"priority\":\"High\"}", null);
     try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Detect GPS loss\",\"status\":\"Approved\"}", null);
     try db.addNode("REQ-999", "Requirement", "{\"statement\":\"Standalone maintenance mode\",\"status\":\"Draft\"}", null);
@@ -107,7 +103,7 @@ test "handleDesignHistory returns structured chain with filtered gaps" {
     defer db.deinit();
     try seedDhrFixture(&db);
 
-    const resp = try handleDesignHistory(&db, "REQ-001", alloc);
+    const resp = try handleDesignHistory(&db, "medical", "REQ-001", alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "\"requirement\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"user_needs\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"risks\":") != null);

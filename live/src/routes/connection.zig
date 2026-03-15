@@ -7,6 +7,7 @@ const connection_mod = @import("../connection.zig");
 const secure_store_mod = @import("../secure_store.zig");
 const online_provider = @import("../online_provider.zig");
 const json_util = @import("../json_util.zig");
+const workbook = @import("../workbook/mod.zig");
 const provision_routes = @import("provision.zig");
 const shared = @import("shared.zig");
 
@@ -52,12 +53,12 @@ pub fn handleConnectionValidateResponse(store: *secure_store_mod.Store, body: []
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, buf.items), true);
 }
 
-pub fn handleConnection(db: *graph_live.GraphDb, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handleConnectionResponse(db, store, body, alloc);
+pub fn handleConnection(registry: *workbook.registry.WorkbookRegistry, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) ![]const u8 {
+    const resp = try handleConnectionResponse(registry, store, body, alloc);
     return resp.body;
 }
 
-pub fn handleConnectionResponse(db: *graph_live.GraphDb, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+pub fn handleConnectionResponse(registry: *workbook.registry.WorkbookRegistry, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
     if (!secure_store_mod.backendSupported(store.*)) {
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
     }
@@ -73,7 +74,7 @@ pub fn handleConnectionResponse(db: *graph_live.GraphDb, store: *secure_store_mo
     };
     defer validated.deinit(alloc);
 
-    connection_mod.persistActive(db, store, validated, alloc) catch |e| switch (e) {
+    connection_mod.persistActiveWorkbook(registry, store, validated, alloc) catch |e| switch (e) {
         error.SecureStorageUnsupported => {
             return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
         },
@@ -83,8 +84,14 @@ pub fn handleConnectionResponse(db: *graph_live.GraphDb, store: *secure_store_mo
         },
     };
     std.log.info("connection persisted platform={s} workbook={s}", .{ online_provider.providerIdString(validated.platform), validated.workbook_label });
-    try db.storeConfig("profile", draft.profile orelse "generic");
-    db.deleteConfig("rtmify_provisioned") catch {};
+    try workbook.config.setActiveProfile(&registry.live_config, draft.profile orelse "generic", alloc);
+    {
+        const runtime = try registry.active();
+        runtime.config.deinit(alloc);
+        runtime.config = try (try registry.activeConfig()).clone(alloc);
+        runtime.db.deleteConfig("rtmify_provisioned") catch {};
+    }
+    try registry.save(alloc);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -98,20 +105,19 @@ pub fn handleConnectionResponse(db: *graph_live.GraphDb, store: *secure_store_mo
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, buf.items), true);
 }
 
-pub fn handleGetProfile(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer alloc.free(prof_name);
+pub fn handleGetProfile(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) ![]const u8 {
+    const prof_name = (try registry.activeConfig()).profile;
     const pid = profile_mod.fromString(prof_name) orelse .generic;
     const prof = profile_mod.get(pid);
     return std.fmt.allocPrint(alloc, "{{\"profile\":\"{s}\",\"name\":\"{s}\"}}", .{ prof_name, prof.name });
 }
 
-pub fn handlePostProfile(db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handlePostProfileResponse(db, body, alloc);
+pub fn handlePostProfile(registry: *workbook.registry.WorkbookRegistry, body: []const u8, alloc: Allocator) ![]const u8 {
+    const resp = try handlePostProfileResponse(registry, body, alloc);
     return resp.body;
 }
 
-pub fn handlePostProfileResponse(db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+pub fn handlePostProfileResponse(registry: *workbook.registry.WorkbookRegistry, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid JSON\"}"), false);
     defer parsed.deinit();
@@ -121,22 +127,24 @@ pub fn handlePostProfileResponse(db: *graph_live.GraphDb, body: []const u8, allo
     if (profile_mod.fromString(name) == null) {
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"unknown profile\"}"), false);
     }
-    try db.storeConfig("profile", name);
-    db.deleteConfig("rtmify_provisioned") catch {};
+    try workbook.config.setActiveProfile(&registry.live_config, name, alloc);
+    {
+        const runtime = try registry.active();
+        runtime.config.deinit(alloc);
+        runtime.config = try (try registry.activeConfig()).clone(alloc);
+        runtime.db.deleteConfig("rtmify_provisioned") catch {};
+    }
+    try registry.save(alloc);
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 
-pub fn handleGetRepos(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
+pub fn handleGetRepos(registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
+    const cfg = try registry.activeConfig();
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "{\"repos\":[");
     var first = true;
-    var idx: usize = 0;
-    while (idx < 64) : (idx += 1) {
-        const key = try std.fmt.allocPrint(alloc, "repo_path_{d}", .{idx});
-        defer alloc.free(key);
-        const path = (try db.getConfig(key, alloc)) orelse continue;
-        defer alloc.free(path);
+    for (cfg.repo_paths, 0..) |path, idx| {
         const ts_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{path});
         defer alloc.free(ts_key);
         const last_scan = (try db.getConfig(ts_key, alloc)) orelse try alloc.dupe(u8, "0");
@@ -159,12 +167,12 @@ pub fn handleGetRepos(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
     return alloc.dupe(u8, buf.items);
 }
 
-pub fn handlePostRepo(db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handlePostRepoResponse(db, body, alloc);
+pub fn handlePostRepo(registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) ![]const u8 {
+    const resp = try handlePostRepoResponse(registry, db, body, alloc);
     return resp.body;
 }
 
-pub fn handlePostRepoResponse(db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+pub fn handlePostRepoResponse(registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid JSON\"}"), false);
     defer parsed.deinit();
@@ -229,32 +237,40 @@ pub fn handlePostRepoResponse(db: *graph_live.GraphDb, body: []const u8, alloc: 
             return shared.jsonRouteResponse(.bad_request, try shared.errorResponseWithDiagnostics("no .git directory found — is this a git repository?", &diag, alloc), false);
         }
     }
-    var idx: usize = 0;
-    while (idx < 64) : (idx += 1) {
-        const key = try std.fmt.allocPrint(alloc, "repo_path_{d}", .{idx});
-        defer alloc.free(key);
-        if ((try db.getConfig(key, alloc)) == null) {
-            try db.storeConfig(key, path);
-            return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
-        }
+    _ = db;
+    const cfg = try registry.activeConfig();
+    if (cfg.repo_paths.len >= 64) {
+        return shared.jsonRouteResponse(.conflict, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"too many repos\"}"), false);
     }
-    return shared.jsonRouteResponse(.conflict, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"too many repos\"}"), false);
+    try workbook.config.addActiveRepoPath(&registry.live_config, path, alloc);
+    {
+        const runtime = try registry.active();
+        runtime.config.deinit(alloc);
+        runtime.config = try (try registry.activeConfig()).clone(alloc);
+    }
+    try registry.save(alloc);
+    return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 
-pub fn handleDeleteRepo(db: *graph_live.GraphDb, idx_str: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handleDeleteRepoResponse(db, idx_str, alloc);
+pub fn handleDeleteRepo(registry: *workbook.registry.WorkbookRegistry, idx_str: []const u8, alloc: Allocator) ![]const u8 {
+    const resp = try handleDeleteRepoResponse(registry, idx_str, alloc);
     return resp.body;
 }
 
-pub fn handleDeleteRepoResponse(db: *graph_live.GraphDb, idx_str: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
-    const key = try std.fmt.allocPrint(alloc, "repo_path_{s}", .{idx_str});
-    defer alloc.free(key);
-    const existing = try db.getConfig(key, alloc);
-    if (existing == null) {
+pub fn handleDeleteRepoResponse(registry: *workbook.registry.WorkbookRegistry, idx_str: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+    const idx = std.fmt.parseInt(usize, idx_str, 10) catch {
+        return shared.jsonRouteResponse(.not_found, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"repo not found\",\"slot\":{s}}}", .{idx_str}), false);
+    };
+    const removed = try workbook.config.deleteActiveRepoAt(&registry.live_config, idx, alloc);
+    if (!removed) {
         return shared.jsonRouteResponse(.not_found, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"repo not found\",\"slot\":{s}}}", .{idx_str}), false);
     }
-    defer alloc.free(existing.?);
-    try db.deleteConfig(key);
+    {
+        const runtime = try registry.active();
+        runtime.config.deinit(alloc);
+        runtime.config = try (try registry.activeConfig()).clone(alloc);
+    }
+    try registry.save(alloc);
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 

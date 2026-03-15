@@ -10,6 +10,7 @@ const online_provider = @import("online_provider.zig");
 const log_sink = @import("log_sink.zig");
 const test_results_auth = @import("test_results_auth.zig");
 const external_ingest_inbox = @import("external_ingest_inbox.zig");
+const workbook = @import("workbook/mod.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
 
@@ -242,57 +243,63 @@ pub fn main() !void {
 
     std.log.info("rtmify-live {s} — db={s} port={d}", .{ build_options.version, db_path, port });
 
-    var g = try graph_live.GraphDb.init(db_path);
-    defer g.deinit();
-
-    const resolved_db_path = try resolveDbPath(gpa, db_path);
-    defer gpa.free(resolved_db_path);
-    try g.storeConfig("db_path", resolved_db_path);
-    try g.storeConfig("live_version", build_options.version);
+    var tray_app_version: []u8 = undefined;
     if (std.process.getEnvVarOwned(gpa, "RTMIFY_TRAY_APP_VERSION")) |tray_version| {
-        defer gpa.free(tray_version);
-        try g.storeConfig("tray_app_version", tray_version);
+        tray_app_version = tray_version;
     } else |_| {
-        try g.storeConfig("tray_app_version", "not available");
+        tray_app_version = try gpa.dupe(u8, "not available");
     }
+    defer gpa.free(tray_app_version);
+    var log_path_value: []u8 = undefined;
     if (std.process.getEnvVarOwned(gpa, "RTMIFY_LOG_PATH")) |log_path| {
-        defer gpa.free(log_path);
-        try g.storeConfig("log_path", log_path);
+        log_path_value = log_path;
     } else |_| {
         const default_log_path = try log_sink.defaultLogPath(gpa);
-        defer gpa.free(default_log_path);
-        try g.storeConfig("log_path", default_log_path);
+        log_path_value = default_log_path;
     }
+    defer gpa.free(log_path_value);
 
     var secure_store = try secure_store_mod.initDefault(gpa);
     defer secure_store.deinit(gpa);
-    var ingestion_auth = try test_results_auth.AuthState.initDefault(gpa);
-    defer ingestion_auth.deinit(gpa);
 
-    const inbox_dir = if (inbox_dir_override) |path|
-        try gpa.dupe(u8, path)
-    else
-        try test_results_auth.defaultInboxDir(gpa);
-    defer gpa.free(inbox_dir);
-    try g.storeConfig("inbox_dir", inbox_dir);
-    try g.storeConfig("test_results_inbox_dir", inbox_dir);
-
-    try connection_mod.migrateLegacyGoogleConfig(&g, &secure_store, gpa);
-
-    var state: sync_live.SyncState = .{};
+    var registry = try workbook.registry.WorkbookRegistry.init(gpa, &secure_store, .{
+        .profile = profile_name orelse "generic",
+        .repo_paths = repo_paths.items,
+        .db_path_override = if (std.mem.eql(u8, db_path, "graph.db")) null else db_path,
+        .inbox_dir_override = inbox_dir_override,
+    });
+    defer registry.deinit(gpa);
+    const active_runtime = try registry.active();
 
     var startup_license_status = try license_service.getStatus(gpa);
     defer startup_license_status.deinit(gpa);
-    state.product_enabled.store(startup_license_status.permits_use, .seq_cst);
+    active_runtime.sync_state.product_enabled.store(startup_license_status.permits_use, .seq_cst);
     if (!startup_license_status.permits_use) {
         std.log.warn("license check: {s} — product routes will be gated", .{@tagName(startup_license_status.state)});
     }
 
-    var loaded_active = try connection_mod.loadActive(&g, &secure_store, gpa);
+    if (profile_name) |name| {
+        try workbook.config.setActiveProfile(&registry.live_config, name, gpa);
+    }
+    for (repo_paths.items) |path| {
+        var found = false;
+        for (active_runtime.config.repo_paths) |existing| {
+            if (std.mem.eql(u8, existing, path)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) try workbook.config.addActiveRepoPath(&registry.live_config, path, gpa);
+    }
+    active_runtime.config.deinit(gpa);
+    active_runtime.config = try (try registry.activeConfig()).clone(gpa);
+    try registry.save(gpa);
+
+    var loaded_active = try connection_mod.loadWorkbookConnection(active_runtime.config, &secure_store, gpa);
     defer loaded_active.deinit(gpa);
     if (startup_license_status.permits_use) {
         if (loaded_active == .active) {
-            const started = maybeStartSync(&g, &state, loaded_active.active, gpa) catch |e| blk: {
+            const started = maybeStartSync(active_runtime, loaded_active.active, gpa) catch |e| blk: {
                 std.log.warn("sync thread not started: {s}", .{@errorName(e)});
                 break :blk false;
             };
@@ -300,51 +307,18 @@ pub fn main() !void {
         }
     }
 
-    // Store profile if given
-    const profile_str = profile_name orelse "generic";
-    try g.storeConfig("profile", profile_str);
-
-    // Store CLI --repo paths in DB so they persist and are picked up by dynamic scan loop
-    for (repo_paths.items) |p| {
-        // Check if already stored to avoid duplicates
-        var already: bool = false;
-        var ci: usize = 0;
-        while (ci < 64) : (ci += 1) {
-            const ck = try std.fmt.allocPrint(gpa, "repo_path_{d}", .{ci});
-            defer gpa.free(ck);
-            const cv = try g.getConfig(ck, gpa);
-            if (cv) |v| {
-                defer gpa.free(v);
-                if (std.mem.eql(u8, v, p)) { already = true; break; }
-            } else break;
-        }
-        if (already) continue;
-        // Find next empty slot
-        var si: usize = 0;
-        while (si < 64) : (si += 1) {
-            const sk = try std.fmt.allocPrint(gpa, "repo_path_{d}", .{si});
-            defer gpa.free(sk);
-            const sv = try g.getConfig(sk, gpa);
-            if (sv == null) {
-                try g.storeConfig(sk, p);
-                break;
-            }
-            gpa.free(sv.?);
-        }
-    }
-
     // Always spawn repo scan thread (picks up repos from DB dynamically each cycle)
     {
-        const scan_ctx = try createRepoScanThreadCtx(std.heap.page_allocator, &g, repo_paths.items, &state);
+        const scan_ctx = try createRepoScanThreadCtx(std.heap.page_allocator, &active_runtime.db, active_runtime.config.repo_paths, &active_runtime.sync_state);
         const t = try std.Thread.spawn(.{}, sync_live.repoScanThread, .{scan_ctx});
         t.detach();
         std.log.info("repo scan thread started", .{});
     }
     {
-        const inbox_ctx = try createInboxThreadCtx(std.heap.page_allocator, &g, &state, inbox_dir);
+        const inbox_ctx = try createInboxThreadCtx(std.heap.page_allocator, &active_runtime.db, &active_runtime.sync_state, active_runtime.config.inbox_dir);
         const t = try std.Thread.spawn(.{}, external_ingest_inbox.inboxThread, .{inbox_ctx});
         t.detach();
-        std.log.info("external ingest inbox thread started dir={s}", .{inbox_dir});
+        std.log.info("external ingest inbox thread started dir={s}", .{active_runtime.config.inbox_dir});
     }
 
     // Find first available port (8000-8010) via quick probe
@@ -362,11 +336,6 @@ pub fn main() !void {
         break;
     }
 
-    // Store actual port so UI/reload knows where to connect
-    const port_str = try std.fmt.allocPrint(gpa, "{d}", .{actual_port});
-    defer gpa.free(port_str);
-    try g.storeConfig("actual_port", port_str);
-
     // Open browser with the correct port
     if (!no_browser) {
         openBrowser(actual_port, gpa) catch |e| {
@@ -376,13 +345,17 @@ pub fn main() !void {
 
     // Start HTTP server (blocks until shutdown)
     const ctx: server.ServerCtx = .{
-        .db = &g,
+        .registry = &registry,
         .secure_store = &secure_store,
-        .state = &state,
         .license_service = &license_service,
-        .test_results_auth = &ingestion_auth,
+        .instance_info = .{
+            .actual_port = actual_port,
+            .live_version = build_options.version,
+            .tray_app_version = tray_app_version,
+            .log_path = log_path_value,
+        },
         .alloc = gpa,
-        .startSyncFn = startSyncCallback,
+        .ensure_sync_started_fn = ensureSyncStartedCallback,
     };
     server.listen(actual_port, ctx) catch |e| return e;
 }
@@ -491,15 +464,15 @@ test "inbox thread context cleanup releases owned memory" {
 }
 
 /// Callback passed to ServerCtx so that POST /api/connection can trigger sync start.
-fn startSyncCallback(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, alloc: std.mem.Allocator) void {
-    // Guard: only start once
-    if (state.sync_started.load(.seq_cst)) return;
+fn ensureSyncStartedCallback(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, alloc: std.mem.Allocator) void {
+    var runtime = registry.active() catch return;
+    if (runtime.sync_state.sync_started.load(.seq_cst)) return;
 
-    var loaded = connection_mod.loadActive(db, secure_store, alloc) catch return;
+    var loaded = connection_mod.loadWorkbookConnection(runtime.config, secure_store, alloc) catch return;
     defer loaded.deinit(alloc);
     if (loaded != .active) return;
 
-    const started = maybeStartSync(db, state, loaded.active, alloc) catch |e| blk: {
+    const started = maybeStartSync(runtime, loaded.active, alloc) catch |e| blk: {
         std.log.warn("POST /api/connection: sync start failed: {s}", .{@errorName(e)});
         break :blk false;
     };
@@ -507,25 +480,27 @@ fn startSyncCallback(db: *graph_live.GraphDb, secure_store: *secure_store_mod.St
 }
 
 fn maybeStartSync(
-    db: *graph_live.GraphDb,
-    state: *sync_live.SyncState,
+    workbook_runtime: *workbook.runtime.WorkbookRuntime,
     active: @import("provider_common.zig").ActiveConnection,
     alloc: std.mem.Allocator,
 ) !bool {
     // Guard: only start once
-    if (state.sync_started.cmpxchgStrong(false, true, .seq_cst, .seq_cst) != null) return false;
+    if (workbook_runtime.sync_state.sync_started.cmpxchgStrong(false, true, .seq_cst, .seq_cst) != null) return false;
 
-    var runtime = online_provider.ProviderRuntime.init(active, alloc) catch {
-        state.sync_started.store(false, .seq_cst);
+    var provider_runtime = online_provider.ProviderRuntime.init(active, alloc) catch {
+        workbook_runtime.sync_state.sync_started.store(false, .seq_cst);
         return false;
     };
-    runtime.deinit(alloc);
+    provider_runtime.deinit(alloc);
 
     const cfg = sync_live.SyncConfig{
+        .workbook_id = try alloc.dupe(u8, workbook_runtime.config.id),
+        .workbook_slug = try alloc.dupe(u8, workbook_runtime.config.slug),
+        .profile = @import("profile.zig").fromString(workbook_runtime.config.profile) orelse .generic,
         .active = try active.clone(alloc),
         .alloc = alloc,
-        .db = db,
-        .state = state,
+        .db = &workbook_runtime.db,
+        .state = &workbook_runtime.sync_state,
     };
 
     const t = try std.Thread.spawn(.{}, sync_live.syncThread, .{cfg});
@@ -580,9 +555,20 @@ test "maybeStartSync returns false and resets state for invalid credential" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var db = try graph_live.GraphDb.init(":memory:");
-    defer db.deinit();
-    var state: sync_live.SyncState = .{};
+    var runtime = workbook.runtime.WorkbookRuntime{
+        .config = .{
+            .id = try alloc.dupe(u8, "wb_test"),
+            .slug = try alloc.dupe(u8, "workbook"),
+            .display_name = try alloc.dupe(u8, "Workbook"),
+            .profile = try alloc.dupe(u8, "generic"),
+            .repo_paths = try alloc.alloc([]const u8, 0),
+            .db_path = try alloc.dupe(u8, ":memory:"),
+            .inbox_dir = try alloc.dupe(u8, "/tmp/inbox"),
+        },
+        .db = try graph_live.GraphDb.init(":memory:"),
+        .ingest_auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-main-live-token", alloc),
+    };
+    defer runtime.deinit(alloc);
 
     var active = @import("provider_common.zig").ActiveConnection{
         .platform = .google,
@@ -594,7 +580,7 @@ test "maybeStartSync returns false and resets state for invalid credential" {
     };
     defer active.deinit(alloc);
 
-    const started = try maybeStartSync(&db, &state, active, alloc);
+    const started = try maybeStartSync(&runtime, active, alloc);
     try testing.expect(!started);
-    try testing.expect(!state.sync_started.load(.seq_cst));
+    try testing.expect(!runtime.sync_state.sync_started.load(.seq_cst));
 }

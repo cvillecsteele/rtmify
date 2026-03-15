@@ -7,20 +7,20 @@ const provision_mod = @import("../provision.zig");
 const connection_mod = @import("../connection.zig");
 const secure_store_mod = @import("../secure_store.zig");
 const online_provider = @import("../online_provider.zig");
+const workbook = @import("../workbook/mod.zig");
 const shared = @import("shared.zig");
 
 pub fn handleProvisionPreview(
-    db: *graph_live.GraphDb,
+    registry: *workbook.registry.WorkbookRegistry,
     secure_store: *secure_store_mod.Store,
     query_profile: ?[]const u8,
     alloc: Allocator,
 ) ![]const u8 {
     const prof_name = if (query_profile) |qp| qp
-        else (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer if (query_profile == null) alloc.free(prof_name);
+        else (try registry.activeConfig()).profile;
     const pid = profile_mod.fromString(prof_name) orelse .generic;
     const prof = profile_mod.get(pid);
-    var loaded = try connection_mod.loadActive(db, secure_store, alloc);
+    var loaded = try connection_mod.loadWorkbookConnection((try registry.activeConfig()).*, secure_store, alloc);
     defer loaded.deinit(alloc);
     if (loaded != .active) {
         return alloc.dupe(u8, "{\"ready\":false,\"reason\":\"missing_credentials_or_sheet\"}");
@@ -32,15 +32,15 @@ pub fn handleProvisionPreview(
     return preview;
 }
 
-pub fn handleProvision(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, alloc: Allocator) ![]const u8 {
-    const resp = try handleProvisionResponse(db, secure_store, alloc);
+pub fn handleProvision(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, alloc: Allocator) ![]const u8 {
+    const resp = try handleProvisionResponse(registry, secure_store, alloc);
     return resp.body;
 }
 
-pub fn handleProvisionResponse(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, alloc: Allocator) !shared.JsonRouteResponse {
-    const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer alloc.free(prof_name);
-    var loaded = try connection_mod.loadActive(db, secure_store, alloc);
+pub fn handleProvisionResponse(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, alloc: Allocator) !shared.JsonRouteResponse {
+    const active_runtime = try registry.active();
+    const prof_name = active_runtime.config.profile;
+    var loaded = try connection_mod.loadWorkbookConnection(active_runtime.config, secure_store, alloc);
     defer loaded.deinit(alloc);
 
     if (loaded != .active) {
@@ -52,9 +52,9 @@ pub fn handleProvisionResponse(db: *graph_live.GraphDb, secure_store: *secure_st
 
     const pid = profile_mod.fromString(prof_name) orelse .generic;
     const prof = profile_mod.get(pid);
-    var runtime = try online_provider.ProviderRuntime.init(loaded.active, alloc);
-    defer runtime.deinit(alloc);
-    const created = try provision_mod.provisionWorkbook(&runtime, prof, alloc);
+    var provider_runtime = try online_provider.ProviderRuntime.init(loaded.active, alloc);
+    defer provider_runtime.deinit(alloc);
+    const created = try provision_mod.provisionWorkbook(&provider_runtime, prof, alloc);
     defer {
         for (created) |tab| alloc.free(tab);
         alloc.free(created);
@@ -76,7 +76,7 @@ pub fn handleProvisionResponse(db: *graph_live.GraphDb, secure_store: *secure_st
         if (!found) try already_present.append(alloc, try alloc.dupe(u8, tab));
     }
 
-    try db.storeConfig("rtmify_provisioned", "1");
+    try (try registry.active()).db.storeConfig("rtmify_provisioned", "1");
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);

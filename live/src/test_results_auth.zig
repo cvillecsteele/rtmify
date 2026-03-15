@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const workbook = @import("workbook/mod.zig");
 
 pub const AuthState = struct {
     token_file_path: []u8,
@@ -7,21 +8,7 @@ pub const AuthState = struct {
     mu: std.Thread.Mutex = .{},
 
     pub fn initDefault(alloc: Allocator) !AuthState {
-        const override = std.process.getEnvVarOwned(alloc, "RTMIFY_TEST_RESULTS_TOKEN_FILE") catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => null,
-            else => return err,
-        };
-        defer if (override) |value| alloc.free(value);
-
-        const token_path = if (override) |value|
-            try alloc.dupe(u8, value)
-        else
-            try defaultTokenPath(alloc);
-        const token = try ensureTokenFile(token_path, alloc);
-        return .{
-            .token_file_path = token_path,
-            .token = token,
-        };
+        return initForWorkbookSlug("workbook", alloc);
     }
 
     pub fn initForPath(token_file_path: []const u8, alloc: Allocator) !AuthState {
@@ -29,6 +16,16 @@ pub const AuthState = struct {
         const token = try ensureTokenFile(path, alloc);
         return .{
             .token_file_path = path,
+            .token = token,
+        };
+    }
+
+    pub fn initForWorkbookSlug(slug: []const u8, alloc: Allocator) !AuthState {
+        const token_path = try tokenPathForWorkbookSlug(slug, alloc);
+        errdefer alloc.free(token_path);
+        const token = try ensureTokenFile(token_path, alloc);
+        return .{
+            .token_file_path = token_path,
             .token = token,
         };
     }
@@ -76,7 +73,15 @@ fn defaultTokenPath(alloc: Allocator) ![]u8 {
     return std.fs.path.join(alloc, &.{ home, ".rtmify", "api-token" });
 }
 
+pub fn tokenPathForWorkbookSlug(slug: []const u8, alloc: Allocator) ![]u8 {
+    return workbook.paths.apiTokenPath(slug, alloc);
+}
+
 pub fn defaultInboxDir(alloc: Allocator) ![]u8 {
+    return inboxDirForWorkbookSlug("workbook", alloc);
+}
+
+pub fn inboxDirForWorkbookSlug(slug: []const u8, alloc: Allocator) ![]u8 {
     const override = std.process.getEnvVarOwned(alloc, "RTMIFY_TEST_RESULTS_INBOX_DIR") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
         else => return err,
@@ -84,9 +89,7 @@ pub fn defaultInboxDir(alloc: Allocator) ![]u8 {
     defer if (override) |value| alloc.free(value);
     if (override) |value| return alloc.dupe(u8, value);
 
-    const home = try homeDir(alloc);
-    defer alloc.free(home);
-    return std.fs.path.join(alloc, &.{ home, ".rtmify", "inbox" });
+    return workbook.paths.inboxDir(slug, alloc);
 }
 
 fn homeDir(alloc: Allocator) ![]u8 {

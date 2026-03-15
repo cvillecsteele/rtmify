@@ -138,10 +138,8 @@ pub fn handleGuideErrors(alloc: Allocator) ![]const u8 {
     return guide_catalog.guideErrorsJson(alloc);
 }
 
-pub fn handleChainGaps(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    const prof_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer alloc.free(prof_name);
-    const pid = profile_mod.fromString(prof_name) orelse .generic;
+pub fn handleChainGaps(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]const u8 {
+    const pid = profile_mod.fromString(profile_name) orelse .generic;
     const prof = profile_mod.get(pid);
 
     const edge_gaps = try chain_mod.walkChain(db, prof, alloc);
@@ -219,10 +217,9 @@ test "handleChainGaps includes code and title" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
-    try db.storeConfig("profile", "medical");
     try db.addNode("REQ-001", "Requirement", "{}", null);
 
-    const resp = try handleChainGaps(&db, alloc);
+    const resp = try handleChainGaps(&db, "medical", alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "\"code\":") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "\"title\":") != null);
 }
@@ -234,10 +231,9 @@ test "handleChainGaps returns empty for generic profile" {
 
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
-    try db.storeConfig("profile", "generic");
     try db.addNode("REQ-001", "Requirement", "{}", null);
 
-    const resp = try handleChainGaps(&db, alloc);
+    const resp = try handleChainGaps(&db, "generic", alloc);
     try testing.expectEqualStrings("[]", resp);
 }
 

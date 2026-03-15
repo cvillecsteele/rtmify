@@ -10,15 +10,10 @@ const provider_common = @import("../provider_common.zig");
 const secure_store_mod = @import("../secure_store.zig");
 const online_provider = @import("../online_provider.zig");
 const test_results_auth = @import("../test_results_auth.zig");
+const workbook = @import("../workbook/mod.zig");
 const shared = @import("shared.zig");
 
-fn getInboxDirConfig(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    if (try db.getConfig("inbox_dir", alloc)) |value| return value;
-    if (try db.getConfig("test_results_inbox_dir", alloc)) |value| return value;
-    return alloc.dupe(u8, "unknown");
-}
-
-pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
+pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
     const last_sync = state.last_sync_at.load(.seq_cst);
     const has_error = state.has_error.load(.seq_cst);
     const sync_count = state.sync_count.load(.seq_cst);
@@ -33,23 +28,39 @@ pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Sto
     var err_buf: [256]u8 = undefined;
     const err_len = state.getError(&err_buf);
     const err_str = err_buf[0..err_len];
-    var loaded = try connection_mod.loadActive(db, secure_store, alloc);
+    const workbook_cfg = try registry.activeConfig();
+    var loaded = try connection_mod.loadWorkbookConnection(workbook_cfg.*, secure_store, alloc);
     defer loaded.deinit(alloc);
     const configured = loaded == .active;
     const block_reason: ?provider_common.ConnectionBlockReason = if (loaded == .blocked) loaded.blocked else null;
 
-    const platform_str = if (configured) try alloc.dupe(u8, online_provider.providerIdString(loaded.active.platform)) else blk: {
-        const stored = try db.getConfig("platform", alloc);
-        defer if (stored) |value| alloc.free(value);
-        if (stored) |value| break :blk try alloc.dupe(u8, value);
-        break :blk null;
-    };
+    const platform_str = if (configured)
+        try alloc.dupe(u8, online_provider.providerIdString(loaded.active.platform))
+    else if (workbook_cfg.platform) |platform|
+        try alloc.dupe(u8, online_provider.providerIdString(platform))
+    else
+        null;
     defer if (platform_str) |value| alloc.free(value);
-    const credential_display = if (configured) if (loaded.active.credential_display) |value| try alloc.dupe(u8, value) else null else try db.getConfig("credential_display", alloc);
+    const credential_display = if (configured)
+        if (loaded.active.credential_display) |value| try alloc.dupe(u8, value) else null
+    else if (workbook_cfg.credential_display) |value|
+        try alloc.dupe(u8, value)
+    else
+        null;
     defer if (credential_display) |value| alloc.free(value);
-    const workbook_label = if (configured) try alloc.dupe(u8, loaded.active.workbook_label) else try db.getConfig("workbook_label", alloc);
+    const workbook_label = if (configured)
+        try alloc.dupe(u8, loaded.active.workbook_label)
+    else if (workbook_cfg.workbook_label) |value|
+        try alloc.dupe(u8, value)
+    else
+        null;
     defer if (workbook_label) |value| alloc.free(value);
-    const workbook_url = if (configured) try alloc.dupe(u8, loaded.active.workbook_url) else try db.getConfig("workbook_url", alloc);
+    const workbook_url = if (configured)
+        try alloc.dupe(u8, loaded.active.workbook_url)
+    else if (workbook_cfg.workbook_url) |value|
+        try alloc.dupe(u8, value)
+    else
+        null;
     defer if (workbook_url) |value| alloc.free(value);
 
     var buf: std.ArrayList(u8) = .empty;
@@ -74,11 +85,10 @@ pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Sto
     try shared.appendJsonStrOpt(&buf, if (block_reason) |value| @tagName(value) else null, alloc);
     try buf.appendSlice(alloc, ",\"secure_storage_backend\":");
     try shared.appendJsonStr(&buf, secure_store_mod.backendName(secure_store.backend), alloc);
-    const profile = try db.getConfig("profile", alloc);
-    defer if (profile) |value| alloc.free(value);
     try buf.appendSlice(alloc, ",\"profile\":");
-    try shared.appendJsonStrOpt(&buf, profile, alloc);
-    const last_scan = (try db.getConfig("last_scan_at", alloc)) orelse try alloc.dupe(u8, "never");
+    try shared.appendJsonStr(&buf, workbook_cfg.profile, alloc);
+    const active_runtime = try registry.active();
+    const last_scan = (try active_runtime.db.getConfig("last_scan_at", alloc)) orelse try alloc.dupe(u8, "never");
     defer alloc.free(last_scan);
     try buf.appendSlice(alloc, ",\"last_scan_at\":");
     try shared.appendJsonStr(&buf, last_scan, alloc);
@@ -91,24 +101,13 @@ pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Sto
     return alloc.dupe(u8, buf.items);
 }
 
-pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
-    const tray_version = (try db.getConfig("tray_app_version", alloc)) orelse try alloc.dupe(u8, "not available");
-    defer alloc.free(tray_version);
-    const live_version = (try db.getConfig("live_version", alloc)) orelse try alloc.dupe(u8, "unknown");
-    defer alloc.free(live_version);
-    const db_path = (try db.getConfig("db_path", alloc)) orelse try alloc.dupe(u8, "unknown");
-    defer alloc.free(db_path);
-    const log_path = (try db.getConfig("log_path", alloc)) orelse try alloc.dupe(u8, "unknown");
-    defer alloc.free(log_path);
-    const actual_port = (try db.getConfig("actual_port", alloc)) orelse try alloc.dupe(u8, "8000");
-    defer alloc.free(actual_port);
-    const inbox_dir = try getInboxDirConfig(db, alloc);
-    defer alloc.free(inbox_dir);
+pub fn handleInfo(registry: *workbook.registry.WorkbookRegistry, auth: *test_results_auth.AuthState, license_service: *license.Service, instance_info: anytype, alloc: Allocator) ![]const u8 {
+    const active_runtime = try registry.active();
     const token = try auth.currentToken(alloc);
     defer alloc.free(token);
-    const test_results_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/test-results", .{actual_port});
+    const test_results_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/api/v1/test-results", .{instance_info.actual_port});
     defer alloc.free(test_results_endpoint);
-    const bom_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/bom", .{actual_port});
+    const bom_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/api/v1/bom", .{instance_info.actual_port});
     defer alloc.free(bom_endpoint);
     const license_path = try license.resolveLicensePath(alloc, license_service.deps.license_path_override);
     defer alloc.free(license_path);
@@ -118,13 +117,13 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "{\"tray_app_version\":");
-    try shared.appendJsonStr(&buf, tray_version, alloc);
+    try shared.appendJsonStr(&buf, instance_info.tray_app_version, alloc);
     try buf.appendSlice(alloc, ",\"live_version\":");
-    try shared.appendJsonStr(&buf, live_version, alloc);
+    try shared.appendJsonStr(&buf, instance_info.live_version, alloc);
     try buf.appendSlice(alloc, ",\"db_path\":");
-    try shared.appendJsonStr(&buf, db_path, alloc);
+    try shared.appendJsonStr(&buf, active_runtime.config.db_path, alloc);
     try buf.appendSlice(alloc, ",\"log_path\":");
-    try shared.appendJsonStr(&buf, log_path, alloc);
+    try shared.appendJsonStr(&buf, instance_info.log_path, alloc);
     try buf.appendSlice(alloc, ",\"test_results_endpoint\":");
     try shared.appendJsonStr(&buf, test_results_endpoint, alloc);
     try buf.appendSlice(alloc, ",\"bom_endpoint\":");
@@ -132,9 +131,9 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     try buf.appendSlice(alloc, ",\"test_results_token\":");
     try shared.appendJsonStr(&buf, token, alloc);
     try buf.appendSlice(alloc, ",\"inbox_dir\":");
-    try shared.appendJsonStr(&buf, inbox_dir, alloc);
+    try shared.appendJsonStr(&buf, active_runtime.config.inbox_dir, alloc);
     try buf.appendSlice(alloc, ",\"test_results_inbox_dir\":");
-    try shared.appendJsonStr(&buf, inbox_dir, alloc);
+    try shared.appendJsonStr(&buf, active_runtime.config.inbox_dir, alloc);
     try buf.appendSlice(alloc, ",\"test_results_auth_mode\":");
     try shared.appendJsonStr(&buf, "bearer_token", alloc);
     try buf.appendSlice(alloc, ",\"license_path\":");
@@ -217,26 +216,38 @@ fn installSampleLiveLicense(service: *license.Service, alloc: Allocator) !void {
 
 const testing = std.testing;
 
+fn makeTestRegistry(alloc: Allocator, store: *secure_store_mod.Store, profile: []const u8, db_path: []const u8, inbox_dir: []const u8) !workbook.registry.WorkbookRegistry {
+    var cfg = try workbook.config.bootstrapConfig(alloc, .{ .profile = profile });
+    errdefer cfg.deinit(alloc);
+    alloc.free(cfg.workbooks[0].db_path);
+    cfg.workbooks[0].db_path = try alloc.dupe(u8, db_path);
+    alloc.free(cfg.workbooks[0].inbox_dir);
+    cfg.workbooks[0].inbox_dir = try alloc.dupe(u8, inbox_dir);
+    return workbook.registry.WorkbookRegistry.initForConfig(alloc, cfg, store);
+}
+
 test "gitless mode status is configured and repos list is empty" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var db = try graph_live.GraphDb.init(":memory:");
-    defer db.deinit();
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", "/tmp/inbox");
+    defer registry.deinit(alloc);
+    const runtime = try registry.active();
 
     var state: sync_live.SyncState = .{};
 
-    try db.storeConfig("platform", "google");
-    try db.storeConfig("google_sheet_id", "sheet-123");
-    try db.storeConfig("workbook_url", "https://docs.google.com/spreadsheets/d/sheet-123/edit");
-    try db.storeConfig("workbook_label", "sheet-123");
-    try db.storeConfig("credential_display", "svc@example.com");
-    try db.storeConfig("credential_ref", "cred_status");
-    try db.storeConfig("credential_backend", "test_memory");
-    try db.storeConfig("credential_store_version", "1");
+    const cfg = try registry.activeConfig();
+    cfg.platform = .google;
+    cfg.google_sheet_id = try alloc.dupe(u8, "sheet-123");
+    cfg.workbook_url = try alloc.dupe(u8, "https://docs.google.com/spreadsheets/d/sheet-123/edit");
+    cfg.workbook_label = try alloc.dupe(u8, "sheet-123");
+    cfg.credential_display = try alloc.dupe(u8, "svc@example.com");
+    cfg.credential_ref = try alloc.dupe(u8, "cred_status");
+    runtime.config.deinit(alloc);
+    runtime.config = try cfg.clone(alloc);
     try store.put(alloc, "cred_status", "{\"platform\":\"google\",\"client_email\":\"svc@example.com\",\"private_key\":\"key\"}");
 
     var dir = testing.tmpDir(.{});
@@ -253,7 +264,7 @@ test "gitless mode status is configured and repos list is empty" {
     defer license_service.deinit(alloc);
     try installSampleLiveLicense(&license_service, alloc);
 
-    const status = try handleStatus(&db, &store, &state, &license_service, alloc);
+    const status = try handleStatus(&registry, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"platform\":\"google\"") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"credential_display\":\"svc@example.com\"") != null);
@@ -269,10 +280,10 @@ test "handleStatus includes repo scan lifecycle fields" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var db = try graph_live.GraphDb.init(":memory:");
-    defer db.deinit();
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", "/tmp/inbox");
+    defer registry.deinit(alloc);
 
     var state: sync_live.SyncState = .{};
     state.repo_scan_in_progress.store(true, .seq_cst);
@@ -281,37 +292,41 @@ test "handleStatus includes repo scan lifecycle fields" {
 
     var license_service = try license.initDefaultStub(alloc, .{});
     defer license_service.deinit(alloc);
-    const status = try handleStatus(&db, &store, &state, &license_service, alloc);
+    const status = try handleStatus(&registry, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_in_progress\":true") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_started_at\":123") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"repo_scan_last_finished_at\":456") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"license_valid\":false") != null);
 }
 
-test "handleStatus reports legacy plaintext connection as blocked" {
+test "handleStatus reports missing secure secret as blocked" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var db = try graph_live.GraphDb.init(":memory:");
-    defer db.deinit();
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", "/tmp/inbox");
+    defer registry.deinit(alloc);
     var state: sync_live.SyncState = .{};
 
-    try db.storeConfig("platform", "google");
-    try db.storeConfig("google_sheet_id", "legacy-sheet");
-    try db.storeConfig("workbook_url", "https://docs.google.com/spreadsheets/d/legacy-sheet/edit");
-    try db.storeConfig("workbook_label", "legacy-sheet");
-    try db.storeConfig("credential_display", "svc@example.com");
-    try db.storeCredential("{\"platform\":\"google\",\"client_email\":\"svc@example.com\",\"private_key\":\"pem\"}");
+    const cfg = try registry.activeConfig();
+    cfg.platform = .google;
+    cfg.google_sheet_id = try alloc.dupe(u8, "legacy-sheet");
+    cfg.workbook_url = try alloc.dupe(u8, "https://docs.google.com/spreadsheets/d/legacy-sheet/edit");
+    cfg.workbook_label = try alloc.dupe(u8, "legacy-sheet");
+    cfg.credential_display = try alloc.dupe(u8, "svc@example.com");
+    cfg.credential_ref = try alloc.dupe(u8, "cred_missing");
+    const runtime = try registry.active();
+    runtime.config.deinit(alloc);
+    runtime.config = try cfg.clone(alloc);
 
     var license_service = try license.initDefaultStub(alloc, .{});
     defer license_service.deinit(alloc);
 
-    const status = try handleStatus(&db, &store, &state, &license_service, alloc);
+    const status = try handleStatus(&registry, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":false") != null);
-    try testing.expect(std.mem.indexOf(u8, status, "\"connection_block_reason\":\"legacy_plaintext_credentials\"") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"connection_block_reason\":\"secret_not_found\"") != null);
 }
 
 test "handleInfo returns version and path details" {
@@ -319,14 +334,10 @@ test "handleInfo returns version and path details" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var db = try graph_live.GraphDb.init(":memory:");
-    defer db.deinit();
-    try db.storeConfig("tray_app_version", "0.1 (1)");
-    try db.storeConfig("live_version", "20260308-a");
-    try db.storeConfig("db_path", "/tmp/graph.db");
-    try db.storeConfig("log_path", "/tmp/server.log");
-    try db.storeConfig("actual_port", "8123");
-    try db.storeConfig("inbox_dir", "/tmp/inbox");
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
+    var registry = try makeTestRegistry(alloc, &store, "generic", "/tmp/graph.db", "/tmp/inbox");
+    defer registry.deinit(alloc);
 
     var dir = testing.tmpDir(.{});
     defer dir.cleanup();
@@ -343,7 +354,12 @@ test "handleInfo returns version and path details" {
     var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token", alloc);
     defer auth.deinit(alloc);
 
-    const resp = try handleInfo(&db, &auth, &license_service, alloc);
+    const resp = try handleInfo(&registry, &auth, &license_service, .{
+        .actual_port = @as(u16, 8123),
+        .tray_app_version = "0.1 (1)",
+        .live_version = "20260308-a",
+        .log_path = "/tmp/server.log",
+    }, alloc);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
@@ -364,14 +380,10 @@ test "handleInfo falls back to legacy inbox config key" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var db = try graph_live.GraphDb.init(":memory:");
-    defer db.deinit();
-    try db.storeConfig("tray_app_version", "0.1 (1)");
-    try db.storeConfig("live_version", "20260308-a");
-    try db.storeConfig("db_path", "/tmp/graph.db");
-    try db.storeConfig("log_path", "/tmp/server.log");
-    try db.storeConfig("actual_port", "8123");
-    try db.storeConfig("test_results_inbox_dir", "/tmp/legacy-inbox");
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
+    var registry = try makeTestRegistry(alloc, &store, "generic", "/tmp/graph.db", "/tmp/legacy-inbox");
+    defer registry.deinit(alloc);
 
     var dir = testing.tmpDir(.{});
     defer dir.cleanup();
@@ -388,7 +400,12 @@ test "handleInfo falls back to legacy inbox config key" {
     var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token-legacy", alloc);
     defer auth.deinit(alloc);
 
-    const resp = try handleInfo(&db, &auth, &license_service, alloc);
+    const resp = try handleInfo(&registry, &auth, &license_service, .{
+        .actual_port = @as(u16, 8123),
+        .tray_app_version = "0.1 (1)",
+        .live_version = "20260308-a",
+        .log_path = "/tmp/server.log",
+    }, alloc);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;

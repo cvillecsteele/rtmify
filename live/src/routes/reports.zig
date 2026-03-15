@@ -13,8 +13,8 @@ const design_history_md = @import("../design_history_md.zig");
 const design_history_pdf = @import("../design_history_pdf.zig");
 const dh_routes = @import("design_history.zig");
 
-pub fn handleReportDhrMd(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    var report = try design_history_core.buildDhrReport(db, alloc);
+pub fn handleReportDhrMd(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]const u8 {
+    var report = try design_history_core.buildDhrReport(db, profile_name, alloc);
     defer design_history_core.deinitDhrReport(&report, alloc);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -22,8 +22,8 @@ pub fn handleReportDhrMd(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 
     return alloc.dupe(u8, buf.items);
 }
 
-pub fn handleReportDhrPdf(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
-    var report = try design_history_core.buildDhrReport(db, alloc);
+pub fn handleReportDhrPdf(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]const u8 {
+    var report = try design_history_core.buildDhrReport(db, profile_name, alloc);
     defer design_history_core.deinitDhrReport(&report, alloc);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -69,7 +69,7 @@ test "handleReportDhrMd includes downstream design history artifacts" {
     defer db.deinit();
     try dh_routes.seedDhrFixture(&db);
 
-    const resp = try handleReportDhrMd(&db, alloc);
+    const resp = try handleReportDhrMd(&db, "medical", alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "# Design History Record") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Profile: medical") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "## UN-001") != null);
@@ -103,7 +103,7 @@ test "handleReportDhrMd includes unlinked requirements appendix when needed" {
     defer db.deinit();
     try dh_routes.seedDhrFixture(&db);
 
-    const resp = try handleReportDhrMd(&db, alloc);
+    const resp = try handleReportDhrMd(&db, "medical", alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "## Requirements Without User Needs") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "### Requirement REQ-999") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Standalone maintenance mode") != null);
@@ -118,7 +118,7 @@ test "handleReportDhrPdf includes downstream design history artifacts" {
     defer db.deinit();
     try dh_routes.seedDhrFixture(&db);
 
-    const resp = try handleReportDhrPdf(&db, alloc);
+    const resp = try handleReportDhrPdf(&db, "medical", alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "Design History Record") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Requirement REQ-001") != null);

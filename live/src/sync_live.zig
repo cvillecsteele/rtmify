@@ -83,6 +83,9 @@ pub const SyncState = struct {
 // ---------------------------------------------------------------------------
 
 pub const SyncConfig = struct {
+    workbook_id: []const u8,
+    workbook_slug: []const u8,
+    profile: profile_mod.ProfileId,
     active: ActiveConnection,
     /// Allocator for the sync thread
     alloc: Allocator,
@@ -100,9 +103,12 @@ pub fn syncThread(cfg: SyncConfig) void {
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const alloc = gpa_state.allocator();
-    _ = cfg.alloc; // use GPA inside thread
+    defer cfg.alloc.free(cfg.workbook_id);
+    defer cfg.alloc.free(cfg.workbook_slug);
+    var owned_active = cfg.active;
+    defer owned_active.deinit(cfg.alloc);
 
-    var active = cfg.active.clone(alloc) catch {
+    var active = owned_active.clone(alloc) catch {
         cfg.state.setError("provider_setup_failed");
         return;
     };
@@ -153,9 +159,7 @@ pub fn syncThread(cfg: SyncConfig) void {
             const pa = prov_arena.allocator();
             const prov_done = (cfg.db.getConfig("rtmify_provisioned", pa) catch null) orelse "";
             if (prov_done.len == 0) {
-                const prof_name = (cfg.db.getConfig("profile", pa) catch null) orelse "generic";
-                const pid = profile_mod.fromString(prof_name) orelse .generic;
-                const prof = profile_mod.get(pid);
+                const prof = profile_mod.get(cfg.profile);
                 _ = provision_mod.provisionWorkbook(&runtime, prof, pa) catch |e| blk: {
                     std.log.warn("provision failed: {s}", .{@errorName(e)});
                     break :blk @as([][]const u8, &.{});
@@ -164,7 +168,7 @@ pub fn syncThread(cfg: SyncConfig) void {
             }
         }
 
-        runSyncCycle(cfg.db, &runtime, cfg.state, alloc) catch |e| {
+        runSyncCycle(cfg.db, cfg.profile, &runtime, cfg.state, alloc) catch |e| {
             const msg = @errorName(e);
             cfg.state.setError(msg);
             std.log.err("sync: cycle failed: {s}", .{msg});
@@ -190,6 +194,7 @@ pub fn syncThread(cfg: SyncConfig) void {
 /// then write back status + colors.
 fn runSyncCycle(
     db: *GraphDb,
+    profile_id: profile_mod.ProfileId,
     runtime: *ProviderRuntime,
     state: *SyncState,
     alloc: Allocator,
@@ -206,8 +211,6 @@ fn runSyncCycle(
     const risk_rows = try runtime.readRows("Risks", a);
     const existing_tabs = try runtime.listTabs(a);
     defer online_provider.freeTabRefs(existing_tabs, a);
-    const profile_name = (try db.getConfig("profile", a)) orelse "generic";
-    const profile_id = profile_mod.fromString(profile_name) orelse .generic;
     const enable_decomposition_tab = profile_id == .aerospace;
     // Extended tabs — only fetch them if they actually exist to avoid noisy provider errors.
     const di_rows = try readOptionalTab(runtime, existing_tabs, "Design Inputs", a);

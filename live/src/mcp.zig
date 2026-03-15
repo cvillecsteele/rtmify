@@ -14,6 +14,7 @@ const profile_mod = @import("profile.zig");
 const chain_mod = @import("chain.zig");
 const test_results = @import("test_results.zig");
 const bom = @import("bom.zig");
+const workbook = @import("workbook/mod.zig");
 
 const ToolPayload = struct {
     text: []const u8,
@@ -115,8 +116,8 @@ const json_rpc_headers = [_]std.http.Header{
     .{ .name = "Connection", .value = "close" },
 };
 
-pub fn handleSse(req: *std.http.Server.Request, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, alloc: Allocator) !void {
-    _ = db;
+pub fn handleSse(req: *std.http.Server.Request, registry: *workbook.registry.WorkbookRegistry, secure_store_ref: *secure_store.Store, alloc: Allocator) !void {
+    _ = registry;
     _ = secure_store_ref;
     _ = alloc;
     const body =
@@ -134,11 +135,13 @@ pub fn handleSse(req: *std.http.Server.Request, db: *graph_live.GraphDb, secure_
 pub fn handlePost(
     req: *std.http.Server.Request,
     body: []const u8,
-    db: *graph_live.GraphDb,
+    registry: *workbook.registry.WorkbookRegistry,
     secure_store_ref: *secure_store.Store,
     state: *sync_live.SyncState,
     alloc: Allocator,
 ) !void {
+    const active_runtime = try registry.active();
+    const db = &active_runtime.db;
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
         return sendError(req, "null", -32600, "Invalid Request", alloc);
     };
@@ -169,29 +172,29 @@ pub fn handlePost(
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "tools/call")) {
-        try dispatchToolCall(req, root, id_raw, db, secure_store_ref, state, alloc);
+        try dispatchToolCall(req, root, id_raw, registry, db, secure_store_ref, state, active_runtime.config.profile, alloc);
     } else if (std.mem.eql(u8, method, "resources/list")) {
         const result = try resourcesListResult(db, alloc);
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "resources/read")) {
-        try dispatchResourceRead(req, root, id_raw, db, secure_store_ref, state, alloc);
+        try dispatchResourceRead(req, root, id_raw, registry, db, secure_store_ref, state, active_runtime.config.profile, alloc);
     } else if (std.mem.eql(u8, method, "prompts/list")) {
         const result = try promptsListResult(alloc);
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "prompts/get")) {
-        try dispatchPromptGet(req, root, id_raw, db, secure_store_ref, state, alloc);
+        try dispatchPromptGet(req, root, id_raw, registry, db, secure_store_ref, state, active_runtime.config.profile, alloc);
     } else {
         try sendError(req, id_raw, -32601, "Method not found", alloc);
     }
 }
 
-fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !void {
+fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const name = json_util.getString(params, "name") orelse return sendError(req, id_raw, -32602, "Missing tool name", alloc);
     const args = json_util.getObjectField(params, "arguments");
-    const dispatch = buildToolPayload(name, args, db, secure_store_ref, state, alloc) catch |e| switch (e) {
+    const dispatch = buildToolPayload(name, args, registry, db, secure_store_ref, state, profile_name, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid arguments", alloc),
         else => return e,
@@ -204,10 +207,10 @@ fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw:
     }
 }
 
-fn dispatchResourceRead(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !void {
+fn dispatchResourceRead(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const uri = json_util.getString(params, "uri") orelse return sendError(req, id_raw, -32602, "Missing uri", alloc);
-    const result = resourceReadResult(uri, db, secure_store_ref, state, alloc) catch |e| switch (e) {
+    const result = resourceReadResult(uri, registry, db, secure_store_ref, state, profile_name, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Resource not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid resource URI", alloc),
         else => return e,
@@ -216,11 +219,11 @@ fn dispatchResourceRead(req: *std.http.Server.Request, root: std.json.Value, id_
     try sendResult(req, id_raw, result, alloc);
 }
 
-fn dispatchPromptGet(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !void {
+fn dispatchPromptGet(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const name = json_util.getString(params, "name") orelse return sendError(req, id_raw, -32602, "Missing prompt name", alloc);
     const args = json_util.getObjectField(params, "arguments");
-    const result = promptGetResult(name, args, db, secure_store_ref, state, alloc) catch |e| switch (e) {
+    const result = promptGetResult(name, args, registry, db, secure_store_ref, state, profile_name, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Prompt not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid prompt arguments", alloc),
         else => return e,
@@ -254,7 +257,7 @@ fn textPayloadOwned(text: []const u8) ToolPayload {
     return .{ .text = text };
 }
 
-fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) !ToolDispatch {
+fn buildToolPayload(name: []const u8, args: ?std.json.Value, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !ToolDispatch {
     if (std.mem.eql(u8, name, "get_rtm")) {
         const data = try routes.handleRtm(db, alloc);
         defer alloc.free(data);
@@ -309,7 +312,7 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
             .trial_policy = .requires_license,
         });
         defer license_service.deinit(alloc);
-        const data = try routes.handleStatus(db, secure_store_ref, state, &license_service, alloc);
+        const data = try routes.handleStatus(registry, secure_store_ref, state, &license_service, alloc);
         return .{ .payload = jsonPayloadOwned(data) };
     } else if (std.mem.eql(u8, name, "clear_suspect")) {
         const node_id = try requireStringArg(args, "id");
@@ -344,7 +347,7 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         return .{ .payload = try filteredArrayPayload(data, args, .{}, alloc) };
     } else if (std.mem.eql(u8, name, "design_history")) {
         const req_id = try requireStringArg(args, "req_id");
-        const data = try routes.handleDesignHistory(db, req_id, alloc);
+        const data = try routes.handleDesignHistory(db, profile_name, req_id, alloc);
         return .{ .payload = jsonPayloadOwned(data) };
     } else if (std.mem.eql(u8, name, "get_test_results")) {
         const test_case_ref = try requireStringArg(args, "test_case_ref");
@@ -420,18 +423,18 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
         return .{ .payload = jsonPayloadOwnedWithNote(try alloc.dupe(u8, data.body), note) };
     } else if (std.mem.eql(u8, name, "requirement_trace")) {
         const id = try requireStringArg(args, "id");
-        return .{ .payload = textPayloadOwned(try requirementTraceMarkdown(id, db, alloc)) };
+        return .{ .payload = textPayloadOwned(try requirementTraceMarkdown(id, db, profile_name, alloc)) };
     } else if (std.mem.eql(u8, name, "gap_explanation")) {
         const code = try requireIntArg(args, "code");
         const node_id = try requireStringArg(args, "node_id");
-        return .{ .payload = textPayloadOwned(try gapExplanationMarkdown(@intCast(code), node_id, db, alloc)) };
+        return .{ .payload = textPayloadOwned(try gapExplanationMarkdown(@intCast(code), node_id, db, profile_name, alloc)) };
     } else if (std.mem.eql(u8, name, "impact_summary")) {
         const id = try requireStringArg(args, "id");
         return .{ .payload = textPayloadOwned(try impactMarkdown(id, db, alloc)) };
     } else if (std.mem.eql(u8, name, "status_summary")) {
-        return .{ .payload = textPayloadOwned(try statusMarkdown(db, secure_store_ref, state, alloc)) };
+        return .{ .payload = textPayloadOwned(try statusMarkdown(registry, secure_store_ref, state, alloc)) };
     } else if (std.mem.eql(u8, name, "review_summary")) {
-        return .{ .payload = textPayloadOwned(try reviewSummaryMarkdown(db, state, alloc)) };
+        return .{ .payload = textPayloadOwned(try reviewSummaryMarkdown(db, profile_name, state, alloc)) };
     }
     return .{ .not_found = {} };
 }
@@ -582,7 +585,7 @@ fn chainGapsToolPayload(db: *graph_live.GraphDb, args: ?std.json.Value, alloc: A
         try all.appendSlice(alloc, edge_gaps);
         try all.appendSlice(alloc, special_gaps);
         break :blk try chain_mod.gapsToJson(all.items, alloc);
-    } else try routes.handleChainGaps(db, alloc);
+    } else try routes.handleChainGaps(db, prof_name orelse "generic", alloc);
     defer alloc.free(data);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
@@ -625,7 +628,7 @@ fn resourcesListResult(db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
     try buf.appendSlice(alloc, resources_json);
 
     var added_any = false;
-    const gaps_json = routes.handleChainGaps(db, arena) catch null;
+    const gaps_json = routes.handleChainGaps(db, "generic", arena) catch null;
     if (gaps_json) |gjson| {
         var parsed = try std.json.parseFromSlice(std.json.Value, arena, gjson, .{});
         defer parsed.deinit();
@@ -685,9 +688,9 @@ fn resourcesListResult(db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
     return alloc.dupe(u8, buf.items);
 }
 
-fn resourceReadResult(uri: []const u8, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn resourceReadResult(uri: []const u8, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) ![]u8 {
     const text = if (std.mem.startsWith(u8, uri, "requirement://"))
-        try requirementTraceMarkdown(uri[14..], db, alloc)
+        try requirementTraceMarkdown(uri[14..], db, profile_name, alloc)
     else if (std.mem.startsWith(u8, uri, "user-need://"))
         try nodeMarkdown(uri[12..], db, alloc)
     else if (std.mem.startsWith(u8, uri, "risk://"))
@@ -701,22 +704,22 @@ fn resourceReadResult(uri: []const u8, db: *graph_live.GraphDb, secure_store_ref
     else if (std.mem.startsWith(u8, uri, "impact://"))
         try impactMarkdown(uri[9..], db, alloc)
     else if (std.mem.startsWith(u8, uri, "design-history://"))
-        try designHistoryMarkdown(uri[17..], db, alloc)
+        try designHistoryMarkdown(uri[17..], db, profile_name, alloc)
     else if (std.mem.startsWith(u8, uri, "gap://")) blk: {
         const rest = uri[6..];
         const slash = std.mem.indexOfScalar(u8, rest, '/') orelse return error.InvalidArgument;
         const code = std.fmt.parseInt(u16, rest[0..slash], 10) catch return error.InvalidArgument;
-        break :blk try gapExplanationMarkdown(code, rest[slash + 1 ..], db, alloc);
+        break :blk try gapExplanationMarkdown(code, rest[slash + 1 ..], db, profile_name, alloc);
     } else if (std.mem.eql(u8, uri, "report://status"))
-        try statusMarkdown(db, secure_store_ref, state, alloc)
+        try statusMarkdown(registry, secure_store_ref, state, alloc)
     else if (std.mem.eql(u8, uri, "report://chain-gaps"))
-        try chainGapSummaryMarkdown(db, alloc)
+        try chainGapSummaryMarkdown(db, profile_name, alloc)
     else if (std.mem.eql(u8, uri, "report://rtm"))
         try rtmSummaryMarkdown(db, alloc)
     else if (std.mem.eql(u8, uri, "report://code-traceability"))
         try codeTraceabilitySummaryMarkdown(db, alloc)
     else if (std.mem.eql(u8, uri, "report://review"))
-        try reviewSummaryMarkdown(db, state, alloc)
+        try reviewSummaryMarkdown(db, profile_name, state, alloc)
     else
         return error.NotFound;
     defer alloc.free(text);
@@ -735,10 +738,12 @@ fn promptsListResult(alloc: Allocator) ![]u8 {
     return std.fmt.allocPrint(alloc, "{{\"prompts\":{s}}}", .{prompts_json});
 }
 
-fn promptGetResult(name: []const u8, args: ?std.json.Value, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn promptGetResult(name: []const u8, args: ?std.json.Value, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) ![]u8 {
     _ = db;
     _ = secure_store_ref;
     _ = state;
+    _ = registry;
+    _ = profile_name;
     const body = if (std.mem.eql(u8, name, "trace_requirement")) blk: {
         const id = try requireStringArg(args, "id");
         break :blk try std.fmt.allocPrint(alloc, "Trace requirement {s} using RTMify. Read requirement://{s} and design-history://{s}. If needed, call commit_history with req_id={s} and code_traceability. Produce sections: Overview, Upstream Need, Verification, Risks, Code & Commits, Chain Gaps, and Open Questions. Keep the output concise and call out any missing links explicitly.", .{ id, id, id, id });
@@ -833,11 +838,11 @@ fn nodeMarkdown(node_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator) 
     return markdownFromNodeDetail(node, json_util.getObjectField(parsed.value, "edges_out"), json_util.getObjectField(parsed.value, "edges_in"), alloc);
 }
 
-fn requirementTraceMarkdown(req_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
+fn requirementTraceMarkdown(req_id: []const u8, db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const data = try routes.handleDesignHistory(db, req_id, arena);
+    const data = try routes.handleDesignHistory(db, profile_name, req_id, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();
     const requirement = json_util.getObjectField(parsed.value, "requirement") orelse return error.NotFound;
@@ -860,8 +865,8 @@ fn requirementTraceMarkdown(req_id: []const u8, db: *graph_live.GraphDb, alloc: 
     return alloc.dupe(u8, buf.items);
 }
 
-fn designHistoryMarkdown(req_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
-    return requirementTraceMarkdown(req_id, db, alloc);
+fn designHistoryMarkdown(req_id: []const u8, db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]u8 {
+    return requirementTraceMarkdown(req_id, db, profile_name, alloc);
 }
 
 fn impactMarkdown(node_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
@@ -891,7 +896,7 @@ fn impactMarkdown(node_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator
     return alloc.dupe(u8, buf.items);
 }
 
-fn statusMarkdown(db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn statusMarkdown(registry: *workbook.registry.WorkbookRegistry, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -899,7 +904,7 @@ fn statusMarkdown(db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store
         .product = .live,
         .trial_policy = .requires_license,
     });
-    const data = try routes.handleStatus(db, secure_store_ref, state, &license_service, arena);
+    const data = try routes.handleStatus(registry, secure_store_ref, state, &license_service, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();
     var buf: std.ArrayList(u8) = .empty;
@@ -917,11 +922,11 @@ fn statusMarkdown(db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store
     return alloc.dupe(u8, buf.items);
 }
 
-fn chainGapSummaryMarkdown(db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
+fn chainGapSummaryMarkdown(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const data = try routes.handleChainGaps(db, arena);
+    const data = try routes.handleChainGaps(db, profile_name, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();
     var err_count: usize = 0;
@@ -980,13 +985,13 @@ fn codeTraceabilitySummaryMarkdown(db: *graph_live.GraphDb, alloc: Allocator) ![
     return alloc.dupe(u8, buf.items);
 }
 
-fn reviewSummaryMarkdown(db: *graph_live.GraphDb, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
+fn reviewSummaryMarkdown(db: *graph_live.GraphDb, profile_name: []const u8, state: *sync_live.SyncState, alloc: Allocator) ![]u8 {
     _ = state;
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const suspects_json = try routes.handleSuspects(db, arena);
-    const gaps_json = try routes.handleChainGaps(db, arena);
+    const gaps_json = try routes.handleChainGaps(db, profile_name, arena);
     var suspects_parsed = try std.json.parseFromSlice(std.json.Value, arena, suspects_json, .{});
     defer suspects_parsed.deinit();
     var gaps_parsed = try std.json.parseFromSlice(std.json.Value, arena, gaps_json, .{});
@@ -1001,11 +1006,11 @@ fn reviewSummaryMarkdown(db: *graph_live.GraphDb, state: *sync_live.SyncState, a
     return alloc.dupe(u8, buf.items);
 }
 
-fn gapExplanationMarkdown(code: u16, node_id: []const u8, db: *graph_live.GraphDb, alloc: Allocator) ![]u8 {
+fn gapExplanationMarkdown(code: u16, node_id: []const u8, db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const data = try routes.handleChainGaps(db, arena);
+    const data = try routes.handleChainGaps(db, profile_name, arena);
     var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
     defer parsed.deinit();
     if (parsed.value != .array) return error.NotFound;
@@ -1022,8 +1027,6 @@ fn gapExplanationMarkdown(code: u16, node_id: []const u8, db: *graph_live.GraphD
         }
     }
     const gap = found orelse return error.NotFound;
-    const profile_name = (try db.getConfig("profile", alloc)) orelse try alloc.dupe(u8, "generic");
-    defer alloc.free(profile_name);
     return markdownFromGap(gap, profile_name, alloc);
 }
 
@@ -1339,6 +1342,16 @@ fn sendError(req: *std.http.Server.Request, id_raw: []const u8, code: i32, messa
 
 const testing = std.testing;
 
+fn makeTestRegistry(alloc: Allocator, store: *secure_store.Store, profile_name: []const u8) !workbook.registry.WorkbookRegistry {
+    var cfg = try workbook.config.bootstrapConfig(alloc, .{ .profile = profile_name });
+    errdefer cfg.deinit(alloc);
+    alloc.free(cfg.workbooks[0].db_path);
+    cfg.workbooks[0].db_path = try alloc.dupe(u8, ":memory:");
+    alloc.free(cfg.workbooks[0].inbox_dir);
+    cfg.workbooks[0].inbox_dir = try alloc.dupe(u8, "/tmp/inbox");
+    return workbook.registry.WorkbookRegistry.initForConfig(alloc, cfg, store);
+}
+
 fn parseJsonForTest(json: []const u8, alloc: Allocator) !std.json.Parsed(std.json.Value) {
     return std.json.parseFromSlice(std.json.Value, alloc, json, .{});
 }
@@ -1409,7 +1422,9 @@ test "resources read returns requirement markdown" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    const resp = try resourceReadResult("requirement://REQ-001", &db, &store, &state, testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    const resp = try resourceReadResult("requirement://REQ-001", &registry, &db, &store, &state, "generic", testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "# Requirement REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "User Needs") != null);
@@ -1424,7 +1439,9 @@ test "resources read returns impact markdown" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    const resp = try resourceReadResult("impact://UN-001", &db, &store, &state, testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    const resp = try resourceReadResult("impact://UN-001", &registry, &db, &store, &state, "generic", testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "# Impact Analysis for UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-001") != null);
@@ -1433,14 +1450,15 @@ test "resources read returns impact markdown" {
 test "resources read returns gap markdown" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
-    try db.storeConfig("profile", "aerospace");
     try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Example\"}", null);
     try db.addNode("UN-001", "UserNeed", "{\"statement\":\"Need\"}", null);
     try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    const resp = try resourceReadResult("gap://1203/REQ-001", &db, &store, &state, testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "aerospace");
+    defer registry.deinit(testing.allocator);
+    const resp = try resourceReadResult("gap://1203/REQ-001", &registry, &db, &store, &state, "aerospace", testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "What RTMify Checked") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-001") != null);
@@ -1452,7 +1470,9 @@ test "resources read invalid uri returns error" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    try testing.expectError(error.NotFound, resourceReadResult("unknown://x", &db, &store, &state, testing.allocator));
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    try testing.expectError(error.NotFound, resourceReadResult("unknown://x", &registry, &db, &store, &state, "generic", testing.allocator));
 }
 
 test "prompts list returns expected names" {
@@ -1471,7 +1491,9 @@ test "prompts get interpolates arguments" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    const resp = try promptGetResult("trace_requirement", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    const resp = try promptGetResult("trace_requirement", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "design-history://REQ-001") != null);
@@ -1519,7 +1541,9 @@ test "large output tools honor limit with truncation note" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    const dispatch = try buildToolPayload("get_rtm", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    const dispatch = try buildToolPayload("get_rtm", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     const payload = switch (dispatch) {
         .payload => |payload| payload,
@@ -1546,11 +1570,13 @@ test "get_node honors include_edges and include_properties flags" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
 
     var args_default = std.json.ObjectMap.init(testing.allocator);
     defer args_default.deinit();
     try args_default.put("id", .{ .string = "REQ-001" });
-    const dispatch_default = try buildToolPayload("get_node", .{ .object = args_default }, &db, &store, &state, testing.allocator);
+    const dispatch_default = try buildToolPayload("get_node", .{ .object = args_default }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch_default.deinit(testing.allocator);
     const payload_default = switch (dispatch_default) {
         .payload => |payload| payload,
@@ -1565,7 +1591,7 @@ test "get_node honors include_edges and include_properties flags" {
     defer args_no_edges.deinit();
     try args_no_edges.put("id", .{ .string = "REQ-001" });
     try args_no_edges.put("include_edges", .{ .bool = false });
-    const dispatch_no_edges = try buildToolPayload("get_node", .{ .object = args_no_edges }, &db, &store, &state, testing.allocator);
+    const dispatch_no_edges = try buildToolPayload("get_node", .{ .object = args_no_edges }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch_no_edges.deinit(testing.allocator);
     const payload_no_edges = switch (dispatch_no_edges) {
         .payload => |payload| payload,
@@ -1580,7 +1606,7 @@ test "get_node honors include_edges and include_properties flags" {
     defer args_no_props.deinit();
     try args_no_props.put("id", .{ .string = "REQ-001" });
     try args_no_props.put("include_properties", .{ .bool = false });
-    const dispatch_no_props = try buildToolPayload("get_node", .{ .object = args_no_props }, &db, &store, &state, testing.allocator);
+    const dispatch_no_props = try buildToolPayload("get_node", .{ .object = args_no_props }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch_no_props.deinit(testing.allocator);
     const payload_no_props = switch (dispatch_no_props) {
         .payload => |payload| payload,
@@ -1597,11 +1623,13 @@ test "get_bom_item invalid selector returns specific message" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
 
     var args_obj = std.json.ObjectMap.init(testing.allocator);
     defer args_obj.deinit();
     try args_obj.put("bom_name", .{ .string = "pcba" });
-    const dispatch = try buildToolPayload("get_bom_item", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    const dispatch = try buildToolPayload("get_bom_item", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     switch (dispatch) {
         .invalid_arguments => |msg| try testing.expectEqualStrings("get_bom_item requires either 'id' or the full selector: full_product_identifier, bom_type, bom_name, part, revision", msg),
@@ -1615,11 +1643,13 @@ test "implementation changes tool validates required arguments explicitly" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
 
     var args_obj = std.json.ObjectMap.init(testing.allocator);
     defer args_obj.deinit();
     try args_obj.put("since", .{ .string = "2026-03-05T00:00:00Z" });
-    const dispatch = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    const dispatch = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     switch (dispatch) {
         .invalid_arguments => |msg| try testing.expectEqualStrings("implementation_changes_since requires 'since' and 'node_type'", msg),
@@ -1648,7 +1678,9 @@ test "implementation changes tool returns bounded rows" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
-    const dispatch = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    const dispatch = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     const payload = switch (dispatch) {
         .payload => |payload| payload,
@@ -1691,8 +1723,10 @@ test "get_bom tool returns product bom tree" {
     var state: sync_live.SyncState = .{};
     var store = try secure_store.initTestMemory(testing.allocator);
     defer store.deinit(testing.allocator);
+    var registry = try makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
 
-    const dispatch = try buildToolPayload("get_bom", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    const dispatch = try buildToolPayload("get_bom", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     const payload = switch (dispatch) {
         .payload => |payload| payload,

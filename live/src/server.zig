@@ -10,8 +10,8 @@ const rtmify = @import("rtmify");
 const license = rtmify.license;
 const graph_live = @import("graph_live.zig");
 const secure_store = @import("secure_store.zig");
+const workbook = @import("workbook/mod.zig");
 const sync_live = @import("sync_live.zig");
-const test_results_auth = @import("test_results_auth.zig");
 const routes = @import("routes.zig");
 
 const test_results_body_limit_bytes = 10 * 1024 * 1024;
@@ -19,15 +19,19 @@ const bom_body_limit_bytes = 25 * 1024 * 1024;
 const payload_too_large_json = "{\"error\":\"payload_too_large\"}";
 
 pub const ServerCtx = struct {
-    db: *graph_live.GraphDb,
+    registry: *workbook.registry.WorkbookRegistry,
     secure_store: *secure_store.Store,
-    state: *sync_live.SyncState,
     license_service: *license.Service,
-    test_results_auth: *test_results_auth.AuthState,
+    instance_info: InstanceInfo,
     alloc: Allocator,
-    /// Called after POST /api/connection to (re)start the sync thread if not already running.
-    /// Set by main_live.zig; null means auto-start is not configured.
-    startSyncFn: ?*const fn (*graph_live.GraphDb, *secure_store.Store, *sync_live.SyncState, Allocator) void = null,
+    ensure_sync_started_fn: ?*const fn (*workbook.registry.WorkbookRegistry, *secure_store.Store, Allocator) void = null,
+};
+
+pub const InstanceInfo = struct {
+    actual_port: u16,
+    live_version: []const u8,
+    tray_app_version: []const u8,
+    log_path: []const u8,
 };
 
 /// Listen on `port` and serve HTTP requests forever.
@@ -144,7 +148,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
     if (req.head.method != .OPTIONS and !isLicenseExempt(req.head.method, path)) {
         var license_status = try ctx.license_service.getStatus(alloc);
         defer license_status.deinit(alloc);
-        ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
+        const active_runtime = try ctx.registry.active();
+        active_runtime.sync_state.product_enabled.store(license_status.permits_use, .seq_cst);
         if (!license_status.permits_use) {
             const body = try std.fmt.allocPrint(alloc, "{{\"error\":\"license_required\",\"license_state\":\"{s}\"}}", .{
                 @tagName(license_status.state),
@@ -156,68 +161,73 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         }
     }
 
+    const active_runtime = try ctx.registry.active();
+    const db = &active_runtime.db;
+    const state = &active_runtime.sync_state;
+    const auth = &active_runtime.ingest_auth;
+
     if (req.head.method == .GET) {
         if (std.mem.eql(u8, path, "/nodes")) {
             const type_filter = try queryParamDecoded(target, "type", alloc);
-            const body = try routes.handleNodes(ctx.db, type_filter, alloc);
+            const body = try routes.handleNodes(db, type_filter, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/nodes/types")) {
-            const body = try routes.handleNodeTypes(ctx.db, alloc);
+            const body = try routes.handleNodeTypes(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/edges/labels")) {
-            const body = try routes.handleEdgeLabels(ctx.db, alloc);
+            const body = try routes.handleEdgeLabels(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/search")) {
             const q = (try queryParamDecoded(target, "q", alloc)) orelse "";
-            const body = try routes.handleSearch(ctx.db, q, alloc);
+            const body = try routes.handleSearch(db, q, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/schema")) {
-            const body = try routes.handleSchema(ctx.db, alloc);
+            const body = try routes.handleSchema(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/gaps")) {
-            const body = try routes.handleGaps(ctx.db, alloc);
+            const body = try routes.handleGaps(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/rtm")) {
-            const body = try routes.handleRtm(ctx.db, alloc);
+            const body = try routes.handleRtm(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/suspects")) {
-            const body = try routes.handleSuspects(ctx.db, alloc);
+            const body = try routes.handleSuspects(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/user-needs")) {
-            const body = try routes.handleUserNeeds(ctx.db, alloc);
+            const body = try routes.handleUserNeeds(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/tests")) {
-            const body = try routes.handleTests(ctx.db, alloc);
+            const body = try routes.handleTests(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/risks")) {
-            const body = try routes.handleRisks(ctx.db, alloc);
+            const body = try routes.handleRisks(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/impact/")) {
             const node_id = try decodePathParam(path["/query/impact/".len..], alloc);
             std.log.info("impact request start id={s}", .{node_id});
-            const body = routes.handleImpact(ctx.db, node_id, alloc) catch |e| switch (e) {
+            const body = routes.handleImpact(db, node_id, alloc) catch |e| switch (e) {
                 error.NotFound => {
                     std.log.warn("impact request not found id={s}", .{node_id});
                     const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
@@ -237,7 +247,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/node/")) {
             const node_id = try decodePathParam(path["/query/node/".len..], alloc);
-            const body = routes.handleNode(ctx.db, node_id, alloc) catch |e| switch (e) {
+            const body = routes.handleNode(db, node_id, alloc) catch |e| switch (e) {
                 error.NotFound => {
                     const err_body = try std.fmt.allocPrint(alloc, "{{\"error\":\"node not found\",\"id\":\"{s}\"}}", .{node_id});
                     response_status = .not_found;
@@ -251,7 +261,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/status")) {
-            const body = try routes.handleStatus(ctx.db, ctx.secure_store, ctx.state, ctx.license_service, alloc);
+            const body = try routes.handleStatus(ctx.registry, ctx.secure_store, state, ctx.license_service, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -261,7 +271,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/info")) {
-            const body = try routes.handleInfo(ctx.db, ctx.test_results_auth, ctx.license_service, alloc);
+            const body = try routes.handleInfo(ctx.registry, auth, ctx.license_service, ctx.instance_info, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -273,8 +283,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.startsWith(u8, path, "/api/v1/test-results/")) {
             const execution_id = try decodePathParam(path["/api/v1/test-results/".len..], alloc);
             const resp = try routes.handleGetExecutionResponse(
-                ctx.db,
-                ctx.test_results_auth,
+                db,
+                auth,
                 requestHeaderValue(req, "Authorization"),
                 execution_id,
                 alloc,
@@ -287,8 +297,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const bom_type = try queryParamDecoded(target, "bom_type", alloc);
             const bom_name = try queryParamDecoded(target, "bom_name", alloc);
             const resp = try routes.handleGetBomResponse(
-                ctx.db,
-                ctx.test_results_auth,
+                db,
+                auth,
                 requestHeaderValue(req, "Authorization"),
                 full_product_identifier,
                 bom_type,
@@ -300,13 +310,13 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = try queryParamDecoded(target, "profile", alloc);
-            const body = try routes.handleProvisionPreview(ctx.db, ctx.secure_store, qprofile, alloc);
+            const body = try routes.handleProvisionPreview(ctx.registry, ctx.secure_store, qprofile, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/diagnostics")) {
             const qsource = try queryParamDecoded(target, "source", alloc);
-            const body = try routes.handleDiagnostics(ctx.db, qsource, alloc);
+            const body = try routes.handleDiagnostics(db, qsource, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -316,47 +326,47 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/coverage.md")) {
-            const body = try routes.handleCoverageReport(ctx.db, alloc);
+            const body = try routes.handleCoverageReport(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendText(req, body, "text/plain; charset=utf-8");
         } else if (std.mem.eql(u8, path, "/report/rtm")) {
-            const body = try routes.handleReportRtmPdf(ctx.db, alloc);
+            const body = try routes.handleReportRtmPdf(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendPdf(req, body);
         } else if (std.mem.eql(u8, path, "/report/rtm.md")) {
-            const body = try routes.handleReportRtmMd(ctx.db, alloc);
+            const body = try routes.handleReportRtmMd(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendText(req, body, "text/markdown");
         } else if (std.mem.eql(u8, path, "/report/rtm.docx")) {
-            const body = try routes.handleReportRtmDocx(ctx.db, alloc);
+            const body = try routes.handleReportRtmDocx(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendDocx(req, body);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
-            const body = try routes.handleGetProfile(ctx.db, alloc);
+            const body = try routes.handleGetProfile(ctx.registry, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/api/repos")) {
-            const body = try routes.handleGetRepos(ctx.db, alloc);
+            const body = try routes.handleGetRepos(ctx.registry, db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/chain-gaps")) {
-            const body = try routes.handleChainGaps(ctx.db, alloc);
+            const body = try routes.handleChainGaps(db, active_runtime.config.profile, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/code-traceability")) {
-            const body = try routes.handleCodeTraceability(ctx.db, alloc);
+            const body = try routes.handleCodeTraceability(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/recent-commits")) {
-            const body = try routes.handleRecentCommits(ctx.db, alloc);
+            const body = try routes.handleRecentCommits(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
@@ -366,46 +376,46 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const repo = try queryParamDecoded(target, "repo", alloc);
             const limit = try queryParamDecoded(target, "limit", alloc);
             const offset = try queryParamDecoded(target, "offset", alloc);
-            const resp = try routes.handleImplementationChangesResponse(ctx.db, since, node_type, repo, limit, offset, alloc);
+            const resp = try routes.handleImplementationChangesResponse(db, since, node_type, repo, limit, offset, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/query/unimplemented-requirements")) {
-            const body = try routes.handleUnimplementedRequirements(ctx.db, alloc);
+            const body = try routes.handleUnimplementedRequirements(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/untested-source-files")) {
-            const body = try routes.handleUntestedSourceFiles(ctx.db, alloc);
+            const body = try routes.handleUntestedSourceFiles(db, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/query/file-annotations")) {
             const file_path = (try queryParamDecoded(target, "file_path", alloc)) orelse "";
-            const body = try routes.handleFileAnnotations(ctx.db, file_path, alloc);
+            const body = try routes.handleFileAnnotations(db, file_path, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.startsWith(u8, path, "/query/commit-history/")) {
             const req_id = try decodePathParam(path["/query/commit-history/".len..], alloc);
-            const body = try routes.handleCommitHistory(ctx.db, req_id, alloc);
+            const body = try routes.handleCommitHistory(db, req_id, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
         } else if (std.mem.eql(u8, path, "/report/dhr/md")) {
-            const body = try routes.handleReportDhrMd(ctx.db, alloc);
+            const body = try routes.handleReportDhrMd(db, active_runtime.config.profile, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendText(req, body, "text/markdown");
         } else if (std.mem.eql(u8, path, "/report/dhr/pdf")) {
-            const body = try routes.handleReportDhrPdf(ctx.db, alloc);
+            const body = try routes.handleReportDhrPdf(db, active_runtime.config.profile, alloc);
             response_status = .ok;
             response_bytes = body.len;
             try sendPdf(req, body);
         } else if (std.mem.eql(u8, path, "/mcp")) {
             // SSE endpoint — delegated to mcp.zig (streamed, not a simple response)
             response_status = .ok;
-            try @import("mcp.zig").handleSse(req, ctx.db, ctx.secure_store, alloc);
+            try @import("mcp.zig").handleSse(req, ctx.registry, ctx.secure_store, alloc);
         } else {
             response_status = .not_found;
             response_bytes = "{\"error\":\"not found\"}".len;
@@ -415,16 +425,16 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         if (std.mem.eql(u8, path, "/mcp")) {
             const body_bytes = try readBody(req, alloc);
             response_status = .ok;
-            try @import("mcp.zig").handlePost(req, body_bytes, ctx.db, ctx.secure_store, ctx.state, alloc);
+            try @import("mcp.zig").handlePost(req, body_bytes, ctx.registry, ctx.secure_store, state, alloc);
         } else if (std.mem.eql(u8, path, "/api/license/import")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleLicenseImportResponse(ctx.license_service, body_bytes, alloc);
             if (resp.ok) {
                 var license_status = try ctx.license_service.getStatus(alloc);
                 defer license_status.deinit(alloc);
-                ctx.state.product_enabled.store(license_status.permits_use, .seq_cst);
+                state.product_enabled.store(license_status.permits_use, .seq_cst);
                 if (license_status.permits_use) {
-                    if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
+                    if (ctx.ensure_sync_started_fn) |f| f(ctx.registry, ctx.secure_store, ctx.alloc);
                 }
             }
             response_status = resp.status;
@@ -432,29 +442,29 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/license/clear")) {
             const resp = try routes.handleLicenseClearResponse(ctx.license_service, alloc);
-            if (resp.ok) ctx.state.product_enabled.store(false, .seq_cst);
+            if (resp.ok) state.product_enabled.store(false, .seq_cst);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/v1/test-results/token/regenerate")) {
-            const resp = try routes.handleRegenerateTestResultsTokenResponse(ctx.test_results_auth, alloc);
+            const resp = try routes.handleRegenerateTestResultsTokenResponse(auth, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/profile")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handlePostProfileResponse(ctx.db, body_bytes, alloc);
+            const resp = try routes.handlePostProfileResponse(ctx.registry, body_bytes, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/repos")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handlePostRepoResponse(ctx.db, body_bytes, alloc);
+            const resp = try routes.handlePostRepoResponse(ctx.registry, db, body_bytes, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/repos/scan")) {
-            sync_live.triggerRepoScanNow(ctx.db, ctx.state, alloc) catch |e| {
+            sync_live.triggerRepoScanNow(db, state, alloc) catch |e| {
                 const body = try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)});
                 response_status = .internal_server_error;
                 response_bytes = body.len;
@@ -473,9 +483,9 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/connection")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleConnectionResponse(ctx.db, ctx.secure_store, body_bytes, alloc);
+            const resp = try routes.handleConnectionResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
             if (resp.ok) {
-                if (ctx.startSyncFn) |f| f(ctx.db, ctx.secure_store, ctx.state, ctx.alloc);
+                if (ctx.ensure_sync_started_fn) |f| f(ctx.registry, ctx.secure_store, ctx.alloc);
             }
             response_status = resp.status;
             response_bytes = resp.body.len;
@@ -491,8 +501,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 else => return err,
             };
             const resp = try routes.handlePostTestResultsResponse(
-                ctx.db,
-                ctx.test_results_auth,
+                db,
+                auth,
                 requestHeaderValue(req, "Authorization"),
                 body_bytes,
                 alloc,
@@ -511,8 +521,8 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 else => return err,
             };
             const resp = try routes.handlePostBomResponse(
-                ctx.db,
-                ctx.test_results_auth,
+                db,
+                auth,
                 requestHeaderValue(req, "Authorization"),
                 requestHeaderValue(req, "Content-Type"),
                 body_bytes,
@@ -522,7 +532,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision")) {
-            const resp = try routes.handleProvisionResponse(ctx.db, ctx.secure_store, alloc);
+            const resp = try routes.handleProvisionResponse(ctx.registry, ctx.secure_store, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
@@ -530,13 +540,13 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             std.mem.endsWith(u8, path, "/clear"))
         {
             const node_id = try decodePathParam(path["/suspect/".len .. path.len - "/clear".len], alloc);
-            const resp = try routes.handleClearSuspect(ctx.db, node_id, alloc);
+            const resp = try routes.handleClearSuspect(db, node_id, alloc);
             response_status = .ok;
             response_bytes = resp.len;
             try sendJson(req, resp);
         } else if (std.mem.eql(u8, path, "/ingest")) {
             const body_bytes = try readBody(req, alloc);
-            const resp = try routes.handleIngest(ctx.db, body_bytes, alloc);
+            const resp = try routes.handleIngest(db, body_bytes, alloc);
             response_status = .ok;
             response_bytes = resp.len;
             try sendJson(req, resp);
@@ -548,7 +558,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
     } else if (req.head.method == .DELETE) {
         if (std.mem.startsWith(u8, path, "/api/repos/")) {
             const idx = path["/api/repos/".len..];
-            const resp = try routes.handleDeleteRepoResponse(ctx.db, idx, alloc);
+            const resp = try routes.handleDeleteRepoResponse(ctx.registry, idx, alloc);
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
