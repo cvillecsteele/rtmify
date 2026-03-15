@@ -28,6 +28,14 @@ jobs:
         with:
           version: 0.15.2
 
+      - name: Write license HMAC key
+        env:
+          RTMIFY_LICENSE_HMAC_KEY: ${{ secrets.RTMIFY_LICENSE_HMAC_KEY }}
+        run: |
+          $keyPath = Join-Path $env:RUNNER_TEMP "license-hmac-key.txt"
+          $env:RTMIFY_LICENSE_HMAC_KEY | Out-File -FilePath $keyPath -NoNewline -Encoding ascii
+          "RTMIFY_LICENSE_HMAC_KEY_FILE=$keyPath" >> $env:GITHUB_ENV
+
       - name: Build Windows server
         run: zig build live -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
 
