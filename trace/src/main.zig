@@ -8,6 +8,8 @@ const render_docx = rtmify.render_docx;
 const render_pdf = rtmify.render_pdf;
 const license = rtmify.license;
 const diagnostic = rtmify.diagnostic;
+const profile_mod = rtmify.profile;
+const report_mod = rtmify.report;
 const Diagnostics = diagnostic.Diagnostics;
 
 const VERSION = @import("build_options").version;
@@ -42,6 +44,7 @@ pub const Args = struct {
     version: bool = false,
     help: bool = false,
     gaps_json: ?[]const u8 = null,
+    profile: profile_mod.ProfileId = .generic,
 };
 
 pub const LicenseCommand = enum {
@@ -54,6 +57,7 @@ pub const ParseError = error{
     UnknownFlag,
     MissingValue,
     InvalidFormat,
+    InvalidProfile,
     ConflictingOptions,
 };
 
@@ -108,6 +112,10 @@ pub fn parseArgs(tokens: []const []const u8) ParseError!Args {
             i += 1;
             if (i >= tokens.len) return error.MissingValue;
             args.gaps_json = tokens[i];
+        } else if (std.mem.eql(u8, tok, "--profile")) {
+            i += 1;
+            if (i >= tokens.len) return error.MissingValue;
+            args.profile = profile_mod.fromString(tokens[i]) orelse return error.InvalidProfile;
         } else if (std.mem.eql(u8, tok, "--project")) {
             i += 1;
             if (i >= tokens.len) return error.MissingValue;
@@ -137,6 +145,7 @@ const HELP =
     \\  --output <path>          Output file or directory (default: same dir as input)
     \\  --project <name>         Project name for report header (default: filename)
     \\  --gaps-json <path>       Write diagnostics + gap analysis JSON to path
+    \\  --profile <name>         Validation profile: medical, aerospace, automotive, generic
     \\  --license <path>         Use a specific signed license file for this run
     \\  license info [--json]    Show installed license details
     \\  license install <path>   Install a signed license file
@@ -150,6 +159,7 @@ const HELP =
     \\  rtmify-trace requirements.xlsx --format all --output ./reports/
     \\  rtmify-trace requirements.xlsx --format md --project "Ventilator v2.1"
     \\  rtmify-trace requirements.xlsx --gaps-json gaps.json
+    \\  rtmify-trace requirements.xlsx --profile medical --format pdf
     \\  rtmify-trace license install ./license.json
     \\
     \\Exit codes:
@@ -214,10 +224,6 @@ fn outputPath(
 // Gap counting
 // ---------------------------------------------------------------------------
 
-fn gapCount(g: *const graph.Graph, gpa: std.mem.Allocator) !usize {
-    return g.hardGapCount(gpa);
-}
-
 fn writeJsonString(w: anytype, s: []const u8) !void {
     for (s) |c| {
         switch (c) {
@@ -231,19 +237,14 @@ fn writeJsonString(w: anytype, s: []const u8) !void {
     }
 }
 
-fn writeGapsJson(path: []const u8, diag: *const Diagnostics, g: *const graph.Graph, gpa: std.mem.Allocator) !void {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var findings: std.ArrayList(graph.GapFinding) = .empty;
-    try g.collectGapFindings(alloc, &findings);
-
+fn writeGapsJson(path: []const u8, ctx: report_mod.ReportContext, diag: *const Diagnostics, gpa: std.mem.Allocator) !void {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     const w = out.writer(gpa);
 
-    try w.writeAll("{\"diagnostics\":[");
+    try w.writeAll("{\"profile\":\"");
+    try w.writeAll(profile_mod.get(ctx.profile).short_name);
+    try w.writeAll("\",\"diagnostics\":[");
     for (diag.entries.items, 0..) |e, i| {
         if (i > 0) try w.writeByte(',');
         try w.writeAll("{");
@@ -268,25 +269,50 @@ fn writeGapsJson(path: []const u8, diag: *const Diagnostics, g: *const graph.Gra
         try w.writeAll("\"}");
     }
     try w.writeAll("],\"gaps\":[");
-    for (findings.items, 0..) |finding, i| {
+    for (ctx.merged_gaps, 0..) |gap, i| {
         if (i > 0) try w.writeByte(',');
         try w.writeAll("{");
-        try w.print("\"severity\":\"{s}\"", .{finding.severity.toString()});
-        try w.print(",\"kind\":\"{s}\"", .{finding.kind.toString()});
+        try w.print("\"severity\":\"{s}\"", .{gap.severity.toString()});
+        if (gap.code) |code| {
+            try w.print(",\"code\":{d}", .{code});
+        } else {
+            try w.writeAll(",\"code\":null");
+        }
+        try w.print(",\"kind\":\"{s}\"", .{gap.kind});
         try w.writeAll(",\"primary_id\":\"");
-        try writeJsonString(w, finding.primary_id);
+        try writeJsonString(w, gap.primary_id);
         try w.writeByte('"');
-        if (finding.related_id) |related| {
+        try w.writeAll(",\"node_id\":\"");
+        try writeJsonString(w, gap.primary_id);
+        try w.writeByte('"');
+        if (gap.related_id) |related| {
             try w.writeAll(",\"related_id\":\"");
             try writeJsonString(w, related);
             try w.writeByte('"');
         } else {
             try w.writeAll(",\"related_id\":null");
         }
+        if (gap.profile_rule) |profile_rule| {
+            try w.writeAll(",\"profile_rule\":\"");
+            try writeJsonString(w, profile_rule);
+            try w.writeByte('"');
+        } else {
+            try w.writeAll(",\"profile_rule\":null");
+        }
+        if (gap.clause) |clause| {
+            try w.writeAll(",\"clause\":\"");
+            try writeJsonString(w, clause);
+            try w.writeByte('"');
+        } else {
+            try w.writeAll(",\"clause\":null");
+        }
+        try w.writeAll(",\"message\":\"");
+        try writeJsonString(w, gap.message);
+        try w.writeByte('"');
         try w.writeByte('}');
     }
     try w.print("],\"gap_count\":{d},\"warning_count\":{d},\"error_count\":{d}}}", .{
-        try g.hardGapCount(alloc),
+        report_mod.hardGapCount(ctx.merged_gaps),
         diag.warning_count,
         diag.error_count,
     });
@@ -338,6 +364,7 @@ pub fn isoTimestamp(buf: *[20]u8) []u8 {
 fn generateReport(
     gpa: std.mem.Allocator,
     g: *const graph.Graph,
+    ctx: report_mod.ReportContext,
     fmt: Format,
     input_path: []const u8,
     project_name: []const u8,
@@ -354,7 +381,7 @@ fn generateReport(
             };
             defer file.close();
             const dw = file.deprecatedWriter();
-            try render_md.renderMd(g, project_name, timestamp, dw);
+            try render_md.renderMdWithContext(g, ctx, project_name, timestamp, dw);
             std.debug.print("  → {s}\n", .{path});
         },
         .docx => {
@@ -366,7 +393,7 @@ fn generateReport(
             };
             defer file.close();
             const dw = file.deprecatedWriter();
-            try render_docx.renderDocx(g, project_name, timestamp, dw);
+            try render_docx.renderDocxWithContext(g, ctx, project_name, timestamp, dw);
             std.debug.print("  → {s}\n", .{path});
         },
         .pdf => {
@@ -378,14 +405,55 @@ fn generateReport(
             };
             defer file.close();
             const dw = file.deprecatedWriter();
-            try render_pdf.renderPdf(g, project_name, timestamp, dw);
+            try render_pdf.renderPdfWithContext(g, ctx, project_name, timestamp, dw);
             std.debug.print("  → {s}\n", .{path});
         },
         .all => {
-            try generateReport(gpa, g, .md, input_path, project_name, timestamp, output_opt);
-            try generateReport(gpa, g, .docx, input_path, project_name, timestamp, output_opt);
-            try generateReport(gpa, g, .pdf, input_path, project_name, timestamp, output_opt);
+            try generateReport(gpa, g, ctx, .md, input_path, project_name, timestamp, output_opt);
+            try generateReport(gpa, g, ctx, .docx, input_path, project_name, timestamp, output_opt);
+            try generateReport(gpa, g, ctx, .pdf, input_path, project_name, timestamp, output_opt);
         },
+    }
+}
+
+fn ingestOptionsForProfile(profile_id: profile_mod.ProfileId) schema.IngestOptions {
+    return switch (profile_id) {
+        .generic => .{},
+        .medical => .{
+            .enable_product_tab = true,
+            .enable_design_inputs_tab = true,
+            .enable_design_outputs_tab = true,
+            .enable_config_items_tab = true,
+        },
+        .aerospace => .{
+            .enable_product_tab = true,
+            .enable_decomposition_tab = true,
+            .enable_config_items_tab = true,
+        },
+        .automotive => .{
+            .enable_product_tab = true,
+            .enable_config_items_tab = true,
+        },
+    };
+}
+
+fn warnMissingProfileTabs(sheets: []const xlsx.SheetData, profile_id: profile_mod.ProfileId, diag: *Diagnostics) !void {
+    if (profile_id == .generic) return;
+    const prof = profile_mod.get(profile_id);
+    for (prof.tabs) |tab| {
+        if (std.mem.eql(u8, tab, "User Needs") or
+            std.mem.eql(u8, tab, "Requirements") or
+            std.mem.eql(u8, tab, "Tests") or
+            std.mem.eql(u8, tab, "Risks")) continue;
+        if (schema.hasTab(sheets, tab)) continue;
+        try diag.warn(
+            diagnostic.E.profile_expected_tab_missing,
+            .profile,
+            null,
+            null,
+            "Profile '{s}' expects tab '{s}', but it is not present in this workbook",
+            .{ prof.short_name, tab },
+        );
     }
 }
 
@@ -531,23 +599,26 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
         return EXIT_INPUT;
     };
 
+    try warnMissingProfileTabs(sheets, args.profile, &diag);
+
     var g = graph.Graph.init(alloc);
-    _ = schema.ingestValidated(&g, sheets, &diag) catch |err| {
+    _ = schema.ingestValidatedWithOptions(&g, sheets, &diag, ingestOptionsForProfile(args.profile)) catch |err| {
         try diag.printSummary(stderr);
         try stderr.print("Error: failed to ingest spreadsheet: {s}\n", .{@errorName(err)});
         return EXIT_INPUT;
     };
 
+    const report_ctx = try report_mod.buildReportContext(&g, args.profile, alloc);
     try diag.printSummary(stderr);
-    if (args.gaps_json) |jp| try writeGapsJson(jp, &diag, &g, gpa);
+    if (args.gaps_json) |jp| try writeGapsJson(jp, report_ctx, &diag, gpa);
 
-    const gaps = try gapCount(&g, gpa);
+    const gaps = report_mod.hardGapCount(report_ctx.merged_gaps);
     const project_name = args.project orelse stem(input_path);
 
     var ts_buf: [20]u8 = undefined;
     const timestamp = isoTimestamp(&ts_buf);
 
-    generateReport(gpa, &g, args.format, input_path, project_name, timestamp, args.output) catch |err| switch (err) {
+    generateReport(gpa, &g, report_ctx, args.format, input_path, project_name, timestamp, args.output) catch |err| switch (err) {
         error.OutputError => return EXIT_OUTPUT,
         else => {
             try stderr.print("Error: report generation failed: {s}\n", .{@errorName(err)});
@@ -607,6 +678,7 @@ pub fn main() void {
             error.UnknownFlag => "unknown flag",
             error.MissingValue => "missing value for flag",
             error.InvalidFormat => "invalid format: use md, docx, or all",
+            error.InvalidProfile => "invalid profile: use medical, aerospace, automotive, or generic",
             error.ConflictingOptions => "multiple input files specified",
         };
         std.debug.print("Error: {s}\nRun 'rtmify-trace --help' for usage.\n", .{msg});
@@ -627,10 +699,32 @@ pub fn main() void {
 
 const testing = std.testing;
 
+const user_need_header = [_][]const u8{ "ID", "Need" };
+const requirement_header = [_][]const u8{ "ID", "Statement" };
+const tests_header = [_][]const u8{ "ID", "Procedure" };
+const risks_header = [_][]const u8{ "ID", "Hazard" };
+
+const user_need_rows = [_]xlsx.Row{user_need_header[0..]};
+const requirement_rows = [_]xlsx.Row{requirement_header[0..]};
+const tests_rows = [_]xlsx.Row{tests_header[0..]};
+const risks_rows = [_]xlsx.Row{risks_header[0..]};
+
+const minimal_core_sheets = [_]xlsx.SheetData{
+    .{ .name = "User Needs", .rows = user_need_rows[0..] },
+    .{ .name = "Requirements", .rows = requirement_rows[0..] },
+    .{ .name = "Tests", .rows = tests_rows[0..] },
+    .{ .name = "Risks", .rows = risks_rows[0..] },
+};
+
+fn addNode(g: *graph.Graph, id: []const u8, node_type: graph.NodeType) !void {
+    try g.addNode(id, node_type, &.{});
+}
+
 test "parseArgs no args" {
     const args = try parseArgs(&.{});
     try testing.expectEqual(@as(?[]const u8, null), args.input);
     try testing.expectEqual(Format.docx, args.format);
+    try testing.expectEqual(profile_mod.ProfileId.generic, args.profile);
     try testing.expect(!args.strict);
     try testing.expect(!args.help);
     try testing.expect(!args.version);
@@ -713,6 +807,86 @@ test "parseArgs --format pdf" {
 test "parseArgs invalid format" {
     try testing.expectError(error.InvalidFormat, parseArgs(&.{ "--format", "html" }));
     try testing.expectError(error.InvalidFormat, parseArgs(&.{ "--format", "rtf" }));
+}
+
+test "parseArgs --profile medical" {
+    const args = try parseArgs(&.{ "input.xlsx", "--profile", "medical" });
+    try testing.expectEqual(profile_mod.ProfileId.medical, args.profile);
+}
+
+test "parseArgs invalid profile" {
+    try testing.expectError(error.InvalidProfile, parseArgs(&.{ "input.xlsx", "--profile", "wrong" }));
+}
+
+test "ingestOptionsForProfile enables expected tabs" {
+    const medical = ingestOptionsForProfile(.medical);
+    try testing.expect(medical.enable_product_tab);
+    try testing.expect(medical.enable_design_inputs_tab);
+    try testing.expect(medical.enable_design_outputs_tab);
+    try testing.expect(medical.enable_config_items_tab);
+
+    const aerospace = ingestOptionsForProfile(.aerospace);
+    try testing.expect(aerospace.enable_product_tab);
+    try testing.expect(aerospace.enable_decomposition_tab);
+    try testing.expect(aerospace.enable_config_items_tab);
+    try testing.expect(!aerospace.enable_design_inputs_tab);
+
+    const generic = ingestOptionsForProfile(.generic);
+    try testing.expect(!generic.enable_product_tab);
+    try testing.expect(!generic.enable_design_inputs_tab);
+    try testing.expect(!generic.enable_decomposition_tab);
+}
+
+test "warnMissingProfileTabs emits warnings and is non-fatal" {
+    var diag = Diagnostics.init(testing.allocator);
+    defer diag.deinit();
+
+    try warnMissingProfileTabs(minimal_core_sheets[0..], .medical, &diag);
+
+    try testing.expect(diag.warning_count >= 1);
+    try testing.expectEqual(@as(u32, 0), diag.error_count);
+
+    var found = false;
+    for (diag.entries.items) |entry| {
+        if (entry.code == diagnostic.E.profile_expected_tab_missing and
+            std.mem.indexOf(u8, entry.message, "Design Inputs") != null)
+        {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "writeGapsJson emits merged gap schema with profile metadata" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var g = graph.Graph.init(testing.allocator);
+    defer g.deinit();
+    try addNode(&g, "REQ-001", .requirement);
+
+    const ctx = try report_mod.buildReportContext(&g, .medical, alloc);
+    var diag = Diagnostics.init(testing.allocator);
+    defer diag.deinit();
+    try diag.warn(diagnostic.E.profile_expected_tab_missing, .profile, null, null, "Profile '{s}' expects tab '{s}'", .{ "medical", "Design Inputs" });
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &tmp_buf);
+    const json_path = try std.fs.path.join(alloc, &.{ tmp_path, "gaps.json" });
+
+    try writeGapsJson(json_path, ctx, &diag, alloc);
+    const json = try std.fs.cwd().readFileAlloc(alloc, json_path, 64 * 1024);
+
+    try testing.expect(std.mem.indexOf(u8, json, "\"profile\":\"medical\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"node_id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"primary_id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"profile_rule\":\"iso13485_requirement_design_input_chain\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"clause\":\"ISO 13485 §7.3.3\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"warning_count\":1") != null);
 }
 
 test "parseArgs multiple positionals" {

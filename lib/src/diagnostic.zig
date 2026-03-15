@@ -113,6 +113,7 @@ pub const E = struct {
     pub const chain_gap:                Code = 1206;
     pub const profile_not_configured:   Code = 1207;
     pub const product_none_declared:    Code = 1208;
+    pub const profile_expected_tab_missing: Code = 1209;
 };
 
 // ---------------------------------------------------------------------------
@@ -225,6 +226,7 @@ pub const all_codes = [_]Code{
     E.chain_gap,
     E.profile_not_configured,
     E.product_none_declared,
+    E.profile_expected_tab_missing,
 };
 
 pub const catalog = [_]CatalogEntry{
@@ -312,6 +314,7 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 1206, .title = "Gap in traceability chain", .category = .profile_traceability },
     .{ .code = 1207, .title = "Industry profile not configured", .category = .profile_traceability },
     .{ .code = 1208, .title = "Product tab has no declared products", .category = .profile_traceability },
+    .{ .code = 1209, .title = "Profile expects a workbook tab that is not present", .category = .profile_traceability },
 };
 
 /// Look up the human-readable title for a code. Returns "Unknown" for unlisted codes.

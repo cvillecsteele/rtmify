@@ -9,6 +9,8 @@ const graph = @import("graph.zig");
 const Graph = graph.Graph;
 const RtmRow = graph.RtmRow;
 const RiskRow = graph.RiskRow;
+const profile_mod = @import("profile.zig");
+const report_mod = @import("report.zig");
 
 const DASH = "—"; // U+2014 em dash
 
@@ -198,6 +200,58 @@ pub fn renderMd(
     }
 }
 
+pub fn renderMdWithContext(
+    g: *const Graph,
+    ctx: report_mod.ReportContext,
+    input_filename: []const u8,
+    timestamp: []const u8,
+    writer: anytype,
+) !void {
+    if (ctx.profile == .generic) return renderMd(g, input_filename, timestamp, writer);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const profile = profile_mod.get(ctx.profile);
+
+    try writer.print("# Requirements Traceability Matrix\n\n", .{});
+    try writer.print("Input: {s}\n", .{input_filename});
+    try writer.print("Generated: {s}\n", .{timestamp});
+    try writer.print("Profile: {s}\n", .{profile.short_name});
+    try writer.print("Standards: {s}\n", .{profile.standards});
+
+    try writer.writeAll("\n## Summary\n\n");
+    try writer.print("- Profile: {s}\n", .{profile.name});
+    try writer.print("- Standards: {s}\n", .{profile.standards});
+    try writer.print("- Hard gaps: {d}\n", .{report_mod.hardGapCount(ctx.merged_gaps)});
+    try writer.print("- Total findings: {d}\n", .{ctx.merged_gaps.len});
+
+    try writer.writeAll("\n## User Needs\n\n");
+    try writer.writeAll("| ID | Statement | Source | Priority |\n");
+    try writer.writeAll("| --- | --- | --- | --- |\n");
+    var uns: std.ArrayList(*const graph.Node) = .empty;
+    try g.nodesByType(.user_need, alloc, &uns);
+    std.mem.sort(*const graph.Node, uns.items, {}, nodeIdLt);
+    for (uns.items) |n| {
+        try writer.print("| {s} | {s} | {s} | {s} |\n", .{
+            n.id,
+            n.get("statement") orelse "",
+            n.get("source") orelse "",
+            n.get("priority") orelse "",
+        });
+    }
+
+    try renderDesignInputsSection(g, writer, alloc);
+    try renderDesignOutputsSection(g, writer, alloc);
+    try renderRequirementsTraceabilityWithProfile(g, ctx, writer, alloc);
+    try renderTestsSection(g, writer, alloc);
+    try renderRiskSection(g, ctx, writer, alloc);
+    try renderConfigItemsSection(g, writer, alloc);
+    try renderTraceGapSummary(writer, ctx.merged_gaps);
+    try renderProfileComplianceSummary(g, ctx, writer, alloc);
+}
+
 // ---------------------------------------------------------------------------
 // DHR report
 // ---------------------------------------------------------------------------
@@ -356,6 +410,315 @@ fn scoreStr(buf: []u8, sev: ?[]const u8, lik: ?[]const u8) []const u8 {
     return std.fmt.bufPrint(buf, "{d}", .{si * li}) catch DASH;
 }
 
+fn renderDesignInputsSection(g: *const Graph, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Design Inputs\n\n");
+    try writer.writeAll("| ID | Description | Type | Linked Requirements |\n");
+    try writer.writeAll("| --- | --- | --- | --- |\n");
+
+    var nodes: std.ArrayList(*const graph.Node) = .empty;
+    defer nodes.deinit(alloc);
+    try g.nodesByType(.design_input, alloc, &nodes);
+    std.mem.sort(*const graph.Node, nodes.items, {}, nodeIdLt);
+
+    for (nodes.items) |n| {
+        const reqs = try linkedNodeIds(g, n.id, .allocated_to, .requirement, .incoming, alloc);
+        defer if (reqs.len > 0 and !std.mem.eql(u8, reqs, DASH)) alloc.free(reqs);
+        try writer.print("| {s} | {s} | {s} | {s} |\n", .{
+            n.id,
+            n.get("description") orelse n.get("statement") orelse "",
+            n.get("type") orelse "",
+            reqs,
+        });
+    }
+}
+
+fn renderDesignOutputsSection(g: *const Graph, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Design Outputs\n\n");
+    try writer.writeAll("| ID | Description | Type | Design Input | Version | Source File |\n");
+    try writer.writeAll("| --- | --- | --- | --- | --- | --- |\n");
+
+    var nodes: std.ArrayList(*const graph.Node) = .empty;
+    defer nodes.deinit(alloc);
+    try g.nodesByType(.design_output, alloc, &nodes);
+    std.mem.sort(*const graph.Node, nodes.items, {}, nodeIdLt);
+
+    for (nodes.items) |n| {
+        const dis = try linkedNodeIds(g, n.id, .satisfied_by, .design_input, .incoming, alloc);
+        defer if (dis.len > 0 and !std.mem.eql(u8, dis, DASH)) alloc.free(dis);
+        const src = try linkedNodeIds(g, n.id, .implemented_in, .source_file, .outgoing, alloc);
+        defer if (src.len > 0 and !std.mem.eql(u8, src, DASH)) alloc.free(src);
+        try writer.print("| {s} | {s} | {s} | {s} | {s} | {s} |\n", .{
+            n.id,
+            n.get("description") orelse n.get("statement") orelse "",
+            n.get("type") orelse "",
+            dis,
+            n.get("version") orelse "",
+            src,
+        });
+    }
+}
+
+fn renderRequirementsTraceabilityWithProfile(g: *const Graph, ctx: report_mod.ReportContext, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Requirements Traceability\n\n");
+    try writer.writeAll("| Req ID | User Need | Design Input | Design Output | Statement | Test Group | Test ID | Status | Source File |\n");
+    try writer.writeAll("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+
+    var rows: std.ArrayList(RtmRow) = .empty;
+    defer rows.deinit(alloc);
+    try g.rtm(alloc, &rows);
+    std.mem.sort(RtmRow, rows.items, {}, rtmRowLt);
+
+    for (rows.items) |row| {
+        const req_node = g.getNode(row.req_id);
+        const dis = if (req_node != null) try linkedNodeIds(g, row.req_id, .allocated_to, .design_input, .outgoing, alloc) else DASH;
+        defer if (dis.len > 0 and !std.mem.eql(u8, dis, DASH)) alloc.free(dis);
+        const dos = if (req_node != null) try collectRequirementDesignOutputs(g, row.req_id, alloc) else DASH;
+        defer if (dos.len > 0 and !std.mem.eql(u8, dos, DASH)) alloc.free(dos);
+        const req_prefix: []const u8 = if (report_mod.traceGapForNode(ctx.merged_gaps, row.req_id)) "**⚠** " else "";
+        try writer.print("| {s}{s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} | {s} |\n", .{
+            req_prefix,
+            row.req_id,
+            row.user_need_id orelse DASH,
+            dis,
+            dos,
+            row.statement,
+            row.test_group_id orelse DASH,
+            row.test_id orelse DASH,
+            row.status,
+            row.source_file orelse DASH,
+        });
+    }
+}
+
+fn renderTestsSection(g: *const Graph, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Tests\n\n");
+    try writer.writeAll("| Test Group | Test ID | Type | Method | Linked Reqs |\n");
+    try writer.writeAll("| --- | --- | --- | --- | --- |\n");
+
+    const TestRow = struct {
+        tg_id: []const u8,
+        test_id: []const u8,
+        test_type: []const u8,
+        test_method: []const u8,
+        req_ids: []const u8,
+    };
+
+    var tg_nodes: std.ArrayList(*const graph.Node) = .empty;
+    defer tg_nodes.deinit(alloc);
+    try g.nodesByType(.test_group, alloc, &tg_nodes);
+    var test_rows: std.ArrayList(TestRow) = .empty;
+    defer test_rows.deinit(alloc);
+
+    for (tg_nodes.items) |tg| {
+        const reqs = try linkedNodeIds(g, tg.id, .tested_by, .requirement, .incoming, alloc);
+        defer if (reqs.len > 0 and !std.mem.eql(u8, reqs, DASH)) alloc.free(reqs);
+        var edges_out: std.ArrayList(graph.Edge) = .empty;
+        defer edges_out.deinit(alloc);
+        try g.edgesFrom(tg.id, alloc, &edges_out);
+        for (edges_out.items) |e| {
+            if (e.label != .has_test) continue;
+            const t = g.getNode(e.to_id);
+            try test_rows.append(alloc, .{
+                .tg_id = tg.id,
+                .test_id = e.to_id,
+                .test_type = if (t) |n| n.get("test_type") orelse "" else "",
+                .test_method = if (t) |n| n.get("test_method") orelse "" else "",
+                .req_ids = try alloc.dupe(u8, reqs),
+            });
+        }
+    }
+
+    std.mem.sort(TestRow, test_rows.items, {}, struct {
+        fn lt(_: void, a: TestRow, b: TestRow) bool {
+            const c = std.mem.order(u8, a.tg_id, b.tg_id);
+            if (c != .eq) return c == .lt;
+            return std.mem.order(u8, a.test_id, b.test_id) == .lt;
+        }
+    }.lt);
+
+    for (test_rows.items) |row| {
+        try writer.print("| {s} | {s} | {s} | {s} | {s} |\n", .{
+            row.tg_id, row.test_id, row.test_type, row.test_method, row.req_ids,
+        });
+    }
+}
+
+fn renderRiskSection(g: *const Graph, ctx: report_mod.ReportContext, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Risk Register\n\n");
+    try writer.writeAll("| Risk ID | Description | Init. Sev | Init. Like | Init. Score | Mitigation | Linked Req | Res. Sev | Res. Like | Res. Score |\n");
+    try writer.writeAll("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n");
+
+    var risk_rows: std.ArrayList(RiskRow) = .empty;
+    defer risk_rows.deinit(alloc);
+    try g.risks(alloc, &risk_rows);
+    std.mem.sort(RiskRow, risk_rows.items, {}, struct {
+        fn lt(_: void, a: RiskRow, b: RiskRow) bool {
+            return std.mem.order(u8, a.risk_id, b.risk_id) == .lt;
+        }
+    }.lt);
+
+    for (risk_rows.items) |row| {
+        const has_gap = report_mod.traceGapForNode(ctx.merged_gaps, row.risk_id);
+        const req_prefix: []const u8 = if (has_gap) "**⚠** " else "";
+        const req_str = row.req_id orelse DASH;
+        var init_score_buf: [32]u8 = undefined;
+        var res_score_buf: [32]u8 = undefined;
+        try writer.print("| {s} | {s} | {s} | {s} | {s} | {s} | {s}{s} | {s} | {s} | {s} |\n", .{
+            row.risk_id,
+            row.description,
+            row.initial_severity orelse DASH,
+            row.initial_likelihood orelse DASH,
+            scoreStr(&init_score_buf, row.initial_severity, row.initial_likelihood),
+            row.mitigation orelse DASH,
+            req_prefix,
+            req_str,
+            row.residual_severity orelse DASH,
+            row.residual_likelihood orelse DASH,
+            scoreStr(&res_score_buf, row.residual_severity, row.residual_likelihood),
+        });
+    }
+}
+
+fn renderConfigItemsSection(g: *const Graph, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Configuration Items\n\n");
+    try writer.writeAll("| ID | Description | Type | Version | Design Output |\n");
+    try writer.writeAll("| --- | --- | --- | --- | --- |\n");
+
+    var nodes: std.ArrayList(*const graph.Node) = .empty;
+    defer nodes.deinit(alloc);
+    try g.nodesByType(.config_item, alloc, &nodes);
+    std.mem.sort(*const graph.Node, nodes.items, {}, nodeIdLt);
+
+    for (nodes.items) |n| {
+        const dos = try linkedNodeIds(g, n.id, .controlled_by, .design_output, .incoming, alloc);
+        defer if (dos.len > 0 and !std.mem.eql(u8, dos, DASH)) alloc.free(dos);
+        try writer.print("| {s} | {s} | {s} | {s} | {s} |\n", .{
+            n.id,
+            n.get("description") orelse n.get("statement") orelse "",
+            n.get("type") orelse "",
+            n.get("version") orelse "",
+            dos,
+        });
+    }
+}
+
+fn renderTraceGapSummary(writer: anytype, gaps: []const report_mod.TraceGap) !void {
+    try writer.print("\n## Gap Summary\n\n**{d} gap(s) found.**\n", .{report_mod.hardGapCount(gaps)});
+    if (gaps.len == 0) {
+        try writer.writeAll("\nNo gaps detected.\n");
+        return;
+    }
+
+    for (gaps) |gap| {
+        if (gap.clause) |clause| {
+            try writer.print("- `{s}` {s} ({s}) — {s}\n", .{
+                gap.primary_id,
+                gap.kind,
+                clause,
+                gap.message,
+            });
+        } else {
+            try writer.print("- `{s}` {s} — {s}\n", .{
+                gap.primary_id,
+                gap.kind,
+                gap.message,
+            });
+        }
+    }
+}
+
+fn renderProfileComplianceSummary(g: *const Graph, ctx: report_mod.ReportContext, writer: anytype, alloc: std.mem.Allocator) !void {
+    try writer.writeAll("\n## Profile Compliance Summary\n\n");
+    const di_count = try countNodesByType(g, .design_input, alloc);
+    const do_count = try countNodesByType(g, .design_output, alloc);
+    const ci_count = try countNodesByType(g, .config_item, alloc);
+    const req_count = try countNodesByType(g, .requirement, alloc);
+    try writer.print("- Profile: {s}\n", .{ctx.profile_name});
+    try writer.print("- Standards: {s}\n", .{ctx.profile_standards});
+    try writer.print("- Requirements: {d}\n", .{req_count});
+    try writer.print("- Design Inputs: {d}\n", .{di_count});
+    try writer.print("- Design Outputs: {d}\n", .{do_count});
+    try writer.print("- Configuration Items: {d}\n", .{ci_count});
+    try writer.print("- Generic findings: {d}\n", .{ctx.generic_gaps.len});
+    try writer.print("- Profile findings: {d}\n", .{ctx.profile_gaps.len});
+    try writer.print("- Hard gaps: {d}\n", .{report_mod.hardGapCount(ctx.merged_gaps)});
+}
+
+const LinkDirection = enum { outgoing, incoming };
+
+fn linkedNodeIds(
+    g: *const Graph,
+    node_id: []const u8,
+    label: graph.EdgeLabel,
+    other_type: graph.NodeType,
+    direction: LinkDirection,
+    alloc: std.mem.Allocator,
+) ![]const u8 {
+    var ids: std.ArrayList([]const u8) = .empty;
+    defer ids.deinit(alloc);
+    for (g.edges.items) |e| {
+        const match = switch (direction) {
+            .outgoing => std.mem.eql(u8, e.from_id, node_id) and e.label == label,
+            .incoming => std.mem.eql(u8, e.to_id, node_id) and e.label == label,
+        };
+        if (!match) continue;
+        const other_id = switch (direction) {
+            .outgoing => e.to_id,
+            .incoming => e.from_id,
+        };
+        const other = g.getNode(other_id) orelse continue;
+        if (other.node_type != other_type) continue;
+        try ids.append(alloc, other.id);
+    }
+    if (ids.items.len == 0) return DASH;
+    std.mem.sort([]const u8, ids.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+    var out: std.ArrayList(u8) = .empty;
+    for (ids.items, 0..) |id, i| {
+        if (i > 0) try out.appendSlice(alloc, ", ");
+        try out.appendSlice(alloc, id);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+fn collectRequirementDesignOutputs(g: *const Graph, req_id: []const u8, alloc: std.mem.Allocator) ![]const u8 {
+    var outputs: std.ArrayList([]const u8) = .empty;
+    defer outputs.deinit(alloc);
+    for (g.edges.items) |e| {
+        if (e.label != .allocated_to or !std.mem.eql(u8, e.from_id, req_id)) continue;
+        const di = g.getNode(e.to_id) orelse continue;
+        if (di.node_type != .design_input) continue;
+        for (g.edges.items) |sub| {
+            if (sub.label != .satisfied_by or !std.mem.eql(u8, sub.from_id, di.id)) continue;
+            const do_node = g.getNode(sub.to_id) orelse continue;
+            if (do_node.node_type != .design_output) continue;
+            try outputs.append(alloc, do_node.id);
+        }
+    }
+    if (outputs.items.len == 0) return DASH;
+    std.mem.sort([]const u8, outputs.items, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+    var out: std.ArrayList(u8) = .empty;
+    for (outputs.items, 0..) |id, i| {
+        if (i > 0) try out.appendSlice(alloc, ", ");
+        try out.appendSlice(alloc, id);
+    }
+    return out.toOwnedSlice(alloc);
+}
+
+fn countNodesByType(g: *const Graph, node_type: graph.NodeType, alloc: std.mem.Allocator) !usize {
+    var nodes: std.ArrayList(*const graph.Node) = .empty;
+    defer nodes.deinit(alloc);
+    try g.nodesByType(node_type, alloc, &nodes);
+    return nodes.items.len;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -363,6 +726,7 @@ fn scoreStr(buf: []u8, sev: ?[]const u8, lik: ?[]const u8) []const u8 {
 const testing = std.testing;
 const xlsx = @import("xlsx.zig");
 const schema = @import("schema.zig");
+const diagnostic = @import("diagnostic.zig");
 
 test "render_md golden file" {
     var tmp_arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -496,4 +860,32 @@ test "render_md gap summary includes hard and advisory categories" {
     try testing.expect(std.mem.indexOf(u8, buf.items, "#### User Needs with No Requirements (1)") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "- UN-002") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "#### Requirements Linked to Empty Test Groups (1)") != null);
+}
+
+test "render_md_with_context includes profile sections" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sheets = try xlsx.parse(alloc, "test/fixtures/RTMify_Profile_Tabs_Golden.xlsx");
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = diagnostic.Diagnostics.init(testing.allocator);
+    defer d.deinit();
+    _ = try schema.ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
+
+    const ctx = try report_mod.buildReportContext(&g, .medical, alloc);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderMdWithContext(&g, ctx, "profile.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+
+    try testing.expect(std.mem.indexOf(u8, buf.items, "## Design Inputs") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "## Design Outputs") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "## Configuration Items") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "## Profile Compliance Summary") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Profile: medical") != null);
 }

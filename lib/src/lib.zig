@@ -14,6 +14,9 @@ pub const render_docx = @import("render_docx.zig");
 pub const license = @import("license.zig");
 pub const render_pdf = @import("render_pdf.zig");
 pub const diagnostic = @import("diagnostic.zig");
+pub const profile = @import("profile.zig");
+pub const chain = @import("chain.zig");
+pub const report = @import("report.zig");
 
 // ---------------------------------------------------------------------------
 // C ABI status codes

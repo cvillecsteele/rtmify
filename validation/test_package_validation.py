@@ -30,6 +30,27 @@ class ValidationPackageTests(unittest.TestCase):
         with self.assertRaises(package_validation.ValidationPackageError):
             package_validation.compare_expected_results(expected, actual)
 
+    def test_compare_expected_results_rejects_profile_metadata_drift(self) -> None:
+        expected = package_validation.load_json(package_validation.EXPECTED_GAPS_PATH)
+        actual = json.loads(json.dumps(expected))
+        actual["gaps"][4]["profile_rule"] = "wrong_rule"
+        with self.assertRaises(package_validation.ValidationPackageError):
+            package_validation.compare_expected_results(expected, actual)
+
+    def test_generic_regression_rejects_profile_gap_metadata(self) -> None:
+        actual = {
+            "profile": "generic",
+            "gaps": [
+                {
+                    "code": 1201,
+                    "profile_rule": "medical_user_need_requirement_chain",
+                    "clause": "ISO 13485 §7.3.2",
+                }
+            ],
+        }
+        with self.assertRaises(package_validation.ValidationPackageError):
+            package_validation.assert_generic_run_has_no_profile_gaps(actual)
+
     def test_write_checksums_contains_all_platform_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
@@ -68,25 +89,45 @@ class ValidationPackageTests(unittest.TestCase):
             content = path.read_text()
             self.assertIn("RTMify Trace Validation Package v1.2.3", content)
             self.assertIn("Recommended order of operations", content)
+            self.assertIn("--profile medical", content)
             self.assertIn("golden/", content)
 
     def test_workbook_snapshot_matches_committed_fixture_shape(self) -> None:
         fixture = package_validation.committed_fixture_path()
         snapshot = package_validation.workbook_snapshot(fixture)
-        self.assertEqual(["ID", "Statement", "Source of Need Statement", "Priority"], snapshot["User Needs"][0])
-        self.assertEqual("REQ-OQ-001", snapshot["Requirements"][1][0])
-        self.assertEqual("TST-OQ-001", snapshot["Tests"][1][0])
-        self.assertEqual("RSK-OQ-001", snapshot["Risks"][1][0])
+        self.assertEqual(
+            ["ID", "Statement", "Source of Need Statement", "Priority", "RTMify Status"],
+            snapshot["User Needs"][0],
+        )
+        self.assertEqual("REQ-001", snapshot["Requirements"][1][0])
+        self.assertEqual("TG-001", snapshot["Tests"][1][0])
+        self.assertEqual("RSK-001", snapshot["Risks"][1][0])
+        self.assertEqual("DI-001", snapshot["Design Inputs"][1][0])
+        self.assertEqual("DO-001", snapshot["Design Outputs"][1][0])
 
     def test_protocol_defines_all_referenced_output_checkpoints(self) -> None:
         protocol = (sys_path / "protocol.html").read_text()
         referenced = set(re.findall(r"CP-OQ-\d{2}", protocol))
         self.assertEqual(
-            {"CP-OQ-01", "CP-OQ-02", "CP-OQ-03", "CP-OQ-04", "CP-OQ-05", "CP-OQ-06", "CP-OQ-07", "CP-OQ-08"},
+            {
+                "CP-OQ-01",
+                "CP-OQ-02",
+                "CP-OQ-03",
+                "CP-OQ-04",
+                "CP-OQ-05",
+                "CP-OQ-06",
+                "CP-OQ-07",
+                "CP-OQ-08",
+                "CP-OQ-09",
+                "CP-OQ-10",
+                "CP-OQ-11",
+                "CP-OQ-12",
+            },
             referenced,
         )
         self.assertIn("Appendix — Output Verification Checkpoints", protocol)
-        self.assertIn("Use these checkpoints when completing OQ-07, OQ-08, and OQ-09.", protocol)
+        self.assertIn("--profile {{profile_name}}", protocol)
+        self.assertIn("Use these checkpoints when completing OQ-06, OQ-07, OQ-08, and OQ-09.", protocol)
         for checkpoint in sorted(referenced):
             self.assertRegex(protocol, rf"<tr><td>{checkpoint}</td><td>.+?</td></tr>")
 

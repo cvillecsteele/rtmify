@@ -10,6 +10,7 @@
       <h1>RTMify Trace IQ/OQ Protocol</h1>
       <p class="meta">Version: v{{version}}</p>
       <p class="meta">Fixture: {{fixture_filename}}</p>
+      <p class="meta">Profile: {{profile_name}}</p>
       <p class="meta">Generated: {{release_date}}</p>
     </header>
 
@@ -35,15 +36,15 @@
           <tr><th>Step</th><th>Action</th><th>Acceptance criterion</th><th>Pass/Fail</th></tr>
         </thead>
         <tbody>
-          <tr><td>OQ-01</td><td>Run <code>rtmify-trace {{fixture_filename}} --format pdf -o customer.pdf</code></td><td>Exits 0. <code>customer.pdf</code> is created.</td><td></td></tr>
-          <tr><td>OQ-02</td><td>Run <code>rtmify-trace {{fixture_filename}} --format docx -o customer.docx</code></td><td>Exits 0. <code>customer.docx</code> is created.</td><td></td></tr>
-          <tr><td>OQ-03</td><td>Run <code>rtmify-trace {{fixture_filename}} --format md -o customer.md</code></td><td>Exits 0. <code>customer.md</code> is created.</td><td></td></tr>
-          <tr><td>OQ-04</td><td>Run <code>rtmify-trace {{fixture_filename}} --strict</code></td><td>Exit code equals 5.</td><td></td></tr>
-          <tr><td>OQ-05</td><td>Run <code>rtmify-trace {{fixture_filename}} --strict --gaps-json customer-gaps.json</code></td><td>Exit code equals 5. <code>customer-gaps.json</code> is created.</td><td></td></tr>
-          <tr><td>OQ-06</td><td>Compare <code>customer-gaps.json</code> to <code>golden/golden-gaps.json</code>.</td><td>Counts and entries match the validation package expectation file.</td><td></td></tr>
-          <tr><td>OQ-07</td><td>Open <code>customer.pdf</code> alongside <code>golden/golden.pdf</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-08 all pass.</td><td></td></tr>
-          <tr><td>OQ-08</td><td>Open <code>customer.docx</code> alongside <code>golden/golden.docx</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-08 all pass.</td><td></td></tr>
-          <tr><td>OQ-09</td><td>Open <code>customer.md</code> alongside <code>golden/golden.md</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-08 all pass.</td><td></td></tr>
+          <tr><td>OQ-01</td><td>Run <code>rtmify-trace {{fixture_filename}} --profile {{profile_name}} --format pdf -o customer.pdf</code></td><td>Exits 0. <code>customer.pdf</code> is created.</td><td></td></tr>
+          <tr><td>OQ-02</td><td>Run <code>rtmify-trace {{fixture_filename}} --profile {{profile_name}} --format docx -o customer.docx</code></td><td>Exits 0. <code>customer.docx</code> is created.</td><td></td></tr>
+          <tr><td>OQ-03</td><td>Run <code>rtmify-trace {{fixture_filename}} --profile {{profile_name}} --format md -o customer.md</code></td><td>Exits 0. <code>customer.md</code> is created.</td><td></td></tr>
+          <tr><td>OQ-04</td><td>Run <code>rtmify-trace {{fixture_filename}} --profile {{profile_name}} --strict</code></td><td>Exit code equals 5.</td><td></td></tr>
+          <tr><td>OQ-05</td><td>Run <code>rtmify-trace {{fixture_filename}} --profile {{profile_name}} --strict --gaps-json customer-gaps.json</code></td><td>Exit code equals 5. <code>customer-gaps.json</code> is created.</td><td></td></tr>
+          <tr><td>OQ-06</td><td>Compare <code>customer-gaps.json</code> to <code>golden/golden-gaps.json</code>.</td><td><code>profile</code> equals <code>{{profile_name}}</code>. Counts and entries match the validation package expectation file.</td><td></td></tr>
+          <tr><td>OQ-07</td><td>Open <code>customer.pdf</code> alongside <code>golden/golden.pdf</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-12 all pass.</td><td></td></tr>
+          <tr><td>OQ-08</td><td>Open <code>customer.docx</code> alongside <code>golden/golden.docx</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-12 all pass.</td><td></td></tr>
+          <tr><td>OQ-09</td><td>Open <code>customer.md</code> alongside <code>golden/golden.md</code>.</td><td>Checkpoints CP-OQ-01 through CP-OQ-12 all pass.</td><td></td></tr>
         </tbody>
       </table>
     </section>
@@ -51,7 +52,7 @@
     <section>
       <h2>Appendix — Output Verification Checkpoints</h2>
       <p>
-        Use these checkpoints when completing OQ-07, OQ-08, and OQ-09. Each rendered
+        Use these checkpoints when completing OQ-06, OQ-07, OQ-08, and OQ-09. Each rendered
         output format must satisfy every checkpoint below when compared to the shipped
         golden artifact in this validation package.
       </p>
@@ -60,14 +61,18 @@
           <tr><th>Checkpoint</th><th>Verification criterion</th></tr>
         </thead>
         <tbody>
-          <tr><td>CP-OQ-01</td><td>User Needs table contains exactly 5 rows with IDs <code>UN-OQ-001</code> through <code>UN-OQ-005</code>.</td></tr>
-          <tr><td>CP-OQ-02</td><td>RTM table contains exactly 10 requirement rows. Row for <code>REQ-OQ-009</code> (missing ID) appears with a missing-ID indicator.</td></tr>
-          <tr><td>CP-OQ-03</td><td>Coverage status column for each requirement matches the expected result for this fixture.</td></tr>
-          <tr><td>CP-OQ-04</td><td>Test table contains exactly 6 rows. <code>TST-OQ-003</code> shows <code>Fail</code> status but <code>OK</code> traceability.</td></tr>
-          <tr><td>CP-OQ-05</td><td>Risk Register contains exactly 4 rows. Mitigation column is populated for <code>RSK-OQ-001</code> and <code>RSK-OQ-003</code>, and empty for <code>RSK-OQ-002</code>.</td></tr>
-          <tr><td>CP-OQ-06</td><td>Gap Summary section lists exactly 9 gaps matching the validation package expectation for this fixture.</td></tr>
-          <tr><td>CP-OQ-07</td><td>Warning section lists exactly 7 warnings matching the validation package expectation for this fixture.</td></tr>
-          <tr><td>CP-OQ-08</td><td>Gap rows are visually distinguished in the rendered output format.</td></tr>
+          <tr><td>CP-OQ-01</td><td>User Needs table contains the expected single row for <code>UN-001</code>.</td></tr>
+          <tr><td>CP-OQ-02</td><td>Requirements Traceability Matrix contains the expected single surviving requirement row for <code>REQ-001</code>.</td></tr>
+          <tr><td>CP-OQ-03</td><td>Tests section contains the expected groups <code>TG-001</code>, <code>TG-002</code>, and <code>TG-003</code>.</td></tr>
+          <tr><td>CP-OQ-04</td><td>Risk Register contains the expected single row for <code>RSK-001</code>.</td></tr>
+          <tr><td>CP-OQ-05</td><td>Gap Summary section lists exactly 10 gaps matching the validation package expectation for this fixture.</td></tr>
+          <tr><td>CP-OQ-06</td><td>Warning section lists exactly 14 warnings matching the validation package expectation for this fixture.</td></tr>
+          <tr><td>CP-OQ-07</td><td>Gap rows are visually distinguished in the rendered output format.</td></tr>
+          <tr><td>CP-OQ-08</td><td>Profile clause references are shown for profile-generated gaps.</td></tr>
+          <tr><td>CP-OQ-09</td><td>Design Inputs table is present and contains the expected row for <code>DI-001</code>.</td></tr>
+          <tr><td>CP-OQ-10</td><td>Design Outputs table is present and contains the expected row for <code>DO-001</code>.</td></tr>
+          <tr><td>CP-OQ-11</td><td>Profile Compliance Summary is present and shows the active profile as <code>{{profile_name}}</code>.</td></tr>
+          <tr><td>CP-OQ-12</td><td><code>customer-gaps.json</code> contains the expected profile gaps for <code>REQ-001</code>, <code>DI-001</code>, <code>DO-001</code>, <code>UN-001</code>, and <code>RSK-001</code> with E1201/E1202/E1206 codes.</td></tr>
         </tbody>
       </table>
     </section>

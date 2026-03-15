@@ -13,6 +13,8 @@ const graph = @import("graph.zig");
 const Graph = graph.Graph;
 const RtmRow = graph.RtmRow;
 const RiskRow = graph.RiskRow;
+const report_mod = @import("report.zig");
+const render_md = @import("render_md.zig");
 
 // ---------------------------------------------------------------------------
 // Column widths (DXA / twips). US Letter with 1" margins = 9360 DXA usable.
@@ -48,6 +50,41 @@ pub fn renderDocx(
     const styles_xml = try buildStyles(alloc);
     const footer_xml = try buildFooter(alloc);
     const document_xml = try buildDocument(g, input_filename, timestamp, alloc);
+
+    const files = [_]ZipFile{
+        .{ .name = "[Content_Types].xml", .data = content_types },
+        .{ .name = "_rels/.rels", .data = root_rels },
+        .{ .name = "word/_rels/document.xml.rels", .data = doc_rels },
+        .{ .name = "word/styles.xml", .data = styles_xml },
+        .{ .name = "word/footer1.xml", .data = footer_xml },
+        .{ .name = "word/document.xml", .data = document_xml },
+    };
+    try writeZip(&files, writer);
+}
+
+pub fn renderDocxWithContext(
+    g: *const Graph,
+    ctx: report_mod.ReportContext,
+    input_filename: []const u8,
+    timestamp: []const u8,
+    writer: anytype,
+) !void {
+    if (ctx.profile == .generic) return renderDocx(g, input_filename, timestamp, writer);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var md_buf: std.ArrayList(u8) = .empty;
+    defer md_buf.deinit(alloc);
+    try render_md.renderMdWithContext(g, ctx, input_filename, timestamp, md_buf.writer(alloc));
+
+    const content_types = try buildContentTypes(alloc);
+    const root_rels = try buildRootRels(alloc);
+    const doc_rels = try buildDocRels(alloc);
+    const styles_xml = try buildStyles(alloc);
+    const footer_xml = try buildFooter(alloc);
+    const document_xml = try buildDocumentFromMarkdown(md_buf.items, alloc);
 
     const files = [_]ZipFile{
         .{ .name = "[Content_Types].xml", .data = content_types },
@@ -612,6 +649,43 @@ fn buildDocument(
     return buf.items;
 }
 
+fn buildDocumentFromMarkdown(markdown: []const u8, alloc: Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    const w = buf.writer(alloc);
+
+    try w.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>");
+    try w.writeAll("<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"");
+    try w.writeAll(" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">");
+    try w.writeAll("<w:body>");
+
+    var lines = std.mem.splitScalar(u8, markdown, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) {
+            try writePara(w, "", false, "");
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "# ")) {
+            try writePara(w, "Heading1", false, trimmed[2..]);
+        } else if (std.mem.startsWith(u8, trimmed, "## ")) {
+            try writePara(w, "Heading1", false, trimmed[3..]);
+        } else if (std.mem.startsWith(u8, trimmed, "### ")) {
+            try writePara(w, "Heading2", false, trimmed[4..]);
+        } else {
+            try writePara(w, "", false, trimmed);
+        }
+    }
+
+    try w.writeAll("<w:sectPr>");
+    try w.writeAll("<w:footerReference w:type=\"default\" r:id=\"rId2\"/>");
+    try w.writeAll("<w:pgSz w:w=\"12240\" w:h=\"15840\"/>");
+    try w.writeAll("<w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"");
+    try w.writeAll(" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/>");
+    try w.writeAll("</w:sectPr>");
+    try w.writeAll("</w:body></w:document>");
+    return buf.items;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -619,6 +693,7 @@ fn buildDocument(
 const testing = std.testing;
 const xlsx = @import("xlsx.zig");
 const schema = @import("schema.zig");
+const diagnostic = @import("diagnostic.zig");
 
 test "render_docx fixture" {
     var tmp_arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -744,4 +819,28 @@ test "render_docx xml escape" {
     try testing.expect(std.mem.indexOf(u8, out, "&gt;") != null);
     // Raw unescaped characters should not appear adjacent to each other
     try testing.expect(std.mem.indexOf(u8, out, "A & B") == null);
+}
+
+test "render_docx_with_context includes profile sections" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sheets = try xlsx.parse(alloc, "test/fixtures/RTMify_Profile_Tabs_Golden.xlsx");
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = diagnostic.Diagnostics.init(testing.allocator);
+    defer d.deinit();
+    _ = try schema.ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
+    const ctx = try report_mod.buildReportContext(&g, .medical, alloc);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderDocxWithContext(&g, ctx, "profile.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Design Inputs") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Profile Compliance Summary") != null);
 }

@@ -293,6 +293,9 @@ fn runSyncCycle(
     _ = schema.ingestValidatedWithOptions(&g, &sheet_data, &diag, .{
         .enable_product_tab = true,
         .enable_decomposition_tab = enable_decomposition_tab,
+        .enable_design_inputs_tab = profile_id == .medical,
+        .enable_design_outputs_tab = profile_id == .medical,
+        .enable_config_items_tab = profile_id != .generic,
     }) catch |e| {
         std.log.warn("sync: ingest errors (continuing): {s}", .{@errorName(e)});
     };

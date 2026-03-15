@@ -32,6 +32,9 @@ pub const IngestStats = struct {
 pub const IngestOptions = struct {
     enable_product_tab: bool = false,
     enable_decomposition_tab: bool = false,
+    enable_design_inputs_tab: bool = false,
+    enable_design_outputs_tab: bool = false,
+    enable_config_items_tab: bool = false,
 };
 
 // ---------------------------------------------------------------------------
@@ -95,17 +98,34 @@ pub fn ingestValidatedWithOptions(g: *Graph, sheets: []const SheetData, diag: *D
         try diag.info(diagnostic.E.optional_tab_missing, .tab_discovery, null, null,
             "'Risks' tab not found — risk register will not be tracked", .{});
     }
-    if (resolveTab(sheets, "Design Inputs", design_inputs_synonyms, diag)) |s| {
-        try ingestDesignInputs(g, s, diag, &stats);
+    if (options.enable_design_inputs_tab) {
+        if (resolveTab(sheets, "Design Inputs", design_inputs_synonyms, diag)) |s| {
+            try ingestDesignInputs(g, s, diag, &stats);
+        }
     }
-    if (resolveTab(sheets, "Design Outputs", design_outputs_synonyms, diag)) |s| {
-        try ingestDesignOutputs(g, s, diag, &stats);
+    if (options.enable_design_outputs_tab) {
+        if (resolveTab(sheets, "Design Outputs", design_outputs_synonyms, diag)) |s| {
+            try ingestDesignOutputs(g, s, diag, &stats);
+        }
     }
-    if (resolveTab(sheets, "Configuration Items", config_items_synonyms, diag)) |s| {
-        try ingestConfigItems(g, s, diag, &stats);
+    if (options.enable_config_items_tab) {
+        if (resolveTab(sheets, "Configuration Items", config_items_synonyms, diag)) |s| {
+            try ingestConfigItems(g, s, diag, &stats);
+        }
     }
     try semanticValidate(g, diag);
     return stats;
+}
+
+pub fn hasTab(sheets: []const SheetData, canonical_name: []const u8) bool {
+    const synonyms = tabSynonymsForCanonical(canonical_name) orelse return false;
+    for (sheets) |sheet| {
+        if (std.ascii.eqlIgnoreCase(sheet.name, canonical_name)) return true;
+        for (synonyms) |syn| {
+            if (std.ascii.eqlIgnoreCase(sheet.name, syn)) return true;
+        }
+    }
+    return false;
 }
 
 /// Build a comma-joined list of all sheet names using the diag arena.
@@ -155,6 +175,19 @@ const product_tab_synonyms = &[_][]const u8{
 const decomposition_tab_synonyms = &[_][]const u8{
     "requirement decomposition", "requirement refinement", "refinement", "hlr-llr",
 };
+
+fn tabSynonymsForCanonical(canonical_name: []const u8) ?[]const []const u8 {
+    if (std.ascii.eqlIgnoreCase(canonical_name, "User Needs")) return user_needs_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Requirements")) return requirements_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Tests")) return tests_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Risks")) return risks_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Design Inputs")) return design_inputs_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Design Outputs")) return design_outputs_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Configuration Items")) return config_items_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Product")) return product_tab_synonyms;
+    if (std.ascii.eqlIgnoreCase(canonical_name, "Decomposition")) return decomposition_tab_synonyms;
+    return null;
+}
 
 // ---------------------------------------------------------------------------
 // Tab resolution (Layer 3)
@@ -1510,7 +1543,9 @@ test "ingestValidated returns stats" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+    });
     try testing.expect(stats.requirement_count >= 2);
     try testing.expect(stats.user_need_count >= 1);
     try testing.expect(stats.risk_count >= 1);
@@ -2058,7 +2093,10 @@ test "invalid requirement ID row is skipped during ingest" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.requirement_count);
     try testing.expect(g.getNode("FOO/BAR/BAZ?BLOW=UP") == null);
     try testing.expect(g.getNode("REQ-002") != null);
@@ -2078,7 +2116,10 @@ test "requirement row with qualification-style ID ingests successfully" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.requirement_count);
     try testing.expect(g.getNode("REQ-OQ-001") != null);
 }
@@ -2096,7 +2137,9 @@ test "requirement row with exact-case complex ID is preserved" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.requirement_count);
     try testing.expect(g.getNode("Foo-1AF5-Bar-Q5") != null);
     try testing.expect(g.getNode("FOO-1AF5-BAR-Q5") == null);
@@ -2242,7 +2285,10 @@ test "duplicate ID detection in ingestValidated" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+    });
 
     // Only 2 unique requirements should be ingested
     try testing.expectEqual(@as(u32, 2), stats.requirement_count);
@@ -2272,7 +2318,10 @@ test "isSectionDivider skipped silently in ingest" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.requirement_count);
     // No warning for the section divider row
     var divider_warn = false;
@@ -2449,7 +2498,9 @@ test "ingestDesignInputs creates DesignInput node and ALLOCATED_TO edge" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.design_input_count);
     try testing.expectEqual(@as(u32, 1), stats.requirement_count);
 
@@ -2493,7 +2544,10 @@ test "ingestDesignOutputs creates DesignOutput node and SATISFIED_BY edge" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.design_output_count);
 
     const do_node = g.getNode("DO-001");
@@ -2535,7 +2589,10 @@ test "ingestConfigItems creates ConfigurationItem node and CONTROLLED_BY edge" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.config_item_count);
 
     const ci_node = g.getNode("CI-001");
@@ -2598,7 +2655,10 @@ test "product tab ingests Product nodes when enabled" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_product_tab = true,
+        .enable_design_inputs_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.product_count);
 
     const product = g.getNode("product://ASM-1000 Rev C");
@@ -2630,7 +2690,10 @@ test "product tab missing full_identifier emits warning and skips node" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_product_tab = true,
+        .enable_design_outputs_tab = true,
+    });
     try testing.expectEqual(@as(u32, 0), stats.product_count);
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_full_identifier_missing));
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_none_declared));
@@ -2656,7 +2719,10 @@ test "product tab duplicate full_identifier emits error and keeps first node" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_product_tab = true,
+        .enable_config_items_tab = true,
+    });
     try testing.expectEqual(@as(u32, 1), stats.product_count);
     try testing.expectEqual(@as(u32, 1), d.error_count);
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_duplicate_full_identifier));
@@ -2934,10 +3000,10 @@ test "existing 4-tab behavior unchanged with DI/DO/CI tabs present" {
     const stats = try ingestValidated(&g, sheets, &d);
     try testing.expectEqual(@as(u32, 2), stats.requirement_count);
     try testing.expectEqual(@as(u32, 1), stats.user_need_count);
-    try testing.expectEqual(@as(u32, 1), stats.design_input_count);
+    try testing.expectEqual(@as(u32, 0), stats.design_input_count);
     try testing.expect(g.getNode("REQ-001") != null);
     try testing.expect(g.getNode("UN-001") != null);
-    try testing.expect(g.getNode("DI-001") != null);
+    try testing.expect(g.getNode("DI-001") == null);
 }
 
 test "ingest golden profile tabs fixture builds full design chain" {
@@ -2952,7 +3018,11 @@ test "ingest golden profile tabs fixture builds full design chain" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    const stats = try ingestValidated(&g, sheets, &d);
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
     try testing.expectEqual(@as(u32, 2), stats.user_need_count);
     try testing.expectEqual(@as(u32, 3), stats.requirement_count);
     try testing.expectEqual(@as(u32, 3), stats.test_group_count);
@@ -3002,7 +3072,11 @@ test "ingest extended error fixture emits expected diagnostics" {
     var d = Diagnostics.init(testing.allocator);
     defer d.deinit();
 
-    _ = try ingestValidated(&g, sheets, &d);
+    _ = try ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
 
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.ref_not_found));
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.duplicate_id));

@@ -2,13 +2,16 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const rtmify = @import("rtmify");
 const GraphDb = @import("graph_live.zig").GraphDb;
 const profile_mod = @import("profile.zig");
+const adapter = @import("adapter.zig");
 const Profile = profile_mod.Profile;
 const Direction = profile_mod.Direction;
 const GapSeverity = profile_mod.GapSeverity;
 const SpecialGapKind = profile_mod.SpecialGapKind;
 const SpecialGapCheck = profile_mod.SpecialGapCheck;
+const shared_chain = rtmify.chain;
 
 pub const Gap = struct {
     code: u16,
@@ -315,6 +318,52 @@ fn writeJsonStr(w: anytype, s: []const u8) !void {
 
 const testing = std.testing;
 
+const ComparableGap = struct {
+    code: u16,
+    gap_type: []const u8,
+    node_id: []const u8,
+    severity: GapSeverity,
+    message: []const u8,
+};
+
+fn comparableGapLt(_: void, a: ComparableGap, b: ComparableGap) bool {
+    const code_cmp = std.math.order(a.code, b.code);
+    if (code_cmp != .eq) return code_cmp == .lt;
+    const type_cmp = std.mem.order(u8, a.gap_type, b.gap_type);
+    if (type_cmp != .eq) return type_cmp == .lt;
+    return std.mem.order(u8, a.node_id, b.node_id) == .lt;
+}
+
+fn normalizeLiveGaps(gaps: []const Gap, alloc: Allocator) ![]ComparableGap {
+    var out: std.ArrayList(ComparableGap) = .empty;
+    for (gaps) |gap| {
+        try out.append(alloc, .{
+            .code = gap.code,
+            .gap_type = try alloc.dupe(u8, gap.gap_type),
+            .node_id = try alloc.dupe(u8, gap.node_id),
+            .severity = gap.severity,
+            .message = try alloc.dupe(u8, gap.message),
+        });
+    }
+    std.mem.sort(ComparableGap, out.items, {}, comparableGapLt);
+    return out.toOwnedSlice(alloc);
+}
+
+fn normalizeSharedGaps(gaps: []const shared_chain.Gap, alloc: Allocator) ![]ComparableGap {
+    var out: std.ArrayList(ComparableGap) = .empty;
+    for (gaps) |gap| {
+        try out.append(alloc, .{
+            .code = gap.code,
+            .gap_type = try alloc.dupe(u8, gap.gap_type),
+            .node_id = try alloc.dupe(u8, gap.node_id),
+            .severity = gap.severity,
+            .message = try alloc.dupe(u8, gap.message),
+        });
+    }
+    std.mem.sort(ComparableGap, out.items, {}, comparableGapLt);
+    return out.toOwnedSlice(alloc);
+}
+
 test "gapsToJson produces valid JSON for empty slice" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -483,4 +532,45 @@ test "walkChain handles incoming derives_from for user needs" {
     }
     try testing.expect(!found_un1);
     try testing.expect(found_un2);
+}
+
+test "shared in-memory walker matches live SQL walker for medical gaps" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("RISK-001", "Risk", "{}", null);
+
+    const profile = profile_mod.get(.medical);
+    const live_chain_gaps = try walkChain(&db, profile, alloc);
+    const live_special_gaps = try walkSpecialGaps(&db, profile, alloc);
+
+    var g = try adapter.buildGraphFromSqlite(&db, alloc);
+    defer g.deinit();
+
+    const shared_chain_gaps = try shared_chain.walkChain(&g, profile, alloc);
+    const shared_special_gaps = try shared_chain.walkSpecialGaps(&g, profile, alloc);
+
+    var live_all: std.ArrayList(Gap) = .empty;
+    try live_all.appendSlice(alloc, live_chain_gaps);
+    try live_all.appendSlice(alloc, live_special_gaps);
+
+    var shared_all: std.ArrayList(shared_chain.Gap) = .empty;
+    try shared_all.appendSlice(alloc, shared_chain_gaps);
+    try shared_all.appendSlice(alloc, shared_special_gaps);
+
+    const live_norm = try normalizeLiveGaps(live_all.items, alloc);
+    const shared_norm = try normalizeSharedGaps(shared_all.items, alloc);
+
+    try testing.expectEqual(live_norm.len, shared_norm.len);
+    for (live_norm, shared_norm) |lhs, rhs| {
+        try testing.expectEqual(lhs.code, rhs.code);
+        try testing.expectEqual(lhs.severity, rhs.severity);
+        try testing.expectEqualStrings(lhs.gap_type, rhs.gap_type);
+        try testing.expectEqualStrings(lhs.node_id, rhs.node_id);
+        try testing.expectEqualStrings(lhs.message, rhs.message);
+    }
 }

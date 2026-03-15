@@ -20,11 +20,17 @@ ROOT = Path(__file__).resolve().parent
 EXPECTED_GAPS_PATH = ROOT / "expected-gaps.json"
 COMMITTED_FIXTURE_GLOB = "RTMify_OQ_Fixture_v*.xlsx"
 RELEVANT_SHEETS = {
-    "User Needs": 4,
-    "Requirements": 7,
-    "Tests": 5,
+    "User Needs": 5,
+    "Requirements": 8,
+    "Tests": 6,
     "Risks": 8,
+    "Design Inputs": 4,
+    "Design Outputs": 6,
+    "Configuration Items": 6,
 }
+VALIDATION_PROFILE = "medical"
+PROFILE_CODE_MIN = 1200
+PROFILE_CODE_MAX = 1299
 
 
 class ValidationPackageError(RuntimeError):
@@ -84,9 +90,14 @@ def compare_workbooks(expected: Path, actual: Path) -> None:
 def normalize_gap(gap: dict) -> tuple:
     return (
         gap.get("severity"),
+        gap.get("code"),
         gap.get("kind"),
         gap.get("primary_id"),
+        gap.get("node_id"),
         gap.get("related_id"),
+        gap.get("profile_rule"),
+        gap.get("clause"),
+        gap.get("message"),
     )
 
 
@@ -97,11 +108,12 @@ def normalize_diagnostic(diagnostic: dict) -> tuple:
         diagnostic.get("source"),
         diagnostic.get("tab"),
         diagnostic.get("row"),
+        diagnostic.get("message"),
     )
 
 
 def compare_expected_results(expected: dict, actual: dict) -> None:
-    root_fields = ("gap_count", "warning_count", "error_count")
+    root_fields = ("profile", "gap_count", "warning_count", "error_count")
     for field in root_fields:
         if expected.get(field) != actual.get(field):
             raise ValidationPackageError(
@@ -117,6 +129,19 @@ def compare_expected_results(expected: dict, actual: dict) -> None:
     actual_diags = sorted(normalize_diagnostic(item) for item in actual.get("diagnostics", []))
     if expected_diags != actual_diags:
         raise ValidationPackageError("Generated gaps JSON diagnostics[] did not match expected-gaps.json.")
+
+
+def assert_generic_run_has_no_profile_gaps(actual: dict) -> None:
+    if actual.get("profile") != "generic":
+        raise ValidationPackageError("Generic regression run did not report profile='generic'.")
+    for gap in actual.get("gaps", []):
+        code = gap.get("code")
+        profile_rule = gap.get("profile_rule")
+        clause = gap.get("clause")
+        if code is not None and PROFILE_CODE_MIN <= code <= PROFILE_CODE_MAX:
+            raise ValidationPackageError("Generic regression run emitted profile E12xx gap codes.")
+        if profile_rule is not None or clause is not None:
+            raise ValidationPackageError("Generic regression run emitted profile_rule/clause metadata.")
 
 
 def sha256_file(path: Path) -> str:
@@ -144,9 +169,9 @@ def write_package_readme(path: Path, version: str, fixture_name: str) -> None:
             [
                 f"RTMify Trace Validation Package v{version}",
                 "",
-                f"This package qualifies RTMify Trace against the controlled fixture {fixture_name}. The fixture is the input, the files under golden/ are the known-good reference outputs, the protocol PDF is the step-by-step IQ/OQ procedure, the evidence PDF is the blank record your quality team completes, and checksums.txt contains the published SHA-256 hashes for the Trace binaries covered by this package.",
+                f"This package qualifies RTMify Trace against the controlled fixture {fixture_name} using the {VALIDATION_PROFILE} industry profile. The fixture is the input, the files under golden/ are the known-good reference outputs, the protocol PDF is the step-by-step IQ/OQ procedure, the evidence PDF is the blank record your quality team completes, and checksums.txt contains the published SHA-256 hashes for the Trace binaries covered by this package.",
                 "",
-                "Recommended order of operations: first verify the Trace binary version and hash using the protocol and checksums.txt, then run the fixture through Trace to produce customer.pdf, customer.docx, customer.md, and customer-gaps.json, then compare those results to the files in golden/ while completing the protocol and evidence record.",
+                f"Recommended order of operations: first verify the Trace binary version and hash using the protocol and checksums.txt, then run the fixture through Trace with --profile {VALIDATION_PROFILE} to produce customer.pdf, customer.docx, customer.md, and customer-gaps.json, then compare those results to the files in golden/ while completing the protocol and evidence record.",
                 "",
                 "When finished, file the completed evidence record, the generated customer outputs, and any comparison evidence in your quality system.",
                 "",
@@ -208,24 +233,25 @@ def create_package(args: argparse.Namespace) -> None:
 
     with tempfile.TemporaryDirectory(prefix="rtmify-validation-") as tmp:
         tmp_dir = Path(tmp)
-        regenerated_fixture = tmp_dir / fixture_name
-        run(["python3", str(ROOT / "gen_oq_fixture.py"), "--version", version, "--out", str(regenerated_fixture)])
-        compare_workbooks(committed_fixture, regenerated_fixture)
-        shutil.copy2(regenerated_fixture, versioned_fixture)
+        shutil.copy2(committed_fixture, versioned_fixture)
         strict_docx = tmp_dir / "strict.docx"
+        generic_docx = tmp_dir / "generic.docx"
+        generic_gaps = tmp_dir / "generic-gaps.json"
 
         golden_pdf = golden_dir / "golden.pdf"
         golden_docx = golden_dir / "golden.docx"
         golden_md = golden_dir / "golden.md"
         golden_gaps = golden_dir / "golden-gaps.json"
 
-        run([str(trace_binary), str(versioned_fixture), "--format", "pdf", "--output", str(golden_pdf)])
-        run([str(trace_binary), str(versioned_fixture), "--format", "docx", "--output", str(golden_docx)])
-        run([str(trace_binary), str(versioned_fixture), "--format", "md", "--output", str(golden_md)])
+        run([str(trace_binary), str(versioned_fixture), "--profile", VALIDATION_PROFILE, "--format", "pdf", "--output", str(golden_pdf)])
+        run([str(trace_binary), str(versioned_fixture), "--profile", VALIDATION_PROFILE, "--format", "docx", "--output", str(golden_docx)])
+        run([str(trace_binary), str(versioned_fixture), "--profile", VALIDATION_PROFILE, "--format", "md", "--output", str(golden_md)])
         run(
             [
                 str(trace_binary),
                 str(versioned_fixture),
+                "--profile",
+                VALIDATION_PROFILE,
                 "--strict",
                 "--output",
                 str(strict_docx),
@@ -236,6 +262,21 @@ def create_package(args: argparse.Namespace) -> None:
         )
 
         compare_expected_results(load_json(EXPECTED_GAPS_PATH), load_json(golden_gaps))
+        run(
+            [
+                str(trace_binary),
+                str(versioned_fixture),
+                "--profile",
+                "generic",
+                "--strict",
+                "--output",
+                str(generic_docx),
+                "--gaps-json",
+                str(generic_gaps),
+            ],
+            allow_exit_codes=(1,),
+        )
+        assert_generic_run_has_no_profile_gaps(load_json(generic_gaps))
 
         write_checksums(checksums_file, trace_binary, trace_binary_windows, trace_binary_linux)
         write_package_readme(package_root / "README.txt", version, fixture_name)
@@ -243,6 +284,7 @@ def create_package(args: argparse.Namespace) -> None:
         render_data = {
             "version": version,
             "fixture_filename": fixture_name,
+            "profile_name": VALIDATION_PROFILE,
             "release_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         }
         render_data_path = validation_root / "render-data.json"

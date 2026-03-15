@@ -1,4 +1,5 @@
 {
+  "profile": "medical",
   "diagnostics": [
     {
       "level": "info",
@@ -11,21 +12,39 @@
     },
     {
       "level": "warn",
+      "code": 1209,
+      "url": "https://rtmify.io/errors/E1209",
+      "source": "profile",
+      "tab": null,
+      "row": null,
+      "message": "Profile 'medical' expects tab 'Product', but it is not present in this workbook"
+    },
+    {
+      "level": "warn",
+      "code": 605,
+      "url": "https://rtmify.io/errors/E605",
+      "source": "row_parsing",
+      "tab": "Tests",
+      "row": 3,
+      "message": "duplicate Test ID 'T-001' — skipping"
+    },
+    {
+      "level": "info",
+      "code": 501,
+      "url": "https://rtmify.io/errors/E501",
+      "source": "column_mapping",
+      "tab": "Requirements",
+      "row": null,
+      "message": "'Test Group IDs' column matched by synonym 'Test Group ID'"
+    },
+    {
+      "level": "warn",
       "code": 801,
       "url": "https://rtmify.io/errors/E801",
       "source": "cross_ref",
       "tab": "Requirements",
-      "row": 6,
-      "message": "reference 'TST-OQ-999' not found; available TestGroup IDs: TST-OQ-003, TST-OQ-006, TST-OQ-002, TST-OQ-005, TST-OQ-004 (6 total)"
-    },
-    {
-      "level": "warn",
-      "code": 603,
-      "url": "https://rtmify.io/errors/E603",
-      "source": "row_parsing",
-      "tab": "Requirements",
-      "row": 10,
-      "message": "row has content but ID column is empty — skipping"
+      "row": 2,
+      "message": "reference 'UN-404' not found; available UserNeed IDs: UN-001 (1 total)"
     },
     {
       "level": "warn",
@@ -33,8 +52,17 @@
       "url": "https://rtmify.io/errors/E604",
       "source": "row_parsing",
       "tab": "Requirements",
-      "row": 11,
-      "message": "duplicate ID 'REQ-OQ-001' — skipping"
+      "row": 3,
+      "message": "duplicate ID 'REQ-001' — skipping"
+    },
+    {
+      "level": "warn",
+      "code": 603,
+      "url": "https://rtmify.io/errors/E603",
+      "source": "row_parsing",
+      "tab": "Requirements",
+      "row": 4,
+      "message": "row has content but ID column is empty — skipping"
     },
     {
       "level": "warn",
@@ -42,26 +70,53 @@
       "url": "https://rtmify.io/errors/E801",
       "source": "cross_ref",
       "tab": "Risks",
-      "row": 5,
-      "message": "reference 'REQ-OQ-888' not found; available Requirement IDs: REQ-OQ-002, REQ-OQ-008, REQ-OQ-005, REQ-OQ-003, REQ-OQ-001 (8 total)"
+      "row": 2,
+      "message": "reference 'REQ-404' not found; available Requirement IDs: REQ-001 (1 total)"
     },
     {
       "level": "warn",
-      "code": 710,
-      "url": "https://rtmify.io/errors/E710",
-      "source": "semantic",
-      "tab": null,
-      "row": null,
-      "message": "Risk RSK-OQ-003: residual score (8) exceeds initial score (6) — mitigation should reduce risk, not increase it"
+      "code": 604,
+      "url": "https://rtmify.io/errors/E604",
+      "source": "row_parsing",
+      "tab": "Design Inputs",
+      "row": 3,
+      "message": "duplicate ID 'DI-001' — skipping"
     },
     {
       "level": "warn",
-      "code": 704,
-      "url": "https://rtmify.io/errors/E704",
+      "code": 603,
+      "url": "https://rtmify.io/errors/E603",
+      "source": "row_parsing",
+      "tab": "Design Inputs",
+      "row": 4,
+      "message": "row has content but ID column is empty — skipping"
+    },
+    {
+      "level": "warn",
+      "code": 604,
+      "url": "https://rtmify.io/errors/E604",
+      "source": "row_parsing",
+      "tab": "Design Outputs",
+      "row": 3,
+      "message": "duplicate ID 'DO-001' — skipping"
+    },
+    {
+      "level": "warn",
+      "code": 603,
+      "url": "https://rtmify.io/errors/E603",
+      "source": "row_parsing",
+      "tab": "Configuration Items",
+      "row": 3,
+      "message": "row has content but ID column is empty — skipping"
+    },
+    {
+      "level": "warn",
+      "code": 711,
+      "url": "https://rtmify.io/errors/E711",
       "source": "semantic",
       "tab": null,
       "row": null,
-      "message": "REQ REQ-OQ-007: compound requirement — 2 'shall' clauses detected; split into separate requirements"
+      "message": "Test group TG-002 has no test cases"
     },
     {
       "level": "warn",
@@ -70,66 +125,140 @@
       "source": "semantic",
       "tab": null,
       "row": null,
-      "message": "REQ REQ-OQ-006: statement has no 'shall'"
+      "message": "REQ REQ-001: statement has no 'shall'"
+    },
+    {
+      "level": "warn",
+      "code": 705,
+      "url": "https://rtmify.io/errors/E705",
+      "source": "semantic",
+      "tab": null,
+      "row": null,
+      "message": "REQ REQ-001: vague term 'fast' in statement"
+    },
+    {
+      "level": "warn",
+      "code": 708,
+      "url": "https://rtmify.io/errors/E708",
+      "source": "semantic",
+      "tab": null,
+      "row": null,
+      "message": "Risk RSK-001: score 15 > 12 but no mitigation"
     }
   ],
   "gaps": [
     {
       "severity": "hard",
-      "kind": "requirement_no_user_need_link",
-      "primary_id": "REQ-OQ-004",
-      "related_id": null
-    },
-    {
-      "severity": "hard",
-      "kind": "requirement_no_test_group_link",
-      "primary_id": "REQ-OQ-003",
-      "related_id": null
-    },
-    {
-      "severity": "hard",
-      "kind": "requirement_only_unresolved_test_group_refs",
-      "primary_id": "REQ-OQ-005",
-      "related_id": "TST-OQ-999"
-    },
-    {
-      "severity": "hard",
-      "kind": "risk_without_mitigation_requirement",
-      "primary_id": "RSK-OQ-002",
-      "related_id": null
-    },
-    {
-      "severity": "hard",
+      "code": null,
       "kind": "risk_unresolved_mitigation_requirement",
-      "primary_id": "RSK-OQ-004",
-      "related_id": "REQ-OQ-888"
+      "primary_id": "RSK-001",
+      "node_id": "RSK-001",
+      "related_id": "REQ-404",
+      "profile_rule": null,
+      "clause": null,
+      "message": "Risk 'RSK-001' references an unresolved mitigation Requirement"
     },
     {
       "severity": "advisory",
-      "kind": "user_need_without_requirements",
-      "primary_id": "UN-OQ-003",
-      "related_id": null
-    },
-    {
-      "severity": "advisory",
-      "kind": "user_need_without_requirements",
-      "primary_id": "UN-OQ-005",
-      "related_id": null
-    },
-    {
-      "severity": "advisory",
+      "code": null,
       "kind": "test_group_without_requirements",
-      "primary_id": "TST-OQ-004",
-      "related_id": null
+      "primary_id": "TG-002",
+      "node_id": "TG-002",
+      "related_id": null,
+      "profile_rule": null,
+      "clause": null,
+      "message": "Test Group 'TG-002' has no linked Requirements"
     },
     {
       "severity": "advisory",
+      "code": null,
       "kind": "test_group_without_requirements",
-      "primary_id": "TST-OQ-005",
-      "related_id": null
+      "primary_id": "TG-003",
+      "node_id": "TG-003",
+      "related_id": null,
+      "profile_rule": null,
+      "clause": null,
+      "message": "Test Group 'TG-003' has no linked Requirements"
+    },
+    {
+      "severity": "advisory",
+      "code": null,
+      "kind": "user_need_without_requirements",
+      "primary_id": "UN-001",
+      "node_id": "UN-001",
+      "related_id": null,
+      "profile_rule": null,
+      "clause": null,
+      "message": "User Need 'UN-001' has no linked Requirements"
+    },
+    {
+      "severity": "err",
+      "code": 1201,
+      "kind": "orphan_requirement",
+      "primary_id": "UN-001",
+      "node_id": "UN-001",
+      "related_id": null,
+      "profile_rule": "medical_user_need_requirement_chain",
+      "clause": "ISO 13485 §7.3.2",
+      "message": "UserNeed 'UN-001' has no downstream Requirements"
+    },
+    {
+      "severity": "warn",
+      "code": 1201,
+      "kind": "unimplemented_requirement",
+      "primary_id": "REQ-001",
+      "node_id": "REQ-001",
+      "related_id": null,
+      "profile_rule": "iec62304_requirement_implementation_evidence",
+      "clause": "IEC 62304 §5.5",
+      "message": "Requirement 'REQ-001' has no current source implementation evidence"
+    },
+    {
+      "severity": "err",
+      "code": 1202,
+      "kind": "design_input_without_design_output",
+      "primary_id": "DI-001",
+      "node_id": "DI-001",
+      "related_id": null,
+      "profile_rule": "iso13485_di_do_chain",
+      "clause": "ISO 13485 §7.3.4",
+      "message": "DesignInput 'DI-001' has no SATISFIED_BY edge to a design output"
+    },
+    {
+      "severity": "err",
+      "code": 1206,
+      "kind": "design_output_without_config_control",
+      "primary_id": "DO-001",
+      "node_id": "DO-001",
+      "related_id": null,
+      "profile_rule": "iso13485_design_output_config_control",
+      "clause": "ISO 13485 §7.3.4",
+      "message": "DesignOutput 'DO-001' has no CONTROLLED_BY edge to a configuration item"
+    },
+    {
+      "severity": "err",
+      "code": 1206,
+      "kind": "design_output_without_source",
+      "primary_id": "DO-001",
+      "node_id": "DO-001",
+      "related_id": null,
+      "profile_rule": "iec62304_design_output_implementation_chain",
+      "clause": "IEC 62304 §5.5",
+      "message": "DesignOutput 'DO-001' has no IMPLEMENTED_IN edge to a source file"
+    },
+    {
+      "severity": "warn",
+      "code": 1206,
+      "kind": "unmitigated_risk",
+      "primary_id": "RSK-001",
+      "node_id": "RSK-001",
+      "related_id": null,
+      "profile_rule": "medical_risk_requirement_chain",
+      "clause": "ISO 14971 §7",
+      "message": "Risk 'RSK-001' has no MITIGATED_BY edge to a Requirement"
     }
   ],
   "gap_count": 5,
-  "warning_count": 7,
+  "warning_count": 14,
   "error_count": 0
 }

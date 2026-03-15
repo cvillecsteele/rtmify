@@ -15,6 +15,8 @@ const Graph = graph.Graph;
 const RtmRow = graph.RtmRow;
 const RiskRow = graph.RiskRow;
 const Allocator = std.mem.Allocator;
+const report_mod = @import("report.zig");
+const render_md = @import("render_md.zig");
 
 // ---------------------------------------------------------------------------
 // Page geometry (PDF user-space = points = 1/72 inch)
@@ -536,6 +538,48 @@ pub fn renderPdf(
     try writePdf(alloc, pb.pages.items, writer);
 }
 
+pub fn renderPdfWithContext(
+    g: *const Graph,
+    ctx: report_mod.ReportContext,
+    input_filename: []const u8,
+    timestamp: []const u8,
+    writer: anytype,
+) !void {
+    if (ctx.profile == .generic) return renderPdf(g, input_filename, timestamp, writer);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var md_buf: std.ArrayList(u8) = .empty;
+    defer md_buf.deinit(alloc);
+    try render_md.renderMdWithContext(g, ctx, input_filename, timestamp, md_buf.writer(alloc));
+
+    var pb = PageBuilder.init(alloc);
+    defer pb.deinit();
+
+    var lines = std.mem.splitScalar(u8, md_buf.items, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) {
+            pb.y -= 4.0;
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "# ")) {
+            try pb.drawText(trimmed[2..], FONT_TITLE, true);
+        } else if (std.mem.startsWith(u8, trimmed, "## ")) {
+            try pb.drawSection(trimmed[3..]);
+        } else if (std.mem.startsWith(u8, trimmed, "### ")) {
+            try pb.drawText(trimmed[4..], FONT_SECTION, true);
+        } else {
+            try pb.drawText(trimmed, FONT_BODY, false);
+        }
+    }
+
+    if (pb.cur.items.len > 0) try pb.finalizePage();
+    try writePdf(alloc, pb.pages.items, writer);
+}
+
 // ---------------------------------------------------------------------------
 // DHR report (PDF)
 // ---------------------------------------------------------------------------
@@ -816,6 +860,7 @@ fn drawGapGroupPdf(pb: *PageBuilder, alloc: Allocator, group_title: []const u8, 
 const testing = std.testing;
 const xlsx = @import("xlsx.zig");
 const schema = @import("schema.zig");
+const diagnostic = @import("diagnostic.zig");
 
 test "render_pdf fixture" {
     var tmp_arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -995,4 +1040,28 @@ test "textWidth and clipText" {
     // Clip should return empty or partial string for tiny max width
     const clipped = clipText("Hello World", 1.0, 8.5);
     try testing.expect(clipped.len < "Hello World".len);
+}
+
+test "render_pdf_with_context includes profile sections" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const sheets = try xlsx.parse(alloc, "test/fixtures/RTMify_Profile_Tabs_Golden.xlsx");
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = diagnostic.Diagnostics.init(testing.allocator);
+    defer d.deinit();
+    _ = try schema.ingestValidatedWithOptions(&g, sheets, &d, .{
+        .enable_design_inputs_tab = true,
+        .enable_design_outputs_tab = true,
+        .enable_config_items_tab = true,
+    });
+    const ctx = try report_mod.buildReportContext(&g, .medical, alloc);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try renderPdfWithContext(&g, ctx, "profile.xlsx", "2024-01-01T00:00:00Z", buf.writer(testing.allocator));
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Design Inputs") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Profile Compliance Summary") != null);
 }
