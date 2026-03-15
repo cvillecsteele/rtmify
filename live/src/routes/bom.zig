@@ -180,6 +180,73 @@ test "POST bom ingests valid hardware json" {
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"warnings\":[]") != null);
 }
 
+test "POST bom rejects unsupported content type with 415" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode(
+        "product://ASM-1000-REV-C",
+        "Product",
+        "{\"full_identifier\":\"ASM-1000-REV-C\"}",
+        null,
+    );
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const token_path = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "api-token" });
+    defer testing.allocator.free(token_path);
+    var auth = try test_results_auth.AuthState.initForPath(token_path, testing.allocator);
+    defer auth.deinit(testing.allocator);
+    const token = try auth.currentToken(testing.allocator);
+    defer testing.allocator.free(token);
+    const header = try std.fmt.allocPrint(testing.allocator, "Bearer {s}", .{token});
+    defer testing.allocator.free(header);
+
+    const resp = try handlePostBomResponse(
+        &db,
+        &auth,
+        header,
+        "application/octet-stream",
+        "not a bom",
+        testing.allocator,
+    );
+    defer testing.allocator.free(resp.body);
+    try testing.expectEqual(std.http.Status.unsupported_media_type, resp.status);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"unsupported_content_type\"") != null);
+}
+
+test "POST bom fallback classification still rejects unknown body with 415" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode(
+        "product://ASM-1000-REV-C",
+        "Product",
+        "{\"full_identifier\":\"ASM-1000-REV-C\"}",
+        null,
+    );
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const token_path = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "api-token" });
+    defer testing.allocator.free(token_path);
+    var auth = try test_results_auth.AuthState.initForPath(token_path, testing.allocator);
+    defer auth.deinit(testing.allocator);
+    const token = try auth.currentToken(testing.allocator);
+    defer testing.allocator.free(token);
+    const header = try std.fmt.allocPrint(testing.allocator, "Bearer {s}", .{token});
+    defer testing.allocator.free(header);
+
+    const resp = try handlePostBomResponse(
+        &db,
+        &auth,
+        header,
+        null,
+        "this is neither csv nor json",
+        testing.allocator,
+    );
+    defer testing.allocator.free(resp.body);
+    try testing.expectEqual(std.http.Status.unsupported_media_type, resp.status);
+}
+
 test "GET bom returns tree for product" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();

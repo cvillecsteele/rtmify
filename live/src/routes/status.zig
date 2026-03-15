@@ -12,6 +12,12 @@ const online_provider = @import("../online_provider.zig");
 const test_results_auth = @import("../test_results_auth.zig");
 const shared = @import("shared.zig");
 
+fn getInboxDirConfig(db: *graph_live.GraphDb, alloc: Allocator) ![]const u8 {
+    if (try db.getConfig("inbox_dir", alloc)) |value| return value;
+    if (try db.getConfig("test_results_inbox_dir", alloc)) |value| return value;
+    return alloc.dupe(u8, "unknown");
+}
+
 pub fn handleStatus(db: *graph_live.GraphDb, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
     const last_sync = state.last_sync_at.load(.seq_cst);
     const has_error = state.has_error.load(.seq_cst);
@@ -96,7 +102,7 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     defer alloc.free(log_path);
     const actual_port = (try db.getConfig("actual_port", alloc)) orelse try alloc.dupe(u8, "8000");
     defer alloc.free(actual_port);
-    const inbox_dir = (try db.getConfig("test_results_inbox_dir", alloc)) orelse try alloc.dupe(u8, "unknown");
+    const inbox_dir = try getInboxDirConfig(db, alloc);
     defer alloc.free(inbox_dir);
     const token = try auth.currentToken(alloc);
     defer alloc.free(token);
@@ -125,6 +131,8 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     try shared.appendJsonStr(&buf, bom_endpoint, alloc);
     try buf.appendSlice(alloc, ",\"test_results_token\":");
     try shared.appendJsonStr(&buf, token, alloc);
+    try buf.appendSlice(alloc, ",\"inbox_dir\":");
+    try shared.appendJsonStr(&buf, inbox_dir, alloc);
     try buf.appendSlice(alloc, ",\"test_results_inbox_dir\":");
     try shared.appendJsonStr(&buf, inbox_dir, alloc);
     try buf.appendSlice(alloc, ",\"test_results_auth_mode\":");
@@ -318,7 +326,7 @@ test "handleInfo returns version and path details" {
     try db.storeConfig("db_path", "/tmp/graph.db");
     try db.storeConfig("log_path", "/tmp/server.log");
     try db.storeConfig("actual_port", "8123");
-    try db.storeConfig("test_results_inbox_dir", "/tmp/inbox");
+    try db.storeConfig("inbox_dir", "/tmp/inbox");
 
     var dir = testing.tmpDir(.{});
     defer dir.cleanup();
@@ -345,7 +353,45 @@ test "handleInfo returns version and path details" {
     try testing.expectEqualStrings("/tmp/server.log", obj.get("log_path").?.string);
     try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/test-results", obj.get("test_results_endpoint").?.string);
     try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/bom", obj.get("bom_endpoint").?.string);
+    try testing.expectEqualStrings("/tmp/inbox", obj.get("inbox_dir").?.string);
     try testing.expectEqualStrings("/tmp/inbox", obj.get("test_results_inbox_dir").?.string);
     try testing.expectEqualStrings("bearer_token", obj.get("test_results_auth_mode").?.string);
     try testing.expectEqualStrings(license_path, obj.get("license_path").?.string);
+}
+
+test "handleInfo falls back to legacy inbox config key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.storeConfig("tray_app_version", "0.1 (1)");
+    try db.storeConfig("live_version", "20260308-a");
+    try db.storeConfig("db_path", "/tmp/graph.db");
+    try db.storeConfig("log_path", "/tmp/server.log");
+    try db.storeConfig("actual_port", "8123");
+    try db.storeConfig("test_results_inbox_dir", "/tmp/legacy-inbox");
+
+    var dir = testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(root);
+    const license_path = try std.fs.path.join(alloc, &.{ root, "license.json" });
+    defer alloc.free(license_path);
+    var license_service = try license.initDefaultHmacFile(alloc, .{
+        .product = .live,
+        .trial_policy = .requires_license,
+        .license_path_override = license_path,
+    });
+    defer license_service.deinit(alloc);
+    var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token-legacy", alloc);
+    defer auth.deinit(alloc);
+
+    const resp = try handleInfo(&db, &auth, &license_service, alloc);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("/tmp/legacy-inbox", obj.get("inbox_dir").?.string);
+    try testing.expectEqualStrings("/tmp/legacy-inbox", obj.get("test_results_inbox_dir").?.string);
 }

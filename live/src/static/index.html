@@ -1482,12 +1482,13 @@
       </div>
     </div>
     <div class="card card--mb card--padded">
-      <div class="card-title mb-8">Test Results Ingestion API</div>
-      <div id="test-results-endpoint" class="mcp-endpoint">Loading…</div>
+      <div class="card-title mb-8">External Evidence Ingestion</div>
       <div class="text-sm-subtle mt-8">
-        CI adapters can post execution evidence to the local ingestion API with <code>Authorization: Bearer ...</code>. BOM and SBOM uploads use the same token and inbox.
+        CI adapters can post execution evidence and BOM artifacts to the local ingestion APIs with <code>Authorization: Bearer ...</code>. Test results, BOMs, and SBOMs all use the same token and inbox.
       </div>
       <div class="info-grid mt-12">
+        <div class="info-label">Test Results Endpoint</div>
+        <div id="test-results-endpoint" class="req-id">Loading…</div>
         <div class="info-label">BOM Endpoint</div>
         <div id="bom-endpoint" class="req-id">Loading…</div>
         <div class="info-label">Bearer Token</div>

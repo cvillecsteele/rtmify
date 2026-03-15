@@ -274,6 +274,7 @@ pub fn main() !void {
     else
         try test_results_auth.defaultInboxDir(gpa);
     defer gpa.free(inbox_dir);
+    try g.storeConfig("inbox_dir", inbox_dir);
     try g.storeConfig("test_results_inbox_dir", inbox_dir);
 
     try connection_mod.migrateLegacyGoogleConfig(&g, &secure_store, gpa);
@@ -380,7 +381,6 @@ pub fn main() !void {
         .state = &state,
         .license_service = &license_service,
         .test_results_auth = &ingestion_auth,
-        .test_results_inbox_dir = inbox_dir,
         .alloc = gpa,
         .startSyncFn = startSyncCallback,
     };

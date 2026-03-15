@@ -387,7 +387,7 @@
     if (endpointEl) endpointEl.textContent = info.test_results_endpoint || 'unknown';
     if (bomEndpointEl) bomEndpointEl.textContent = info.bom_endpoint || 'unknown';
     if (tokenEl) tokenEl.textContent = info.test_results_token || 'unknown';
-    if (inboxEl) inboxEl.textContent = info.test_results_inbox_dir || 'unknown';
+    if (inboxEl) inboxEl.textContent = info.inbox_dir || info.test_results_inbox_dir || 'unknown';
   }
 
   function copyTestResultsToken() {

@@ -99,6 +99,8 @@ test "index_html smoke covers onboarding and external js bootstrap" {
     try testing.expect(std.mem.indexOf(u8, index_html, "rtmify-live Version") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Database Path") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Log File Path") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "External Evidence Ingestion") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "BOM Endpoint") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "What RTMify Exposes") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "requirement://REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "gap://1203/REQ-001") != null);

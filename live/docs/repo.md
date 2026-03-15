@@ -235,6 +235,8 @@ Live accepts product-scoped external evidence through the local ingestion API an
 
 The inbox at `~/.rtmify/inbox` uses the same bearer token and dispatches `.json` and `.csv` files by content. Product matching is exact on `Product.full_identifier`; BOM and SBOM uploads are Live-only and do not affect Trace output.
 
+For operator-focused ingestion instructions and minimal payload examples, see [BOM Ingestion Guide](./bom_ingestion.md).
+
 ---
 
 ## 6. New Google Sheets Tabs

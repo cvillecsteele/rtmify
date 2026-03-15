@@ -14,13 +14,16 @@ const sync_live = @import("sync_live.zig");
 const test_results_auth = @import("test_results_auth.zig");
 const routes = @import("routes.zig");
 
+const test_results_body_limit_bytes = 10 * 1024 * 1024;
+const bom_body_limit_bytes = 25 * 1024 * 1024;
+const payload_too_large_json = "{\"error\":\"payload_too_large\"}";
+
 pub const ServerCtx = struct {
     db: *graph_live.GraphDb,
     secure_store: *secure_store.Store,
     state: *sync_live.SyncState,
     license_service: *license.Service,
     test_results_auth: *test_results_auth.AuthState,
-    test_results_inbox_dir: []const u8,
     alloc: Allocator,
     /// Called after POST /api/connection to (re)start the sync thread if not already running.
     /// Set by main_live.zig; null means auto-start is not configured.
@@ -478,11 +481,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/v1/test-results")) {
-            const body_bytes = readBodyLimited(req, alloc, 10 * 1024 * 1024) catch |err| switch (err) {
+            const body_bytes = readBodyLimited(req, alloc, test_results_body_limit_bytes) catch |err| switch (err) {
                 error.StreamTooLong => {
                     response_status = .payload_too_large;
-                    response_bytes = "{\"error\":\"payload_too_large\"}".len;
-                    try sendJsonWithStatus(req, "{\"error\":\"payload_too_large\"}", .payload_too_large);
+                    response_bytes = payload_too_large_json.len;
+                    try sendJsonWithStatus(req, payload_too_large_json, .payload_too_large);
                     return;
                 },
                 else => return err,
@@ -498,11 +501,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/v1/bom")) {
-            const body_bytes = readBodyLimited(req, alloc, 25 * 1024 * 1024) catch |err| switch (err) {
+            const body_bytes = readBodyLimited(req, alloc, bom_body_limit_bytes) catch |err| switch (err) {
                 error.StreamTooLong => {
                     response_status = .payload_too_large;
-                    response_bytes = "{\"error\":\"payload_too_large\"}".len;
-                    try sendJsonWithStatus(req, "{\"error\":\"payload_too_large\"}", .payload_too_large);
+                    response_bytes = payload_too_large_json.len;
+                    try sendJsonWithStatus(req, payload_too_large_json, .payload_too_large);
                     return;
                 },
                 else => return err,
@@ -790,6 +793,12 @@ fn queryParamRaw(target: []const u8, key: []const u8) ?[]const u8 {
 test "readReaderLimited enforces max bytes" {
     var stream = std.io.fixedBufferStream("abcdef");
     try std.testing.expectError(error.StreamTooLong, readReaderLimited(stream.reader(), std.testing.allocator, 3));
+}
+
+test "ingest body limits are explicit and stable" {
+    try testing.expectEqual(@as(usize, 10 * 1024 * 1024), test_results_body_limit_bytes);
+    try testing.expectEqual(@as(usize, 25 * 1024 * 1024), bom_body_limit_bytes);
+    try testing.expectEqualStrings("{\"error\":\"payload_too_large\"}", payload_too_large_json);
 }
 
 fn queryParamDecoded(target: []const u8, key: []const u8, alloc: Allocator) !?[]const u8 {
