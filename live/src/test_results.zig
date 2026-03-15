@@ -24,6 +24,7 @@ pub const ValidationError = error{
     MissingExecutionId,
     MissingExecutedAt,
     InvalidExecutedAt,
+    InvalidFullProductIdentifier,
     MissingTestCases,
     EmptyTestCases,
     InvalidExecutor,
@@ -64,6 +65,7 @@ pub const ExecutionInput = struct {
     execution_id: []const u8,
     executed_at: []const u8,
     serial_number: ?[]const u8,
+    full_product_identifier: ?[]const u8,
     executor_json: ?[]const u8,
     source_json: ?[]const u8,
     test_cases: []TestCaseInput,
@@ -72,6 +74,7 @@ pub const ExecutionInput = struct {
         alloc.free(self.execution_id);
         alloc.free(self.executed_at);
         if (self.serial_number) |value| alloc.free(value);
+        if (self.full_product_identifier) |value| alloc.free(value);
         if (self.executor_json) |value| alloc.free(value);
         if (self.source_json) |value| alloc.free(value);
         for (self.test_cases) |*test_case| test_case.deinit(alloc);
@@ -82,12 +85,14 @@ pub const ExecutionInput = struct {
 pub const IngestWarning = struct {
     result_id: []const u8,
     test_case_ref: []const u8,
+    full_product_identifier: ?[]const u8,
     code: []const u8,
     message: []const u8,
 
     pub fn deinit(self: *IngestWarning, alloc: Allocator) void {
         alloc.free(self.result_id);
         alloc.free(self.test_case_ref);
+        if (self.full_product_identifier) |value| alloc.free(value);
         alloc.free(self.code);
         alloc.free(self.message);
     }
@@ -132,6 +137,8 @@ pub const ExecutionEnvelope = struct {
     executed_at: []const u8,
     computed_status: []const u8,
     serial_number: ?[]const u8,
+    full_product_identifier: ?[]const u8,
+    product_resolution_state: ?[]const u8,
     executor_json: ?[]const u8,
     source_json: ?[]const u8,
     test_cases: []StoredResult,
@@ -141,6 +148,8 @@ pub const ExecutionEnvelope = struct {
         alloc.free(self.executed_at);
         alloc.free(self.computed_status);
         if (self.serial_number) |value| alloc.free(value);
+        if (self.full_product_identifier) |value| alloc.free(value);
+        if (self.product_resolution_state) |value| alloc.free(value);
         if (self.executor_json) |value| alloc.free(value);
         if (self.source_json) |value| alloc.free(value);
         for (self.test_cases) |*test_case| test_case.deinit(alloc);
@@ -189,6 +198,11 @@ pub fn parsePayload(body: []const u8, alloc: Allocator) (ValidationError || erro
     const execution_id = json_util.getString(root, "execution_id") orelse return error.MissingExecutionId;
     const executed_at = json_util.getString(root, "executed_at") orelse return error.MissingExecutedAt;
     if (!isLikelyIso8601Timestamp(executed_at)) return error.InvalidExecutedAt;
+    const full_product_identifier = if (json_util.getObjectField(root, "full_product_identifier")) |value| blk: {
+        if (value != .string) return error.InvalidFullProductIdentifier;
+        break :blk try alloc.dupe(u8, value.string);
+    } else null;
+    errdefer if (full_product_identifier) |value| alloc.free(value);
 
     const test_cases_value = json_util.getObjectField(root, "test_cases") orelse return error.MissingTestCases;
     if (test_cases_value != .array) return error.MissingTestCases;
@@ -257,6 +271,7 @@ pub fn parsePayload(body: []const u8, alloc: Allocator) (ValidationError || erro
         .execution_id = try alloc.dupe(u8, execution_id),
         .executed_at = try alloc.dupe(u8, executed_at),
         .serial_number = if (json_util.getString(root, "serial_number")) |value| try alloc.dupe(u8, value) else null,
+        .full_product_identifier = full_product_identifier,
         .executor_json = executor_json,
         .source_json = source_json,
         .test_cases = test_cases,
@@ -280,13 +295,38 @@ pub fn ingest(db: *graph_live.GraphDb, payload: ExecutionInput, alloc: Allocator
         try deleteExecutionSubtreeLocked(db, payload.execution_id);
     }
 
+    var product_node_id: ?[]u8 = null;
+    defer if (product_node_id) |value| alloc.free(value);
+    const product_resolution_state: ?[]const u8 = blk: {
+        if (payload.full_product_identifier) |full_product_identifier| {
+            product_node_id = try productNodeId(full_product_identifier, alloc);
+            const maybe_product = try db.getNode(product_node_id.?, alloc);
+            defer if (maybe_product) |node| shared.freeNode(node, alloc);
+            break :blk if (maybe_product != null) "resolved" else "dangling";
+        }
+        break :blk null;
+    };
+
     const execution_node_id = try executionNodeId(payload.execution_id, alloc);
     defer alloc.free(execution_node_id);
-    const execution_props = try executionPropertiesJson(payload, alloc);
+    const execution_props = try executionPropertiesJson(payload, product_resolution_state, alloc);
     defer alloc.free(execution_props);
     try upsertNodeLocked(db, execution_node_id, "TestExecution", execution_props);
 
     var inserted: usize = 1;
+    if (payload.full_product_identifier) |full_product_identifier| {
+        if (product_resolution_state != null and std.mem.eql(u8, product_resolution_state.?, "resolved")) {
+            try addEdgeLocked(db, execution_node_id, product_node_id.?, "FOR_PRODUCT");
+        } else {
+            try warnings.append(alloc, .{
+                .result_id = try alloc.dupe(u8, ""),
+                .test_case_ref = try alloc.dupe(u8, ""),
+                .full_product_identifier = try alloc.dupe(u8, full_product_identifier),
+                .code = try alloc.dupe(u8, "DANGLING_PRODUCT_REF"),
+                .message = try std.fmt.allocPrint(alloc, "No Product node found for {s}", .{full_product_identifier}),
+            });
+        }
+    }
     for (payload.test_cases) |test_case| {
         const resolution_state = blk: {
             const maybe_node = try db.getNode(test_case.test_case_ref, alloc);
@@ -297,6 +337,7 @@ pub fn ingest(db: *graph_live.GraphDb, payload: ExecutionInput, alloc: Allocator
             try warnings.append(alloc, .{
                 .result_id = try alloc.dupe(u8, test_case.result_id),
                 .test_case_ref = try alloc.dupe(u8, test_case.test_case_ref),
+                .full_product_identifier = null,
                 .code = try alloc.dupe(u8, "DANGLING_REF"),
                 .message = try std.fmt.allocPrint(alloc, "No Test node found for {s}", .{test_case.test_case_ref}),
             });
@@ -330,6 +371,8 @@ pub fn getExecution(db: *graph_live.GraphDb, execution_id: []const u8, alloc: Al
         \\    json_extract(properties, '$.executed_at'),
         \\    json_extract(properties, '$.computed_status'),
         \\    json_extract(properties, '$.serial_number'),
+        \\    json_extract(properties, '$.full_product_identifier'),
+        \\    json_extract(properties, '$.product_resolution_state'),
         \\    json_extract(properties, '$.executor'),
         \\    json_extract(properties, '$.source')
         \\FROM nodes
@@ -348,8 +391,10 @@ pub fn getExecution(db: *graph_live.GraphDb, execution_id: []const u8, alloc: Al
         .executed_at = try alloc.dupe(u8, st.columnText(1)),
         .computed_status = try alloc.dupe(u8, st.columnText(2)),
         .serial_number = if (st.columnIsNull(3)) null else try alloc.dupe(u8, st.columnText(3)),
-        .executor_json = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
-        .source_json = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
+        .full_product_identifier = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
+        .product_resolution_state = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
+        .executor_json = if (st.columnIsNull(6)) null else try alloc.dupe(u8, st.columnText(6)),
+        .source_json = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
         .test_cases = try results.toOwnedSlice(alloc),
     };
 }
@@ -637,6 +682,10 @@ pub fn executionJson(execution: ExecutionEnvelope, alloc: Allocator) ![]const u8
     try shared.appendJsonStr(&buf, execution.computed_status, alloc);
     try buf.appendSlice(alloc, ",\"serial_number\":");
     try shared.appendJsonStrOpt(&buf, execution.serial_number, alloc);
+    try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+    try shared.appendJsonStrOpt(&buf, execution.full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"product_resolution_state\":");
+    try shared.appendJsonStrOpt(&buf, execution.product_resolution_state, alloc);
     try buf.appendSlice(alloc, ",\"executor\":");
     try buf.appendSlice(alloc, execution.executor_json orelse "null");
     try buf.appendSlice(alloc, ",\"source\":");
@@ -680,6 +729,8 @@ pub fn ingestResponseJson(response: IngestResponse, alloc: Allocator) ![]const u
         try shared.appendJsonStr(&buf, warning.result_id, alloc);
         try buf.appendSlice(alloc, ",\"test_case_ref\":");
         try shared.appendJsonStr(&buf, warning.test_case_ref, alloc);
+        try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStrOpt(&buf, warning.full_product_identifier, alloc);
         try buf.appendSlice(alloc, ",\"code\":");
         try shared.appendJsonStr(&buf, warning.code, alloc);
         try buf.appendSlice(alloc, ",\"message\":");
@@ -834,7 +885,7 @@ fn addEdgeLocked(db: *graph_live.GraphDb, from_id: []const u8, to_id: []const u8
     _ = try st.step();
 }
 
-fn executionPropertiesJson(payload: ExecutionInput, alloc: Allocator) ![]const u8 {
+fn executionPropertiesJson(payload: ExecutionInput, product_resolution_state: ?[]const u8, alloc: Allocator) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "{\"execution_id\":");
@@ -845,6 +896,10 @@ fn executionPropertiesJson(payload: ExecutionInput, alloc: Allocator) ![]const u
     try shared.appendJsonStr(&buf, @tagName(computeStatus(payload.test_cases)), alloc);
     try buf.appendSlice(alloc, ",\"serial_number\":");
     try shared.appendJsonStrOpt(&buf, payload.serial_number, alloc);
+    try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+    try shared.appendJsonStrOpt(&buf, payload.full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"product_resolution_state\":");
+    try shared.appendJsonStrOpt(&buf, product_resolution_state, alloc);
     try buf.appendSlice(alloc, ",\"executor\":");
     try buf.appendSlice(alloc, payload.executor_json orelse "null");
     try buf.appendSlice(alloc, ",\"source\":");
@@ -921,6 +976,10 @@ fn resultNodeId(result_id: []const u8, alloc: Allocator) ![]u8 {
     return std.fmt.allocPrint(alloc, "test-result://{s}", .{result_id});
 }
 
+fn productNodeId(full_product_identifier: []const u8, alloc: Allocator) ![]u8 {
+    return std.fmt.allocPrint(alloc, "product://{s}", .{full_product_identifier});
+}
+
 fn appendUniqueString(items: *std.ArrayList([]const u8), value: []const u8, alloc: Allocator) !void {
     for (items.items) |existing| {
         if (std.mem.eql(u8, existing, value)) return;
@@ -976,4 +1035,142 @@ test "payload parse round trips measurements and attachments" {
 
     try testing.expect(std.mem.indexOf(u8, payload.test_cases[0].measurements_json, "\"voltage\"") != null);
     try testing.expect(std.mem.indexOf(u8, payload.test_cases[0].attachments_json, "\"log\"") != null);
+}
+
+test "payload parse accepts optional full_product_identifier" {
+    const body =
+        \\{
+        \\  "execution_id": "build-9001",
+        \\  "executed_at": "2026-03-14T14:32:00Z",
+        \\  "full_product_identifier": "ASM-001-A",
+        \\  "test_cases": [
+        \\    {
+        \\      "result_id": "build-9001-TC-001",
+        \\      "test_case_ref": "TC-001",
+        \\      "status": "passed"
+        \\    }
+        \\  ]
+        \\}
+    ;
+    var payload = try parsePayload(body, testing.allocator);
+    defer payload.deinit(testing.allocator);
+    try testing.expectEqualStrings("ASM-001-A", payload.full_product_identifier.?);
+}
+
+test "ingest creates FOR_PRODUCT edge when full_product_identifier resolves" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    {
+        db.db.write_mu.lock();
+        defer db.db.write_mu.unlock();
+        try upsertNodeLocked(&db, "product://ASM-001-A", "Product", "{\"full_identifier\":\"ASM-001-A\"}");
+        try upsertNodeLocked(&db, "TST-001", "Test", "{\"id\":\"TST-001\"}");
+    }
+
+    var payload = ExecutionInput{
+        .execution_id = try testing.allocator.dupe(u8, "build-9002"),
+        .executed_at = try testing.allocator.dupe(u8, "2026-03-14T14:32:00Z"),
+        .serial_number = null,
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-001-A"),
+        .executor_json = null,
+        .source_json = null,
+        .test_cases = try testing.allocator.alloc(TestCaseInput, 1),
+    };
+    payload.test_cases[0] = .{
+        .result_id = try testing.allocator.dupe(u8, "build-9002-TC-001"),
+        .test_case_ref = try testing.allocator.dupe(u8, "TST-001"),
+        .status = try testing.allocator.dupe(u8, "passed"),
+        .duration_ms = null,
+        .notes = null,
+        .measurements_json = try testing.allocator.dupe(u8, "[]"),
+        .attachments_json = try testing.allocator.dupe(u8, "[]"),
+    };
+    defer payload.deinit(testing.allocator);
+
+    var response = try ingest(&db, payload, testing.allocator);
+    defer response.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), response.warnings.len);
+
+    var execution = (try getExecution(&db, "build-9002", testing.allocator)).?;
+    defer execution.deinit(testing.allocator);
+    try testing.expectEqualStrings("ASM-001-A", execution.full_product_identifier.?);
+    try testing.expectEqualStrings("resolved", execution.product_resolution_state.?);
+
+    var edges: std.ArrayList(graph_live.Edge) = .empty;
+    defer {
+        for (edges.items) |edge| {
+            testing.allocator.free(edge.id);
+            testing.allocator.free(edge.from_id);
+            testing.allocator.free(edge.to_id);
+            testing.allocator.free(edge.label);
+        }
+        edges.deinit(testing.allocator);
+    }
+    try db.edgesFrom("execution://build-9002", testing.allocator, &edges);
+    var found = false;
+    for (edges.items) |edge| {
+        if (std.mem.eql(u8, edge.label, "FOR_PRODUCT") and std.mem.eql(u8, edge.to_id, "product://ASM-001-A")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "ingest stores dangling product resolution warning when full_product_identifier is unresolved" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    {
+        db.db.write_mu.lock();
+        defer db.db.write_mu.unlock();
+        try upsertNodeLocked(&db, "TST-001", "Test", "{\"id\":\"TST-001\"}");
+    }
+
+    var payload = ExecutionInput{
+        .execution_id = try testing.allocator.dupe(u8, "build-9003"),
+        .executed_at = try testing.allocator.dupe(u8, "2026-03-14T14:32:00Z"),
+        .serial_number = null,
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-404-Z"),
+        .executor_json = null,
+        .source_json = null,
+        .test_cases = try testing.allocator.alloc(TestCaseInput, 1),
+    };
+    payload.test_cases[0] = .{
+        .result_id = try testing.allocator.dupe(u8, "build-9003-TC-001"),
+        .test_case_ref = try testing.allocator.dupe(u8, "TST-001"),
+        .status = try testing.allocator.dupe(u8, "passed"),
+        .duration_ms = null,
+        .notes = null,
+        .measurements_json = try testing.allocator.dupe(u8, "[]"),
+        .attachments_json = try testing.allocator.dupe(u8, "[]"),
+    };
+    defer payload.deinit(testing.allocator);
+
+    var response = try ingest(&db, payload, testing.allocator);
+    defer response.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), response.warnings.len);
+    try testing.expectEqualStrings("DANGLING_PRODUCT_REF", response.warnings[0].code);
+    try testing.expectEqualStrings("ASM-404-Z", response.warnings[0].full_product_identifier.?);
+
+    var execution = (try getExecution(&db, "build-9003", testing.allocator)).?;
+    defer execution.deinit(testing.allocator);
+    try testing.expectEqualStrings("ASM-404-Z", execution.full_product_identifier.?);
+    try testing.expectEqualStrings("dangling", execution.product_resolution_state.?);
+
+    var edges: std.ArrayList(graph_live.Edge) = .empty;
+    defer {
+        for (edges.items) |edge| {
+            testing.allocator.free(edge.id);
+            testing.allocator.free(edge.from_id);
+            testing.allocator.free(edge.to_id);
+            testing.allocator.free(edge.label);
+        }
+        edges.deinit(testing.allocator);
+    }
+    try db.edgesFrom("execution://build-9003", testing.allocator, &edges);
+    for (edges.items) |edge| {
+        try testing.expect(!std.mem.eql(u8, edge.label, "FOR_PRODUCT"));
+    }
 }

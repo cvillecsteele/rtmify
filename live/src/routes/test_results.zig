@@ -10,6 +10,7 @@ fn validationErrorField(err: anyerror) ?[]const u8 {
     return switch (err) {
         error.MissingExecutionId => "execution_id",
         error.MissingExecutedAt, error.InvalidExecutedAt => "executed_at",
+        error.InvalidFullProductIdentifier => "full_product_identifier",
         error.MissingTestCases, error.EmptyTestCases => "test_cases",
         error.InvalidExecutor => "executor",
         error.InvalidSource => "source",
@@ -30,6 +31,7 @@ fn validationErrorDetail(err: anyerror) []const u8 {
         error.MissingExecutionId => "Missing execution_id.",
         error.MissingExecutedAt => "Missing executed_at.",
         error.InvalidExecutedAt => "executed_at must be an ISO-8601 timestamp.",
+        error.InvalidFullProductIdentifier => "full_product_identifier must be a string.",
         error.MissingTestCases => "Missing test_cases array.",
         error.EmptyTestCases => "test_cases must contain at least one item.",
         error.InvalidExecutor => "executor must be an object.",
