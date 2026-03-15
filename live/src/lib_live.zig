@@ -28,6 +28,8 @@ pub const design_history_pdf = @import("design_history_pdf.zig");
 pub const test_results = @import("test_results.zig");
 pub const test_results_auth = @import("test_results_auth.zig");
 pub const test_results_inbox = @import("test_results_inbox.zig");
+pub const external_ingest_inbox = @import("external_ingest_inbox.zig");
+pub const bom = @import("bom.zig");
 pub const adapter = @import("adapter.zig");
 pub const server = @import("server.zig");
 pub const main_live = @import("main_live.zig");
@@ -59,6 +61,8 @@ test {
     _ = test_results;
     _ = test_results_auth;
     _ = test_results_inbox;
+    _ = external_ingest_inbox;
+    _ = bom;
     _ = adapter;
     _ = server;
     _ = main_live;

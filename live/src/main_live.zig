@@ -9,7 +9,7 @@ const secure_store_mod = @import("secure_store.zig");
 const online_provider = @import("online_provider.zig");
 const log_sink = @import("log_sink.zig");
 const test_results_auth = @import("test_results_auth.zig");
-const test_results_inbox = @import("test_results_inbox.zig");
+const external_ingest_inbox = @import("external_ingest_inbox.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
 
@@ -35,7 +35,7 @@ const help_text =
     \\  --no-browser           Don't open browser on startup
     \\  --repo <path>          Repository path to scan (repeatable)
     \\  --profile <name>       Industry profile: medical|aerospace|automotive|generic
-    \\  --inbox-dir <path>     Test result inbox directory (default: ~/.rtmify/inbox)
+    \\  --inbox-dir <path>     External evidence inbox directory (default: ~/.rtmify/inbox)
     \\  --license <path>       Use a specific signed license file
     \\  license info [--json]  Show installed license details
     \\  license install <path> Install a signed license file
@@ -341,9 +341,9 @@ pub fn main() !void {
     }
     {
         const inbox_ctx = try createInboxThreadCtx(std.heap.page_allocator, &g, &state, inbox_dir);
-        const t = try std.Thread.spawn(.{}, test_results_inbox.inboxThread, .{inbox_ctx});
+        const t = try std.Thread.spawn(.{}, external_ingest_inbox.inboxThread, .{inbox_ctx});
         t.detach();
-        std.log.info("test results inbox thread started dir={s}", .{inbox_dir});
+        std.log.info("external ingest inbox thread started dir={s}", .{inbox_dir});
     }
 
     // Find first available port (8000-8010) via quick probe
@@ -422,11 +422,11 @@ fn createInboxThreadCtx(
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
     inbox_dir: []const u8,
-) !*test_results_inbox.InboxCtx {
+) !*external_ingest_inbox.InboxCtx {
     const owned_inbox_dir = try alloc.dupe(u8, inbox_dir);
     errdefer alloc.free(owned_inbox_dir);
 
-    const ctx = try alloc.create(test_results_inbox.InboxCtx);
+    const ctx = try alloc.create(external_ingest_inbox.InboxCtx);
     errdefer alloc.destroy(ctx);
     ctx.* = .{
         .db = db,
@@ -486,7 +486,7 @@ test "inbox thread context cleanup releases owned memory" {
     try testing.expect(gpa.total_requested_bytes > 0);
     try testing.expectEqualStrings("/tmp/inbox", ctx.inbox_dir);
 
-    test_results_inbox.destroyInboxCtx(ctx);
+    external_ingest_inbox.destroyInboxCtx(ctx);
     try testing.expectEqual(@as(usize, 0), gpa.total_requested_bytes);
 }
 

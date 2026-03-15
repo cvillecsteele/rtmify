@@ -100,8 +100,10 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     defer alloc.free(inbox_dir);
     const token = try auth.currentToken(alloc);
     defer alloc.free(token);
-    const endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/test-results", .{actual_port});
-    defer alloc.free(endpoint);
+    const test_results_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/test-results", .{actual_port});
+    defer alloc.free(test_results_endpoint);
+    const bom_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{s}/api/v1/bom", .{actual_port});
+    defer alloc.free(bom_endpoint);
     const license_path = try license.resolveLicensePath(alloc, license_service.deps.license_path_override);
     defer alloc.free(license_path);
     const license_key_fingerprint = try license.defaultKeyFingerprintHex(alloc);
@@ -118,7 +120,9 @@ pub fn handleInfo(db: *graph_live.GraphDb, auth: *test_results_auth.AuthState, l
     try buf.appendSlice(alloc, ",\"log_path\":");
     try shared.appendJsonStr(&buf, log_path, alloc);
     try buf.appendSlice(alloc, ",\"test_results_endpoint\":");
-    try shared.appendJsonStr(&buf, endpoint, alloc);
+    try shared.appendJsonStr(&buf, test_results_endpoint, alloc);
+    try buf.appendSlice(alloc, ",\"bom_endpoint\":");
+    try shared.appendJsonStr(&buf, bom_endpoint, alloc);
     try buf.appendSlice(alloc, ",\"test_results_token\":");
     try shared.appendJsonStr(&buf, token, alloc);
     try buf.appendSlice(alloc, ",\"test_results_inbox_dir\":");
@@ -340,6 +344,7 @@ test "handleInfo returns version and path details" {
     try testing.expectEqualStrings("/tmp/graph.db", obj.get("db_path").?.string);
     try testing.expectEqualStrings("/tmp/server.log", obj.get("log_path").?.string);
     try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/test-results", obj.get("test_results_endpoint").?.string);
+    try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/bom", obj.get("bom_endpoint").?.string);
     try testing.expectEqualStrings("/tmp/inbox", obj.get("test_results_inbox_dir").?.string);
     try testing.expectEqualStrings("bearer_token", obj.get("test_results_auth_mode").?.string);
     try testing.expectEqualStrings(license_path, obj.get("license_path").?.string);

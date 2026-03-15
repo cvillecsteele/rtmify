@@ -13,6 +13,7 @@ const json_util = @import("json_util.zig");
 const profile_mod = @import("profile.zig");
 const chain_mod = @import("chain.zig");
 const test_results = @import("test_results.zig");
+const bom = @import("bom.zig");
 
 const ToolPayload = struct {
     text: []const u8,
@@ -71,6 +72,11 @@ const tools_json =
     \\{"name":"get_verification_status","description":"Get verification rollup and latest results for a requirement.","inputSchema":{"type":"object","properties":{"requirement_ref":{"type":"string"}},"required":["requirement_ref"]}},
     \\{"name":"get_dangling_results","description":"Get ingested test results that do not resolve to a known Test node.","inputSchema":{"type":"object","properties":{},"required":[]}},
     \\{"name":"get_unit_history","description":"Get test execution history for a serial number, newest first.","inputSchema":{"type":"object","properties":{"serial_number":{"type":"string"}},"required":["serial_number"]}},
+    \\{"name":"get_bom","description":"Get BOM trees for a product, optionally filtered by bom_type or bom_name.","inputSchema":{"type":"object","properties":{"full_product_identifier":{"type":"string"},"bom_type":{"type":"string","enum":["hardware","software"]},"bom_name":{"type":"string"}},"required":["full_product_identifier"]}},
+    \\{"name":"get_bom_item","description":"Get a single BOM item and its parent chains.","inputSchema":{"type":"object","properties":{"id":{"type":"string"},"full_product_identifier":{"type":"string"},"bom_type":{"type":"string","enum":["hardware","software"]},"bom_name":{"type":"string"},"part":{"type":"string"},"revision":{"type":"string"}},"required":[]}},
+    \\{"name":"get_product_serials","description":"Get serial-bearing test executions scoped to a product.","inputSchema":{"type":"object","properties":{"full_product_identifier":{"type":"string"}},"required":["full_product_identifier"]}},
+    \\{"name":"get_components_by_supplier","description":"Get BOM components linked through CONTAINS edges with a matching supplier.","inputSchema":{"type":"object","properties":{"supplier":{"type":"string"}},"required":["supplier"]}},
+    \\{"name":"get_software_components","description":"Get software BOM components, optionally filtered by purl prefix or license.","inputSchema":{"type":"object","properties":{"purl_prefix":{"type":"string"},"license":{"type":"string"}},"required":[]}},
     \\{"name":"chain_gaps","description":"Traceability chain gaps for the active or requested industry profile. Supports severity, profile, limit, and offset.","inputSchema":{"type":"object","properties":{"profile":{"type":"string"},"severity":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]}},
     \\{"name":"implementation_changes_since","description":"Find requirements or user needs whose implementation files changed since an ISO timestamp. This uses file/commit history, not explicit COMMITTED_IN message references. Supports repo, limit, and offset.","inputSchema":{"type":"object","properties":{"since":{"type":"string"},"node_type":{"type":"string","enum":["Requirement","UserNeed"]},"repo":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":["since","node_type"]}},
     \\{"name":"requirement_trace","description":"Concise markdown trace summary for a requirement.","inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}},
@@ -304,6 +310,39 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, db: *graph_live.Gra
     } else if (std.mem.eql(u8, name, "get_unit_history")) {
         const serial_number = try requireStringArg(args, "serial_number");
         return .{ .text = try test_results.unitHistoryJson(db, serial_number, alloc) };
+    } else if (std.mem.eql(u8, name, "get_bom")) {
+        const full_product_identifier = try requireStringArg(args, "full_product_identifier");
+        const bom_type = if (args) |a| json_util.getString(a, "bom_type") else null;
+        const bom_name = if (args) |a| json_util.getString(a, "bom_name") else null;
+        return .{ .text = try bom.getBomJson(db, full_product_identifier, bom_type, bom_name, alloc) };
+    } else if (std.mem.eql(u8, name, "get_bom_item")) {
+        const item_id = if (args) |a| blk: {
+            if (json_util.getString(a, "id")) |value| break :blk try alloc.dupe(u8, value);
+            const full_product_identifier = json_util.getString(a, "full_product_identifier") orelse return error.InvalidArgument;
+            const bom_type = json_util.getString(a, "bom_type") orelse return error.InvalidArgument;
+            const bom_name = json_util.getString(a, "bom_name") orelse return error.InvalidArgument;
+            const part = json_util.getString(a, "part") orelse return error.InvalidArgument;
+            const revision = json_util.getString(a, "revision") orelse return error.InvalidArgument;
+            break :blk try std.fmt.allocPrint(alloc, "bom-item://{s}/{s}/{s}/{s}@{s}", .{
+                full_product_identifier,
+                bom_type,
+                bom_name,
+                part,
+                revision,
+            });
+        } else return error.InvalidArgument;
+        defer alloc.free(item_id);
+        return .{ .text = try bom.getBomItemJson(db, item_id, alloc) };
+    } else if (std.mem.eql(u8, name, "get_product_serials")) {
+        const full_product_identifier = try requireStringArg(args, "full_product_identifier");
+        return .{ .text = try bom.getProductSerialsJson(db, full_product_identifier, alloc) };
+    } else if (std.mem.eql(u8, name, "get_components_by_supplier")) {
+        const supplier = try requireStringArg(args, "supplier");
+        return .{ .text = try bom.getComponentsBySupplierJson(db, supplier, alloc) };
+    } else if (std.mem.eql(u8, name, "get_software_components")) {
+        const purl_prefix = if (args) |a| json_util.getString(a, "purl_prefix") else null;
+        const license_filter = if (args) |a| json_util.getString(a, "license") else null;
+        return .{ .text = try bom.getSoftwareComponentsJson(db, purl_prefix, license_filter, alloc) };
     } else if (std.mem.eql(u8, name, "chain_gaps")) {
         return chainGapsToolPayload(db, args, alloc);
     } else if (std.mem.eql(u8, name, "implementation_changes_since")) {
@@ -1263,6 +1302,11 @@ test "tools list contains legacy and new tools" {
     try testing.expect(std.mem.indexOf(u8, tools_json, "get_verification_status") != null);
     try testing.expect(std.mem.indexOf(u8, tools_json, "get_dangling_results") != null);
     try testing.expect(std.mem.indexOf(u8, tools_json, "get_unit_history") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_bom") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_bom_item") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_product_serials") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_components_by_supplier") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "get_software_components") != null);
 }
 
 test "mcp headers do not advertise wildcard cors" {
@@ -1313,4 +1357,43 @@ test "implementation changes tool returns bounded rows" {
     defer payload.deinit(testing.allocator);
     try testing.expect(std.mem.indexOf(u8, payload.text, "\"node_id\":\"REQ-001\"") != null);
     try testing.expect(payload.note != null);
+}
+
+test "get_bom tool returns product bom tree" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
+    var ingest = try bom.ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4",
+        \\      "supplier": "Murata"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer ingest.deinit(testing.allocator);
+
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("full_product_identifier", .{ .string = "ASM-1000-REV-C" });
+    var state: sync_live.SyncState = .{};
+    var store = try secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+
+    const payload = try buildToolPayload("get_bom", .{ .object = args_obj }, &db, &store, &state, testing.allocator);
+    defer payload.deinit(testing.allocator);
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"bom_name\":\"pcba\"") != null);
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"quantity\":\"4\"") != null);
 }

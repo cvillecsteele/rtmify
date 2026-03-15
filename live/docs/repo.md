@@ -186,6 +186,8 @@ template/report path ignore that tab entirely in this cut.
 | Node Type | Description | Properties |
 |-----------|-------------|------------|
 | `Product` | Live-only product declaration row keyed by `full_identifier` for future manufacturing joins | `assembly`, `revision`, `full_identifier`, `description`, `product_status` |
+| `BOM` | Live-only named hardware or software BOM attached to a Product | `full_product_identifier`, `bom_name`, `bom_type`, `source_format`, `ingested_at` |
+| `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `purl`, `license`, `hashes` |
 | `DesignInput` | Formal design input derived from a requirement (FDA/IEC 62304) | `description`, `source_req`, `status` |
 | `DesignOutput` | Design artifact satisfying a design input (drawing, spec, firmware, BOM) | `description`, `type`, `version`, `status` |
 | `SourceFile` | A source code file in the working tree linked to a requirement or design output | `path`, `language`, `last_modified`, `line_count` |
@@ -214,6 +216,24 @@ template/report path ignore that tab entirely in this cut.
 | `CONTAINS` | SourceFile | CodeAnnotation | Source file contains this annotation |
 | `CONTAINS` | TestFile | CodeAnnotation | Test file contains this annotation |
 | `CONTROLLED_BY` | DesignOutput | ConfigurationItem | Design output under configuration control |
+| `FOR_PRODUCT` | TestExecution | Product | Execution evidence scoped to a product configuration |
+| `HAS_BOM` | Product | BOM | Product currently declares this named BOM |
+| `CONTAINS` | BOM/BOMItem | BOMItem | BOM tree containment; occurrence facts like quantity and ref designator live on the edge properties |
+
+### External Evidence Ingestion
+
+Live accepts product-scoped external evidence through the local ingestion API and the shared inbox directory:
+
+- `POST /api/v1/test-results`
+- `POST /api/v1/bom`
+- `GET /api/v1/bom/:full_product_identifier`
+
+`/api/v1/bom` accepts:
+
+- raw `text/csv` for RTMify hardware BOM CSV uploads
+- `application/json` for RTMify hardware BOM JSON, CycloneDX JSON, and SPDX JSON
+
+The inbox at `~/.rtmify/inbox` uses the same bearer token and dispatches `.json` and `.csv` files by content. Product matching is exact on `Product.full_identifier`; BOM and SBOM uploads are Live-only and do not affect Trace output.
 
 ---
 

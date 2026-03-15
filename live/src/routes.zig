@@ -30,6 +30,8 @@ pub const handleGetExecution = mod.handleGetExecution;
 pub const handleGetExecutionResponse = mod.handleGetExecutionResponse;
 pub const handleRegenerateTestResultsToken = mod.handleRegenerateTestResultsToken;
 pub const handleRegenerateTestResultsTokenResponse = mod.handleRegenerateTestResultsTokenResponse;
+pub const handlePostBomResponse = mod.handlePostBomResponse;
+pub const handleGetBomResponse = mod.handleGetBomResponse;
 
 pub const handleConnectionValidate = mod.handleConnectionValidate;
 pub const handleConnectionValidateResponse = mod.handleConnectionValidateResponse;

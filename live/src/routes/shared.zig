@@ -51,6 +51,7 @@ pub fn freeEdge(e: graph_live.Edge, alloc: Allocator) void {
     alloc.free(e.from_id);
     alloc.free(e.to_id);
     alloc.free(e.label);
+    if (e.properties) |p| alloc.free(p);
 }
 
 pub fn freeRuntimeDiagnostic(d: graph_live.RuntimeDiagnostic, alloc: Allocator) void {
@@ -320,6 +321,12 @@ pub fn appendEdgeArrayWithNode(buf: *std.ArrayList(u8), db: *graph_live.GraphDb,
         try appendJsonStr(buf, e.to_id, alloc);
         try buf.appendSlice(alloc, ",\"label\":");
         try appendJsonStr(buf, e.label, alloc);
+        try buf.appendSlice(alloc, ",\"properties\":");
+        if (e.properties) |properties| {
+            try buf.appendSlice(alloc, properties);
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
         try buf.append(alloc, '}');
     }
     try buf.append(alloc, ']');

@@ -1485,9 +1485,11 @@
       <div class="card-title mb-8">Test Results Ingestion API</div>
       <div id="test-results-endpoint" class="mcp-endpoint">Loading…</div>
       <div class="text-sm-subtle mt-8">
-        CI adapters can post execution evidence to the local ingestion API with <code>Authorization: Bearer ...</code>.
+        CI adapters can post execution evidence to the local ingestion API with <code>Authorization: Bearer ...</code>. BOM and SBOM uploads use the same token and inbox.
       </div>
       <div class="info-grid mt-12">
+        <div class="info-label">BOM Endpoint</div>
+        <div id="bom-endpoint" class="req-id">Loading…</div>
         <div class="info-label">Bearer Token</div>
         <div id="test-results-token" class="req-id">Loading…</div>
         <div class="info-label">Inbox Directory</div>

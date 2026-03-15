@@ -23,6 +23,7 @@ pub const Edge = struct {
     from_id: []const u8,
     to_id: []const u8,
     label: []const u8,
+    properties: ?[]const u8,
 };
 
 pub const RuntimeDiagnostic = struct {
@@ -436,6 +437,10 @@ pub const GraphDb = struct {
     // -----------------------------------------------------------------------
 
     pub fn addEdge(g: *GraphDb, from_id: []const u8, to_id: []const u8, label: []const u8) !void {
+        return g.addEdgeWithProperties(from_id, to_id, label, null);
+    }
+
+    pub fn addEdgeWithProperties(g: *GraphDb, from_id: []const u8, to_id: []const u8, label: []const u8, properties_json: ?[]const u8) !void {
         g.db.write_mu.lock();
         defer g.db.write_mu.unlock();
 
@@ -462,20 +467,21 @@ pub const GraphDb = struct {
         const edge_id_buf = std.fmt.bytesToHex(edge_digest, .lower);
 
         var ins = try g.db.prepare(
-            "INSERT INTO edges (id, from_id, to_id, label, properties, created_at) VALUES (?,?,?,?,NULL,?)"
+            "INSERT INTO edges (id, from_id, to_id, label, properties, created_at) VALUES (?,?,?,?,?,?)"
         );
         defer ins.finalize();
         try ins.bindText(1, &edge_id_buf);
         try ins.bindText(2, from_id);
         try ins.bindText(3, to_id);
         try ins.bindText(4, label);
-        try ins.bindInt(5, now);
+        if (properties_json) |value| try ins.bindText(5, value) else try ins.bindNull(5);
+        try ins.bindInt(6, now);
         _ = try ins.step();
     }
 
     pub fn edgesFrom(g: *GraphDb, from_id: []const u8, alloc: Allocator, result: *std.ArrayList(Edge)) !void {
         var st = try g.db.prepare(
-            "SELECT id, from_id, to_id, label FROM edges WHERE from_id=?"
+            "SELECT id, from_id, to_id, label, properties FROM edges WHERE from_id=?"
         );
         defer st.finalize();
         try st.bindText(1, from_id);
@@ -486,7 +492,7 @@ pub const GraphDb = struct {
 
     pub fn edgesTo(g: *GraphDb, to_id: []const u8, alloc: Allocator, result: *std.ArrayList(Edge)) !void {
         var st = try g.db.prepare(
-            "SELECT id, from_id, to_id, label FROM edges WHERE to_id=?"
+            "SELECT id, from_id, to_id, label, properties FROM edges WHERE to_id=?"
         );
         defer st.finalize();
         try st.bindText(1, to_id);
@@ -497,7 +503,7 @@ pub const GraphDb = struct {
 
     pub fn allEdges(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(Edge)) !void {
         var st = try g.db.prepare(
-            "SELECT id, from_id, to_id, label FROM edges ORDER BY from_id, label"
+            "SELECT id, from_id, to_id, label, properties FROM edges ORDER BY from_id, label"
         );
         defer st.finalize();
         while (try st.step()) {
@@ -1144,6 +1150,7 @@ fn stmtToEdge(st: *Stmt, alloc: Allocator) !Edge {
         .from_id = try alloc.dupe(u8, st.columnText(1)),
         .to_id = try alloc.dupe(u8, st.columnText(2)),
         .label = try alloc.dupe(u8, st.columnText(3)),
+        .properties = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
     };
 }
 

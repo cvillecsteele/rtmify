@@ -279,6 +279,22 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.startsWith(u8, path, "/api/v1/bom/")) {
+            const full_product_identifier = try decodePathParam(path["/api/v1/bom/".len..], alloc);
+            const bom_type = try queryParamDecoded(target, "bom_type", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const resp = try routes.handleGetBomResponse(
+                ctx.db,
+                ctx.test_results_auth,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_type,
+                bom_name,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/provision-preview")) {
             const qprofile = try queryParamDecoded(target, "profile", alloc);
             const body = try routes.handleProvisionPreview(ctx.db, ctx.secure_store, qprofile, alloc);
@@ -475,6 +491,27 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 ctx.db,
                 ctx.test_results_auth,
                 requestHeaderValue(req, "Authorization"),
+                body_bytes,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom")) {
+            const body_bytes = readBodyLimited(req, alloc, 25 * 1024 * 1024) catch |err| switch (err) {
+                error.StreamTooLong => {
+                    response_status = .payload_too_large;
+                    response_bytes = "{\"error\":\"payload_too_large\"}".len;
+                    try sendJsonWithStatus(req, "{\"error\":\"payload_too_large\"}", .payload_too_large);
+                    return;
+                },
+                else => return err,
+            };
+            const resp = try routes.handlePostBomResponse(
+                ctx.db,
+                ctx.test_results_auth,
+                requestHeaderValue(req, "Authorization"),
+                requestHeaderValue(req, "Content-Type"),
                 body_bytes,
                 alloc,
             );

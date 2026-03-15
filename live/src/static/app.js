@@ -351,6 +351,7 @@
     const dbEl = document.getElementById('info-db-path');
     const logEl = document.getElementById('info-log-path');
     const testResultsEndpointEl = document.getElementById('test-results-endpoint');
+    const bomEndpointEl = document.getElementById('bom-endpoint');
     const testResultsTokenEl = document.getElementById('test-results-token');
     const testResultsInboxEl = document.getElementById('test-results-inbox');
     if (!errEl || !trayEl || !liveEl || !dbEl || !logEl || !licenseStateEl) return;
@@ -366,7 +367,7 @@
       liveEl.textContent = info.live_version || 'unknown';
       dbEl.textContent = info.db_path || 'unknown';
       logEl.textContent = info.log_path || 'unknown';
-      renderTestResultsApiInfo(info, testResultsEndpointEl, testResultsTokenEl, testResultsInboxEl);
+      renderTestResultsApiInfo(info, testResultsEndpointEl, bomEndpointEl, testResultsTokenEl, testResultsInboxEl);
     } catch (e) {
       errEl.textContent = 'Failed to load info: ' + e.message;
       errEl.style.display = 'block';
@@ -376,13 +377,15 @@
       dbEl.textContent = '—';
       logEl.textContent = '—';
       if (testResultsEndpointEl) testResultsEndpointEl.textContent = '—';
+      if (bomEndpointEl) bomEndpointEl.textContent = '—';
       if (testResultsTokenEl) testResultsTokenEl.textContent = '—';
       if (testResultsInboxEl) testResultsInboxEl.textContent = '—';
     }
   }
 
-  function renderTestResultsApiInfo(info, endpointEl, tokenEl, inboxEl) {
+  function renderTestResultsApiInfo(info, endpointEl, bomEndpointEl, tokenEl, inboxEl) {
     if (endpointEl) endpointEl.textContent = info.test_results_endpoint || 'unknown';
+    if (bomEndpointEl) bomEndpointEl.textContent = info.bom_endpoint || 'unknown';
     if (tokenEl) tokenEl.textContent = info.test_results_token || 'unknown';
     if (inboxEl) inboxEl.textContent = info.test_results_inbox_dir || 'unknown';
   }

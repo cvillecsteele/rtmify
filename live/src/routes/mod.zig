@@ -9,6 +9,7 @@ const repo = @import("repo.zig");
 const design_history = @import("design_history.zig");
 const reports = @import("reports.zig");
 const test_results = @import("test_results.zig");
+const bom = @import("bom.zig");
 
 pub const index_html = @embedFile("../static/index.html");
 pub const app_js = @embedFile("../static/app.js");
@@ -83,6 +84,8 @@ pub const handleGetExecution = test_results.handleGetExecution;
 pub const handleGetExecutionResponse = test_results.handleGetExecutionResponse;
 pub const handleRegenerateTestResultsToken = test_results.handleRegenerateTestResultsToken;
 pub const handleRegenerateTestResultsTokenResponse = test_results.handleRegenerateTestResultsTokenResponse;
+pub const handlePostBomResponse = bom.handlePostBomResponse;
+pub const handleGetBomResponse = bom.handleGetBomResponse;
 
 const std = @import("std");
 const testing = std.testing;
