@@ -310,7 +310,12 @@ test "handlePostRepo returns E902 for file path" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
 
-    const tmp_path = "/tmp/rtmify-routes-file.txt";
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const root = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(root);
+    const tmp_path = try std.fs.path.join(alloc, &.{ root, "rtmify-routes-file.txt" });
+    defer alloc.free(tmp_path);
     {
         const f = try std.fs.createFileAbsolute(tmp_path, .{ .truncate = true });
         defer f.close();
@@ -357,8 +362,12 @@ test "handlePostRepo returns E903 for directory without git" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
 
-    const tmp_dir = "/tmp/rtmify-routes-nogit";
-    std.fs.makeDirAbsolute(tmp_dir) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.makeDir("rtmify-routes-nogit");
+    const root = try tmp.dir.realpathAlloc(alloc, "rtmify-routes-nogit");
+    defer alloc.free(root);
+    const tmp_dir = root;
     const body = try std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{tmp_dir});
     const resp = try handlePostRepo(&db, body, alloc);
     try testing.expect(std.mem.indexOf(u8, resp, "\"code\":903") != null);

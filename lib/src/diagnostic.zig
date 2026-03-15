@@ -594,7 +594,12 @@ test "Diagnostics writeJson includes code and url" {
 
     try d.warn(E.req_no_shall, .semantic, "Requirements", 7, "no shall", .{});
 
-    const tmp_path = "/tmp/diag_test.json";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+    const tmp_path = try std.fs.path.join(testing.allocator, &.{ root, "diag_test.json" });
+    defer testing.allocator.free(tmp_path);
     try d.writeJson(tmp_path, testing.allocator);
 
     const content = try std.fs.cwd().readFileAlloc(testing.allocator, tmp_path, 65536);

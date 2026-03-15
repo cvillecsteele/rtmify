@@ -233,7 +233,13 @@ test "gitless mode status is configured and repos list is empty" {
 
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
-    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", "/tmp/inbox");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_root);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ tmp_root, "inbox" });
+    defer alloc.free(inbox_dir);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", inbox_dir);
     defer registry.deinit(alloc);
     const runtime = try registry.active();
 
@@ -282,7 +288,13 @@ test "handleStatus includes repo scan lifecycle fields" {
 
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
-    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", "/tmp/inbox");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_root);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ tmp_root, "inbox" });
+    defer alloc.free(inbox_dir);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", inbox_dir);
     defer registry.deinit(alloc);
 
     var state: sync_live.SyncState = .{};
@@ -306,7 +318,13 @@ test "handleStatus reports missing secure secret as blocked" {
 
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
-    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", "/tmp/inbox");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_root);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ tmp_root, "inbox" });
+    defer alloc.free(inbox_dir);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", inbox_dir);
     defer registry.deinit(alloc);
     var state: sync_live.SyncState = .{};
 
@@ -336,13 +354,20 @@ test "handleInfo returns version and path details" {
 
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
-    var registry = try makeTestRegistry(alloc, &store, "generic", "/tmp/graph.db", "/tmp/inbox");
-    defer registry.deinit(alloc);
-
     var dir = testing.tmpDir(.{});
     defer dir.cleanup();
     const root = try dir.dir.realpathAlloc(alloc, ".");
     defer alloc.free(root);
+    const db_path = try std.fs.path.join(alloc, &.{ root, "graph.db" });
+    defer alloc.free(db_path);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ root, "inbox" });
+    defer alloc.free(inbox_dir);
+    const token_path = try std.fs.path.join(alloc, &.{ root, "rtmify-test-results-status-token" });
+    defer alloc.free(token_path);
+    const log_path = try std.fs.path.join(alloc, &.{ root, "server.log" });
+    defer alloc.free(log_path);
+    var registry = try makeTestRegistry(alloc, &store, "generic", db_path, inbox_dir);
+    defer registry.deinit(alloc);
     const license_path = try std.fs.path.join(alloc, &.{ root, "license.json" });
     defer alloc.free(license_path);
     var license_service = try license.initDefaultHmacFile(alloc, .{
@@ -351,26 +376,26 @@ test "handleInfo returns version and path details" {
         .license_path_override = license_path,
     });
     defer license_service.deinit(alloc);
-    var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token", alloc);
+    var auth = try test_results_auth.AuthState.initForPath(token_path, alloc);
     defer auth.deinit(alloc);
 
     const resp = try handleInfo(&registry, &auth, &license_service, .{
         .actual_port = @as(u16, 8123),
         .tray_app_version = "0.1 (1)",
         .live_version = "20260308-a",
-        .log_path = "/tmp/server.log",
+        .log_path = log_path,
     }, alloc);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
     try testing.expectEqualStrings("0.1 (1)", obj.get("tray_app_version").?.string);
     try testing.expectEqualStrings("20260308-a", obj.get("live_version").?.string);
-    try testing.expectEqualStrings("/tmp/graph.db", obj.get("db_path").?.string);
-    try testing.expectEqualStrings("/tmp/server.log", obj.get("log_path").?.string);
+    try testing.expectEqualStrings(db_path, obj.get("db_path").?.string);
+    try testing.expectEqualStrings(log_path, obj.get("log_path").?.string);
     try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/test-results", obj.get("test_results_endpoint").?.string);
     try testing.expectEqualStrings("http://127.0.0.1:8123/api/v1/bom", obj.get("bom_endpoint").?.string);
-    try testing.expectEqualStrings("/tmp/inbox", obj.get("inbox_dir").?.string);
-    try testing.expectEqualStrings("/tmp/inbox", obj.get("test_results_inbox_dir").?.string);
+    try testing.expectEqualStrings(inbox_dir, obj.get("inbox_dir").?.string);
+    try testing.expectEqualStrings(inbox_dir, obj.get("test_results_inbox_dir").?.string);
     try testing.expectEqualStrings("bearer_token", obj.get("test_results_auth_mode").?.string);
     try testing.expectEqualStrings(license_path, obj.get("license_path").?.string);
 }
@@ -382,13 +407,20 @@ test "handleInfo falls back to legacy inbox config key" {
 
     var store = try secure_store_mod.initTestMemory(alloc);
     defer store.deinit(alloc);
-    var registry = try makeTestRegistry(alloc, &store, "generic", "/tmp/graph.db", "/tmp/legacy-inbox");
-    defer registry.deinit(alloc);
-
     var dir = testing.tmpDir(.{});
     defer dir.cleanup();
     const root = try dir.dir.realpathAlloc(alloc, ".");
     defer alloc.free(root);
+    const db_path = try std.fs.path.join(alloc, &.{ root, "graph.db" });
+    defer alloc.free(db_path);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ root, "legacy-inbox" });
+    defer alloc.free(inbox_dir);
+    const token_path = try std.fs.path.join(alloc, &.{ root, "rtmify-test-results-status-token-legacy" });
+    defer alloc.free(token_path);
+    const log_path = try std.fs.path.join(alloc, &.{ root, "server.log" });
+    defer alloc.free(log_path);
+    var registry = try makeTestRegistry(alloc, &store, "generic", db_path, inbox_dir);
+    defer registry.deinit(alloc);
     const license_path = try std.fs.path.join(alloc, &.{ root, "license.json" });
     defer alloc.free(license_path);
     var license_service = try license.initDefaultHmacFile(alloc, .{
@@ -397,18 +429,18 @@ test "handleInfo falls back to legacy inbox config key" {
         .license_path_override = license_path,
     });
     defer license_service.deinit(alloc);
-    var auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-test-results-status-token-legacy", alloc);
+    var auth = try test_results_auth.AuthState.initForPath(token_path, alloc);
     defer auth.deinit(alloc);
 
     const resp = try handleInfo(&registry, &auth, &license_service, .{
         .actual_port = @as(u16, 8123),
         .tray_app_version = "0.1 (1)",
         .live_version = "20260308-a",
-        .log_path = "/tmp/server.log",
+        .log_path = log_path,
     }, alloc);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
-    try testing.expectEqualStrings("/tmp/legacy-inbox", obj.get("inbox_dir").?.string);
-    try testing.expectEqualStrings("/tmp/legacy-inbox", obj.get("test_results_inbox_dir").?.string);
+    try testing.expectEqualStrings(inbox_dir, obj.get("inbox_dir").?.string);
+    try testing.expectEqualStrings(inbox_dir, obj.get("test_results_inbox_dir").?.string);
 }

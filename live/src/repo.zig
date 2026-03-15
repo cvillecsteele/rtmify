@@ -223,6 +223,10 @@ test "classifyFile ignored unknown extension" {
 test "parseGitignore returns empty slice when no .gitignore" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const patterns = try parseGitignore("/tmp/nonexistent_repo_xyz", arena.allocator());
+    const root = try std.fs.cwd().realpathAlloc(arena.allocator(), ".");
+    defer arena.allocator().free(root);
+    const missing_repo = try std.fs.path.join(arena.allocator(), &.{ root, "nonexistent_repo_xyz" });
+    defer arena.allocator().free(missing_repo);
+    const patterns = try parseGitignore(missing_repo, arena.allocator());
     try testing.expectEqual(@as(usize, 0), patterns.len);
 }

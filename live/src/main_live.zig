@@ -554,6 +554,14 @@ test "maybeStartSync returns false and resets state for invalid credential" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(root);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ root, "inbox" });
+    defer alloc.free(inbox_dir);
+    const token_path = try std.fs.path.join(alloc, &.{ root, "rtmify-main-live-token" });
+    defer alloc.free(token_path);
 
     var runtime = workbook.runtime.WorkbookRuntime{
         .config = .{
@@ -563,10 +571,10 @@ test "maybeStartSync returns false and resets state for invalid credential" {
             .profile = try alloc.dupe(u8, "generic"),
             .repo_paths = try alloc.alloc([]const u8, 0),
             .db_path = try alloc.dupe(u8, ":memory:"),
-            .inbox_dir = try alloc.dupe(u8, "/tmp/inbox"),
+            .inbox_dir = try alloc.dupe(u8, inbox_dir),
         },
         .db = try graph_live.GraphDb.init(":memory:"),
-        .ingest_auth = try test_results_auth.AuthState.initForPath("/tmp/rtmify-main-live-token", alloc),
+        .ingest_auth = try test_results_auth.AuthState.initForPath(token_path, alloc),
     };
     defer runtime.deinit(alloc);
 
