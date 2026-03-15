@@ -4,8 +4,16 @@ var log_file: ?std.fs.File = null;
 var init_attempted = false;
 var mutex: std.Thread.Mutex = .{};
 
+fn homeDir(alloc: std.mem.Allocator) ![]u8 {
+    if (std.process.getEnvVarOwned(alloc, "HOME")) |home| return home else |err| switch (err) {
+        error.EnvironmentVariableNotFound => {},
+        else => return err,
+    }
+    return std.process.getEnvVarOwned(alloc, "USERPROFILE");
+}
+
 pub fn defaultLogPath(alloc: std.mem.Allocator) ![]u8 {
-    const home = try std.process.getEnvVarOwned(alloc, "HOME");
+    const home = try homeDir(alloc);
     errdefer alloc.free(home);
     defer alloc.free(home);
     return std.fmt.allocPrint(alloc, "{s}/.rtmify/log/server.log", .{home});
@@ -47,7 +55,7 @@ fn ensureOpenLocked() void {
     init_attempted = true;
 
     const alloc = std.heap.page_allocator;
-    const home = std.process.getEnvVarOwned(alloc, "HOME") catch null;
+    const home = homeDir(alloc) catch null;
     defer if (home) |h| alloc.free(h);
 
     if (home) |h| {
