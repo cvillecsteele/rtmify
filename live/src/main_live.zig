@@ -13,6 +13,7 @@ const external_ingest_inbox = @import("external_ingest_inbox.zig");
 const workbook = @import("workbook/mod.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
+const profile_mod = rtmify.profile;
 
 const LicenseCommand = enum {
     info,
@@ -486,7 +487,7 @@ fn maybeStartSync(
     const cfg = sync_live.SyncConfig{
         .workbook_id = try alloc.dupe(u8, workbook_runtime.config.id),
         .workbook_slug = try alloc.dupe(u8, workbook_runtime.config.slug),
-        .profile = @import("profile.zig").fromString(workbook_runtime.config.profile) orelse .generic,
+        .profile = profile_mod.fromString(workbook_runtime.config.profile) orelse .generic,
         .active = try active.clone(alloc),
         .control = control,
         .alloc = alloc,

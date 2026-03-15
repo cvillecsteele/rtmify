@@ -5,7 +5,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const profile_mod = @import("profile.zig");
+const profile_mod = @import("rtmify").profile;
 const online_provider = @import("online_provider.zig");
 const Profile = profile_mod.Profile;
 const TabRef = online_provider.TabRef;

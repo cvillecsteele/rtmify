@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const graph_live = @import("../graph_live.zig");
-const profile_mod = @import("../profile.zig");
+const profile_mod = @import("rtmify").profile;
 const design_history_core = @import("../design_history.zig");
 const chain_mod = @import("../chain.zig");
 const shared = @import("shared.zig");

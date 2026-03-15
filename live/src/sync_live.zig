@@ -12,12 +12,12 @@ const Allocator = std.mem.Allocator;
 const graph_mod = @import("rtmify").graph;
 const schema = @import("rtmify").schema;
 const xlsx = @import("rtmify").xlsx;
+const profile_mod = @import("rtmify").profile;
 
 const graph_live = @import("graph_live.zig");
 const repo_mod = @import("repo.zig");
 const annotations_mod = @import("annotations.zig");
 const git_mod = @import("git.zig");
-const profile_mod = @import("profile.zig");
 const provision_mod = @import("provision.zig");
 const online_provider = @import("online_provider.zig");
 const provider_common = @import("provider_common.zig");

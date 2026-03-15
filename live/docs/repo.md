@@ -866,7 +866,6 @@ src/
 ├── repo.zig              ← Repo watcher: scan loop, file classification, modification tracking
 ├── annotations.zig       ← Annotation scanner: comment detection, requirement ID extraction
 ├── git.zig               ← Git CLI wrapper: log, blame, fork/exec, output parsing
-├── profile.zig           ← Industry profiles: chain definitions, gap severity, tab lists
 ├── chain.zig             ← Chain validation: walk industry-specific paths, flag gaps
 ├── provision.zig         ← Sheet provisioning: create tabs, write headers, apply formatting
 ```
@@ -895,7 +894,7 @@ Estimated new Zig for Live+Repo: ~2,500-3,500 lines across these six modules plu
 
 ### Phase 3: Industry Profiles + Chain Validation + Sheet Provisioning (4-5 days)
 
-- `profile.zig`: profile definitions, required chains, gap severity mapping, tab list per profile
+- `rtmify.profile` (`sys/lib/src/profile.zig`): shared profile definitions, required chains, gap severity mapping, tab list per profile
 - `chain.zig`: walk each required path, collect gaps, classify by profile severity
 - `provision.zig`: read existing tabs, diff against profile, create missing tabs via Sheets API, write header rows, apply header formatting
 - New gap types in diagnostic.zig (E9xx through E12xx)

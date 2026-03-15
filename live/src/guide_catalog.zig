@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const rtmify = @import("rtmify");
 const diagnostic = rtmify.diagnostic;
-const profile_mod = @import("profile.zig");
+const profile_mod = rtmify.profile;
 
 pub const GuideGroupId = enum {
     file_and_workbook,

@@ -18,7 +18,6 @@ pub const mcp = @import("mcp.zig");
 pub const repo = @import("repo.zig");
 pub const annotations = @import("annotations.zig");
 pub const git = @import("git.zig");
-pub const profile = @import("profile.zig");
 pub const chain = @import("chain.zig");
 pub const provision = @import("provision.zig");
 pub const guide_catalog = @import("guide_catalog.zig");
@@ -50,7 +49,6 @@ test {
     _ = repo;
     _ = annotations;
     _ = git;
-    _ = profile;
     _ = chain;
     _ = provision;
     _ = guide_catalog;
