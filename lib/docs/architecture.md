@@ -148,9 +148,12 @@ happens in `schema.zig`.
 ### `schema.zig` — spreadsheet ingestion
 
 Maps the raw `SheetData` from `xlsx.zig` onto `Graph` nodes and edges. The
-public entry point is `ingestValidated(g, sheets, *Diagnostics) !IngestStats`.
-The legacy `ingest()` wrapper is retained for callers that don't need
-diagnostics. `IngestStats` carries counts of each node type ingested.
+public entry points are `ingestValidated(g, sheets, *Diagnostics) !IngestStats`
+and `ingestValidatedWithOptions(g, sheets, *Diagnostics, IngestOptions)`.
+The legacy `ingest()` / `ingestValidated()` wrappers are retained for callers
+that don't need diagnostics or ingest options; they default optional ingest
+features like Live's `Product` tab to disabled. `IngestStats` carries counts of
+each node type ingested.
 
 **Layer 3 — tab discovery (`resolveTab`):**
 
@@ -165,6 +168,8 @@ Synonym and fuzzy matches emit an INFO diagnostic. Two tabs matching the same
 tier at equal priority → `AmbiguousTabMatch` hard error. `Requirements` tab
 not found at any tier → `RequirementsTabNotFound` hard error. User Needs,
 Tests, and Risks tabs are optional — their absence emits INFO only.
+The Live-only `Product` tab is also optional and only ingested when the caller
+explicitly enables it.
 
 **Layer 4 — column mapping (`resolveCol`):**
 
@@ -193,10 +198,11 @@ using the shared identifier validator:
 Ingestion order matters for edge resolution — edges are only created if both
 endpoints exist:
 
-1. User Needs (nodes only)
-2. Tests (TestGroup + Test nodes, `HAS_TEST` edges)
-3. Requirements (Requirement nodes, `DERIVES_FROM` and `TESTED_BY` edges)
-4. Risks (Risk nodes, `MITIGATED_BY` edges)
+1. Product (nodes only, Live opt-in only)
+2. User Needs (nodes only)
+3. Tests (TestGroup + Test nodes, `HAS_TEST` edges)
+4. Requirements (Requirement nodes, `DERIVES_FROM` and `TESTED_BY` edges)
+5. Risks (Risk nodes, `MITIGATED_BY` edges)
 
 **Layer 6 — semantic validation (`semanticValidate`):**
 

@@ -114,19 +114,19 @@ const generic_special_checks = &[_]SpecialGapCheck{};
 
 const medical_tabs = &[_][]const u8{
     "User Needs", "Requirements", "Tests", "Risks",
-    "Design Inputs", "Design Outputs", "Configuration Items",
+    "Design Inputs", "Design Outputs", "Configuration Items", "Product",
 };
 
 const aerospace_tabs = &[_][]const u8{
-    "User Needs", "Requirements", "Tests", "Risks", "Configuration Items",
+    "User Needs", "Requirements", "Tests", "Risks", "Configuration Items", "Product",
 };
 
 const automotive_tabs = &[_][]const u8{
-    "User Needs", "Requirements", "Tests", "Risks", "Configuration Items",
+    "User Needs", "Requirements", "Tests", "Risks", "Configuration Items", "Product",
 };
 
 const generic_tabs = &[_][]const u8{
-    "User Needs", "Requirements", "Tests", "Risks",
+    "User Needs", "Requirements", "Tests", "Risks", "Product",
 };
 
 pub const profiles = [4]Profile{
@@ -236,4 +236,17 @@ test "medical profile includes design-chain checks" {
 test "generic profile has no required chain steps" {
     const p = get(.generic);
     try testing.expectEqual(@as(usize, 0), p.chain_steps.len);
+}
+
+test "all profiles include Product tab" {
+    inline for (profiles) |p| {
+        var found = false;
+        for (p.tabs) |tab| {
+            if (std.mem.eql(u8, tab, "Product")) {
+                found = true;
+                break;
+            }
+        }
+        try testing.expect(found);
+    }
 }

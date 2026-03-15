@@ -17,6 +17,7 @@ const SheetData = xlsx.SheetData;
 const Row = xlsx.Row;
 
 pub const IngestStats = struct {
+    product_count: u32 = 0,
     requirement_count: u32 = 0,
     user_need_count: u32 = 0,
     test_group_count: u32 = 0,
@@ -27,6 +28,10 @@ pub const IngestStats = struct {
     config_item_count: u32 = 0,
 };
 
+pub const IngestOptions = struct {
+    enable_product_tab: bool = false,
+};
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -35,15 +40,29 @@ pub const IngestStats = struct {
 /// Call order: User Needs → Tests → Requirements → Risks
 /// (so that edge targets exist before edges are created).
 pub fn ingest(g: *Graph, sheets: []const SheetData) !void {
+    return ingestWithOptions(g, sheets, .{});
+}
+
+pub fn ingestWithOptions(g: *Graph, sheets: []const SheetData, options: IngestOptions) !void {
     var d = Diagnostics.init(g.arena.child_allocator);
     defer d.deinit();
-    _ = try ingestValidated(g, sheets, &d);
+    _ = try ingestValidatedWithOptions(g, sheets, &d, options);
 }
 
 /// Validated ingest: appends diagnostics, returns counts.
 pub fn ingestValidated(g: *Graph, sheets: []const SheetData, diag: *Diagnostics) !IngestStats {
+    return ingestValidatedWithOptions(g, sheets, diag, .{});
+}
+
+/// Validated ingest with explicit feature flags, returns counts.
+pub fn ingestValidatedWithOptions(g: *Graph, sheets: []const SheetData, diag: *Diagnostics, options: IngestOptions) !IngestStats {
     var stats = IngestStats{};
     // Order matters for edge resolution
+    if (options.enable_product_tab) {
+        if (resolveTab(sheets, "Product", product_tab_synonyms, diag)) |s| {
+            try ingestProducts(g, s, diag, &stats);
+        }
+    }
     if (resolveTab(sheets, "User Needs", user_needs_synonyms, diag)) |s| {
         try ingestUserNeeds(g, s, diag, &stats);
     } else {
@@ -122,6 +141,9 @@ const design_outputs_synonyms = &[_][]const u8{
 const config_items_synonyms = &[_][]const u8{
     "configuration items", "ci", "config items", "controlled items",
     "configuration", "bom",
+};
+const product_tab_synonyms = &[_][]const u8{
+    "products", "product configuration", "product config", "configurations", "device configurations",
 };
 
 // ---------------------------------------------------------------------------
@@ -324,6 +346,13 @@ const ci_ver_syns     = &[_][]const u8{ "Version", "Rev", "Revision", "Item Vers
 const ci_do_syns      = &[_][]const u8{ "Design Output ID", "DO ID", "Linked DO", "Source DO", "Output ID" };
 const ci_status_syns  = &[_][]const u8{ "Status", "State", "Lifecycle", "CI Status" };
 
+// Product
+const product_assembly_syns    = &[_][]const u8{ "Assembly", "Part Number", "Part No", "PN", "Assembly Number" };
+const product_revision_syns    = &[_][]const u8{ "Revision", "Rev", "Version" };
+const product_identifier_syns  = &[_][]const u8{ "Full Identifier", "Full ID", "Canonical Identifier", "Configuration Identifier" };
+const product_description_syns = &[_][]const u8{ "Description", "Product Description", "Name" };
+const product_status_syns      = &[_][]const u8{ "Status", "Lifecycle Status", "Configuration Status" };
+
 // ---------------------------------------------------------------------------
 // Column resolution (Layer 4)
 // ---------------------------------------------------------------------------
@@ -469,6 +498,13 @@ fn normalizeId(raw: []const u8, alloc: Allocator, diag: *Diagnostics, tab: []con
     return normalized;
 }
 
+/// Normalize an opaque Product field: remove BOM and trim surrounding spaces.
+/// Product identifiers are not RTM structured IDs in this cut.
+fn normalizeProductField(raw: []const u8, alloc: Allocator) ![]const u8 {
+    const normalized = try xlsx.normalizeCell(raw, alloc);
+    return std.mem.trim(u8, normalized, " ");
+}
+
 /// Parse a severity/likelihood numeric field that may be expressed as text
 /// ("high", "H", "III") or a number. Returns null for blank-equivalents or
 /// unmappable values; warns on fractional or unrecognized input.
@@ -600,6 +636,81 @@ fn cell(row: Row, col: ?usize) []const u8 {
 // ---------------------------------------------------------------------------
 // Per-sheet ingestion
 // ---------------------------------------------------------------------------
+
+fn ingestProducts(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestStats) !void {
+    if (sheet.rows.len < 2) {
+        try diag.info(diagnostic.E.product_none_declared, .profile, sheet.name, null,
+            "Product tab has no declared products", .{});
+        return;
+    }
+
+    const headers = sheet.rows[0];
+    const data = sheet.rows[1..];
+    const a = diag.arena.allocator();
+
+    const c_assembly = resolveCol(headers, &.{}, "assembly", product_assembly_syns, sheet.name, diag, false);
+    const c_revision = resolveCol(headers, &.{}, "revision", product_revision_syns, sheet.name, diag, false);
+    const c_identifier = resolveCol(headers, &.{}, "full_identifier", product_identifier_syns, sheet.name, diag, false);
+    const c_description = resolveCol(headers, &.{}, "description", product_description_syns, sheet.name, diag, false);
+    const c_status = resolveCol(headers, &.{}, "Product Status", product_status_syns, sheet.name, diag, false);
+
+    var seen = std.StringHashMap(void).init(a);
+    defer seen.deinit();
+    var declared_count: usize = 0;
+
+    for (data, 0..) |row, ri| {
+        const assembly_raw = cell(row, c_assembly);
+        const revision_raw = cell(row, c_revision);
+        const identifier_raw = cell(row, c_identifier);
+        const description_raw = cell(row, c_description);
+        const status_raw = cell(row, c_status);
+
+        if (isBlankEquivalent(assembly_raw) and
+            isBlankEquivalent(revision_raw) and
+            isBlankEquivalent(identifier_raw) and
+            isBlankEquivalent(description_raw) and
+            isBlankEquivalent(status_raw))
+        {
+            continue;
+        }
+
+        const assembly = try normalizeProductField(assembly_raw, a);
+        const revision = try normalizeProductField(revision_raw, a);
+        const full_identifier = try normalizeProductField(identifier_raw, a);
+        const description = try normalizeProductField(description_raw, a);
+        const product_status = try normalizeProductField(status_raw, a);
+        const row_num: u32 = @intCast(ri + 2);
+
+        if (full_identifier.len == 0 or isBlankEquivalent(full_identifier)) {
+            try diag.warn(diagnostic.E.product_full_identifier_missing, .row_parsing, sheet.name, row_num,
+                "Product row missing full_identifier — skipping", .{});
+            continue;
+        }
+
+        if (seen.contains(full_identifier)) {
+            try diag.add(.err, diagnostic.E.product_duplicate_full_identifier, .row_parsing, sheet.name, row_num,
+                "duplicate Product full_identifier '{s}' — skipping", .{full_identifier});
+            continue;
+        }
+        try seen.put(full_identifier, {});
+        declared_count += 1;
+
+        const node_id = try std.fmt.allocPrint(a, "product://{s}", .{full_identifier});
+        try g.addNode(node_id, .product, &.{
+            .{ .key = "assembly", .value = assembly },
+            .{ .key = "revision", .value = revision },
+            .{ .key = "full_identifier", .value = full_identifier },
+            .{ .key = "description", .value = description },
+            .{ .key = "product_status", .value = product_status },
+        });
+        stats.product_count += 1;
+    }
+
+    if (declared_count == 0) {
+        try diag.info(diagnostic.E.product_none_declared, .profile, sheet.name, null,
+            "Product tab has no declared products", .{});
+    }
+}
 
 fn ingestUserNeeds(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestStats) !void {
     if (sheet.rows.len < 2) return;
@@ -2364,6 +2475,142 @@ test "ingestConfigItems creates ConfigurationItem node and CONTROLLED_BY edge" {
         if (e.label == .controlled_by and std.mem.eql(u8, e.to_id, "CI-001")) found = true;
     }
     try testing.expect(found);
+}
+
+test "product tab is ignored by default ingest options" {
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "ASM-1000", "Rev C", "ASM-1000 Rev C", "Sensor Controller Unit", "Active", "" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL work" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Product", .rows = product_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 0), stats.product_count);
+    try testing.expect(g.getNode("product://ASM-1000 Rev C") == null);
+    try testing.expect(!diagnosticsContainCode(&d, diagnostic.E.product_none_declared));
+    try testing.expect(!diagnosticsContainCode(&d, diagnostic.E.product_full_identifier_missing));
+}
+
+test "product tab ingests Product nodes when enabled" {
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "ASM-1000", "Rev C", "ASM-1000 Rev C", "Sensor Controller Unit", "Active", "" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL work" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Product", .rows = product_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    try testing.expectEqual(@as(u32, 1), stats.product_count);
+
+    const product = g.getNode("product://ASM-1000 Rev C");
+    try testing.expect(product != null);
+    try testing.expectEqual(graph.NodeType.product, product.?.node_type);
+    try testing.expectEqualStrings("ASM-1000", product.?.get("assembly").?);
+    try testing.expectEqualStrings("Rev C", product.?.get("revision").?);
+    try testing.expectEqualStrings("ASM-1000 Rev C", product.?.get("full_identifier").?);
+    try testing.expectEqualStrings("Sensor Controller Unit", product.?.get("description").?);
+    try testing.expectEqualStrings("Active", product.?.get("product_status").?);
+}
+
+test "product tab missing full_identifier emits warning and skips node" {
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "ASM-1000", "Rev C", "", "Sensor Controller Unit", "Active", "" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL work" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Product", .rows = product_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.product_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_full_identifier_missing));
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_none_declared));
+}
+
+test "product tab duplicate full_identifier emits error and keeps first node" {
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "ASM-1000", "Rev C", "ASM-1000 Rev C", "Sensor Controller Unit", "Active", "" },
+        &.{ "ASM-1000", "Rev D", "ASM-1000 Rev C", "Sensor Controller Unit Rev D", "Development", "" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL work" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Product", .rows = product_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    try testing.expectEqual(@as(u32, 1), stats.product_count);
+    try testing.expectEqual(@as(u32, 1), d.error_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_duplicate_full_identifier));
+
+    const product = g.getNode("product://ASM-1000 Rev C");
+    try testing.expect(product != null);
+    try testing.expectEqualStrings("Rev C", product.?.get("revision").?);
+}
+
+test "product tab with header only emits no product declared info" {
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-001", "System SHALL work" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Product", .rows = product_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.product_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_none_declared));
 }
 
 test "existing 4-tab behavior unchanged with DI/DO/CI tabs present" {

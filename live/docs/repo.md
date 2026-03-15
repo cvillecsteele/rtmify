@@ -169,12 +169,15 @@ Default profiles shipped with the product:
 
 | Profile | Standards | Tabs Provisioned |
 |---------|----------|-----------------|
-| `medical-device` | ISO 13485, IEC 62304, FDA 21 CFR Part 820 | User Needs, Requirements, Tests, Risks, Design Inputs, Design Outputs, Configuration Items |
-| `aerospace-sw` | DO-178C | User Needs, Requirements, Tests, Risks, Configuration Items |
-| `aerospace-quality` | AS9100 | User Needs, Requirements, Tests, Risks, Configuration Items |
-| `automotive-safety` | ISO 26262 | User Needs, Requirements, Tests, Risks, Configuration Items |
-| `automotive-process` | ASPICE | User Needs, Requirements, Tests, Risks |
-| `generic` | No industry-specific gaps, all traceability optional | User Needs, Requirements, Tests, Risks |
+| `medical-device` | ISO 13485, IEC 62304, FDA 21 CFR Part 820 | User Needs, Requirements, Tests, Risks, Product, Design Inputs, Design Outputs, Configuration Items |
+| `aerospace-sw` | DO-178C | User Needs, Requirements, Tests, Risks, Product, Configuration Items |
+| `aerospace-quality` | AS9100 | User Needs, Requirements, Tests, Risks, Product, Configuration Items |
+| `automotive-safety` | ISO 26262 | User Needs, Requirements, Tests, Risks, Product, Configuration Items |
+| `automotive-process` | ASPICE | User Needs, Requirements, Tests, Risks, Product |
+| `generic` | No industry-specific gaps, all traceability optional | User Needs, Requirements, Tests, Risks, Product |
+
+`Product` is provisioned and ingested only by Live. Trace and the shared
+template/report path ignore that tab entirely in this cut.
 
 ---
 
@@ -182,6 +185,7 @@ Default profiles shipped with the product:
 
 | Node Type | Description | Properties |
 |-----------|-------------|------------|
+| `Product` | Live-only product declaration row keyed by `full_identifier` for future manufacturing joins | `assembly`, `revision`, `full_identifier`, `description`, `product_status` |
 | `DesignInput` | Formal design input derived from a requirement (FDA/IEC 62304) | `description`, `source_req`, `status` |
 | `DesignOutput` | Design artifact satisfying a design input (drawing, spec, firmware, BOM) | `description`, `type`, `version`, `status` |
 | `SourceFile` | A source code file in the working tree linked to a requirement or design output | `path`, `language`, `last_modified`, `line_count` |
@@ -669,14 +673,14 @@ Changing the profile re-evaluates gaps and updates the gap badge counts immediat
 2. Paste sheet URL                        ✓
 3. Select industry profile                [Medical Device (FDA/IEC 62304) ▾]
    
-   This will create 7 tabs in your sheet:
+   This will create 8 tabs in your sheet:
    User Needs, Requirements, Tests, Risks,
-   Design Inputs, Design Outputs, Configuration Items
+   Product, Design Inputs, Design Outputs, Configuration Items
    
    [Connect & Create Tabs]
 ```
 
-The user sees exactly what will happen before it happens. If the sheet already has matching tabs, the message adjusts: "Found 4 existing tabs. Will create 3 additional tabs: Design Inputs, Design Outputs, Configuration Items."
+The user sees exactly what will happen before it happens. If the sheet already has matching tabs, the message adjusts: "Found 4 existing tabs. Will create 4 additional tabs: Product, Design Inputs, Design Outputs, Configuration Items."
 
 If the user connects an existing sheet with all tabs already present, the profile selector still appears but provisioning is skipped: "All required tabs found. No changes to your sheet."
 

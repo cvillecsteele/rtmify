@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 // ---------------------------------------------------------------------------
 
 pub const NodeType = enum {
+    product,
     user_need,
     requirement,
     test_group,
@@ -20,6 +21,7 @@ pub const NodeType = enum {
     code_annotation,
 
     pub fn fromString(s: []const u8) ?NodeType {
+        if (std.mem.eql(u8, s, "Product")) return .product;
         if (std.mem.eql(u8, s, "UserNeed")) return .user_need;
         if (std.mem.eql(u8, s, "Requirement")) return .requirement;
         if (std.mem.eql(u8, s, "TestGroup")) return .test_group;
@@ -37,6 +39,7 @@ pub const NodeType = enum {
 
     pub fn toString(self: NodeType) []const u8 {
         return switch (self) {
+            .product => "Product",
             .user_need => "UserNeed",
             .requirement => "Requirement",
             .test_group => "TestGroup",
@@ -1079,9 +1082,11 @@ test "collectGapFindings distinguishes missing and unresolved mitigations" {
 }
 
 test "NodeType DI/DO/CI fromString and toString roundtrip" {
+    try testing.expectEqual(NodeType.product, NodeType.fromString("Product").?);
     try testing.expectEqual(NodeType.design_input, NodeType.fromString("DesignInput").?);
     try testing.expectEqual(NodeType.design_output, NodeType.fromString("DesignOutput").?);
     try testing.expectEqual(NodeType.config_item, NodeType.fromString("ConfigurationItem").?);
+    try testing.expectEqualStrings("Product", NodeType.product.toString());
     try testing.expectEqualStrings("DesignInput", NodeType.design_input.toString());
     try testing.expectEqualStrings("DesignOutput", NodeType.design_output.toString());
     try testing.expectEqualStrings("ConfigurationItem", NodeType.config_item.toString());

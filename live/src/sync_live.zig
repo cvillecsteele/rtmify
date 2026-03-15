@@ -210,6 +210,7 @@ fn runSyncCycle(
     const di_rows = try readOptionalTab(runtime, existing_tabs, "Design Inputs", a);
     const do_rows = try readOptionalTab(runtime, existing_tabs, "Design Outputs", a);
     const ci_rows = try readOptionalTab(runtime, existing_tabs, "Configuration Items", a);
+    const product_rows = try readOptionalTab(runtime, existing_tabs, "Product", a);
 
     // 2. Convert [][][]const u8 rows to xlsx.SheetData
     const sheet_data = [_]xlsx.SheetData{
@@ -220,6 +221,7 @@ fn runSyncCycle(
         .{ .name = "Design Inputs", .rows = @ptrCast(di_rows) },
         .{ .name = "Design Outputs", .rows = @ptrCast(do_rows) },
         .{ .name = "Configuration Items", .rows = @ptrCast(ci_rows) },
+        .{ .name = "Product", .rows = @ptrCast(product_rows) },
     };
 
     // 3. Ingest into ephemeral in-memory Graph via schema.zig
@@ -229,7 +231,7 @@ fn runSyncCycle(
     var diag = @import("rtmify").diagnostic.Diagnostics.init(a);
     defer diag.deinit();
 
-    _ = schema.ingestValidated(&g, &sheet_data, &diag) catch |e| {
+    _ = schema.ingestValidatedWithOptions(&g, &sheet_data, &diag, .{ .enable_product_tab = true }) catch |e| {
         std.log.warn("sync: ingest errors (continuing): {s}", .{@errorName(e)});
     };
 
@@ -237,7 +239,7 @@ fn runSyncCycle(
     try portGraphToDb(db, &g, alloc);
 
     // 5. Write back status columns and row colors
-    try writeBackStatus(db, runtime, req_rows, risk_rows, un_rows, a);
+    try writeBackStatus(db, runtime, req_rows, risk_rows, un_rows, product_rows, a);
 
     std.log.info("sync: cycle complete — {d} nodes", .{g.nodes.count()});
 }
@@ -402,6 +404,7 @@ fn requirementStatus(db: *GraphDb, req_id: []const u8, alloc: Allocator) []const
 fn statusColorHex(status: []const u8) []const u8 {
     if (std.mem.eql(u8, status, "OK")) return "#B6E1CD";
     if (std.mem.eql(u8, status, "NO_TEST_LINKED") or
+        std.mem.eql(u8, status, "MISSING_FULL_IDENTIFIER") or
         std.mem.eql(u8, status, "NO_REQ_LINKED") or
         std.mem.eql(u8, status, "MISSING")) return "#FCE8B2";
     return "#F4C7C3";
@@ -414,6 +417,7 @@ fn writeBackStatus(
     req_rows: [][][]const u8,
     risk_rows: [][][]const u8,
     un_rows: [][][]const u8,
+    product_rows: []const []const []const u8,
     alloc: Allocator,
 ) !void {
     var value_updates: std.ArrayList(ValueUpdate) = .empty;
@@ -438,7 +442,7 @@ fn writeBackStatus(
             const scol = status_col.?;
             if (verification_col == header.len) {
                 const header_col_letter = colLetterBuf(verification_col);
-                const header_range = try std.fmt.allocPrint(alloc, "Requirements!{s}1", .{header_col_letter});
+                const header_range = try std.fmt.allocPrint(alloc, "Requirements!{s}1", .{colLetterRef(header_col_letter, verification_col)});
                 const header_values = try alloc.alloc([]const u8, 1);
                 header_values[0] = try alloc.dupe(u8, "RTMify Verification");
                 try value_updates.append(alloc, .{ .a1_range = header_range, .values = header_values });
@@ -449,7 +453,7 @@ fn writeBackStatus(
                 if (req_id.len == 0) continue;
                 const status = requirementStatus(db, req_id, alloc);
                 const col_letter = colLetterBuf(scol);
-                const range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ col_letter, row_num });
+                const range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ colLetterRef(col_letter, scol), row_num });
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
                 try value_updates.append(alloc, .{ .a1_range = range, .values = values });
@@ -461,7 +465,7 @@ fn writeBackStatus(
                 else
                     @tagName(verification.state);
                 const verification_col_letter = colLetterBuf(verification_col);
-                const verification_range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ verification_col_letter, row_num });
+                const verification_range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ colLetterRef(verification_col_letter, verification_col), row_num });
                 const verification_values = try alloc.alloc([]const u8, 1);
                 verification_values[0] = try alloc.dupe(u8, verification_value);
                 try value_updates.append(alloc, .{ .a1_range = verification_range, .values = verification_values });
@@ -496,7 +500,7 @@ fn writeBackStatus(
                     if (n.suspect_reason) |r| alloc.free(r);
                 }
                 const col_letter = colLetterBuf(status_col.?);
-                const range = try std.fmt.allocPrint(alloc, "Risks!{s}{d}", .{ col_letter, row_num });
+                const range = try std.fmt.allocPrint(alloc, "Risks!{s}{d}", .{ colLetterRef(col_letter, status_col.?), row_num });
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
                 try value_updates.append(alloc, .{ .a1_range = range, .values = values });
@@ -542,7 +546,7 @@ fn writeBackStatus(
                 edges.deinit(alloc);
                 const status: []const u8 = if (linked) "OK" else "NO_REQ_LINKED";
                 const col_letter = colLetterBuf(status_col.?);
-                const range = try std.fmt.allocPrint(alloc, "User Needs!{s}{d}", .{ col_letter, row_num });
+                const range = try std.fmt.allocPrint(alloc, "User Needs!{s}{d}", .{ colLetterRef(col_letter, status_col.?), row_num });
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
                 try value_updates.append(alloc, .{ .a1_range = range, .values = values });
@@ -557,6 +561,8 @@ fn writeBackStatus(
         }
     }
 
+    try appendProductWriteback(&value_updates, &row_formats, product_rows, alloc);
+
     if (value_updates.items.len > 0) {
         runtime.batchWriteValues(value_updates.items, alloc) catch |e| {
             std.log.warn("sync: status writeback failed: {s}", .{@errorName(e)});
@@ -569,11 +575,99 @@ fn writeBackStatus(
     }
 }
 
+fn normalizeProductCell(raw: []const u8, alloc: Allocator) ![]const u8 {
+    const normalized = try xlsx.normalizeCell(raw, alloc);
+    return std.mem.trim(u8, normalized, " ");
+}
+
+fn appendProductWriteback(
+    value_updates: *std.ArrayList(ValueUpdate),
+    row_formats: *std.ArrayList(RowFormat),
+    product_rows: []const []const []const u8,
+    alloc: Allocator,
+) !void {
+    if (product_rows.len == 0) return;
+
+    const header = product_rows[0];
+    const assembly_col = findCol(header, "assembly");
+    const revision_col = findCol(header, "revision");
+    const identifier_col = findCol(header, "full_identifier");
+    const description_col = findCol(header, "description");
+    const product_status_col = findCol(header, "Product Status");
+    const rtmify_status_col = findCol(header, "RTMify Status") orelse 5;
+
+    if (findCol(header, "RTMify Status") == null) {
+        try appendSingleValueUpdate(value_updates, "Product", rtmify_status_col, 1, "RTMify Status", alloc);
+    }
+
+    if (product_rows.len == 1) {
+        try appendSingleValueUpdate(value_updates, "Product", rtmify_status_col, 2, "NO_PRODUCT_DECLARED", alloc);
+        return;
+    }
+
+    var seen_identifiers = std.StringHashMap(void).init(alloc);
+    defer seen_identifiers.deinit();
+
+    for (product_rows[1..], 0..) |row, i| {
+        const row_num = i + 2;
+        const assembly_raw = if (assembly_col) |col| if (col < row.len) row[col] else "" else "";
+        const revision_raw = if (revision_col) |col| if (col < row.len) row[col] else "" else "";
+        const identifier_raw = if (identifier_col) |col| if (col < row.len) row[col] else "" else "";
+        const description_raw = if (description_col) |col| if (col < row.len) row[col] else "" else "";
+        const product_status_raw = if (product_status_col) |col| if (col < row.len) row[col] else "" else "";
+
+        if (schema.isBlankEquivalent(assembly_raw) and
+            schema.isBlankEquivalent(revision_raw) and
+            schema.isBlankEquivalent(identifier_raw) and
+            schema.isBlankEquivalent(description_raw) and
+            schema.isBlankEquivalent(product_status_raw))
+        {
+            continue;
+        }
+
+        const normalized_identifier = try normalizeProductCell(identifier_raw, alloc);
+        const status: []const u8 = blk: {
+            if (normalized_identifier.len == 0 or schema.isBlankEquivalent(normalized_identifier)) {
+                break :blk "MISSING_FULL_IDENTIFIER";
+            }
+            if (seen_identifiers.contains(normalized_identifier)) {
+                break :blk "DUPLICATE_FULL_IDENTIFIER";
+            }
+            try seen_identifiers.put(normalized_identifier, {});
+            break :blk "OK";
+        };
+
+        try appendSingleValueUpdate(value_updates, "Product", rtmify_status_col, row_num, status, alloc);
+        try row_formats.append(alloc, .{
+            .tab_title = "Product",
+            .row_1based = row_num,
+            .col_start_1based = 1,
+            .col_end_1based = 6,
+            .fill_hex = statusColorHex(status),
+        });
+    }
+}
+
+fn appendSingleValueUpdate(
+    value_updates: *std.ArrayList(ValueUpdate),
+    tab_title: []const u8,
+    col_index: usize,
+    row_num: usize,
+    value: []const u8,
+    alloc: Allocator,
+) !void {
+    const col_letter = colLetterBuf(col_index);
+    const range = try std.fmt.allocPrint(alloc, "{s}!{s}{d}", .{ tab_title, colLetterRef(col_letter, col_index), row_num });
+    const values = try alloc.alloc([]const u8, 1);
+    values[0] = try alloc.dupe(u8, value);
+    try value_updates.append(alloc, .{ .a1_range = range, .values = values });
+}
+
 // ---------------------------------------------------------------------------
 // Column lookup utilities
 // ---------------------------------------------------------------------------
 
-fn findCol(header: [][]const u8, name: []const u8) ?usize {
+fn findCol(header: []const []const u8, name: []const u8) ?usize {
     for (header, 0..) |h, i| {
         if (std.ascii.eqlIgnoreCase(h, name)) return i;
     }
@@ -594,6 +688,10 @@ fn colLetterBuf(idx: usize) [3]u8 {
     result[1] = 'A' + @as(u8, @intCast(b));
     result[2] = 0;
     return result;
+}
+
+fn colLetterRef(buf: [3]u8, idx: usize) []const u8 {
+    return buf[0..if (idx < 26) 1 else 2];
 }
 
 fn colLetter(idx: usize) [3]u8 {
@@ -1120,6 +1218,91 @@ test "tabExists matches exact case-insensitive and fuzzy optional tab titles" {
     try testing.expect(tabExists(&tabs, "user needs"));
     try testing.expect(tabExists(&tabs, "Configuration Items"));
     try testing.expect(!tabExists(&tabs, "Design Inputs"));
+}
+
+fn freeValueUpdates(updates: *std.ArrayList(ValueUpdate), alloc: Allocator) void {
+    for (updates.items) |upd| {
+        alloc.free(upd.a1_range);
+        for (upd.values) |value| alloc.free(value);
+        alloc.free(upd.values);
+    }
+    updates.deinit(alloc);
+}
+
+fn findSingleValueUpdate(updates: []const ValueUpdate, range: []const u8) ?[]const u8 {
+    for (updates) |upd| {
+        if (std.mem.eql(u8, upd.a1_range, range)) return upd.values[0];
+    }
+    return null;
+}
+
+test "appendProductWriteback writes empty tab advisory to F2" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+    };
+
+    var value_updates: std.ArrayList(ValueUpdate) = .empty;
+    defer freeValueUpdates(&value_updates, alloc);
+    var row_formats: std.ArrayList(RowFormat) = .empty;
+    defer row_formats.deinit(alloc);
+
+    try appendProductWriteback(&value_updates, &row_formats, product_rows, alloc);
+
+    try testing.expectEqualStrings("NO_PRODUCT_DECLARED", findSingleValueUpdate(value_updates.items, "Product!F2").?);
+    try testing.expectEqual(@as(usize, 0), row_formats.items.len);
+}
+
+test "appendProductWriteback sets product row statuses and fills" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "ASM-1000", "Rev C", "ASM-1000 Rev C", "Sensor Controller Unit", "Active", "" },
+        &.{ "ASM-1000", "Rev D", "", "Sensor Controller Unit Rev D", "Development", "" },
+        &.{ "ASM-1000", "Rev E", "ASM-1000 Rev C", "Sensor Controller Unit Rev E", "Development", "" },
+    };
+
+    var value_updates: std.ArrayList(ValueUpdate) = .empty;
+    defer freeValueUpdates(&value_updates, alloc);
+    var row_formats: std.ArrayList(RowFormat) = .empty;
+    defer row_formats.deinit(alloc);
+
+    try appendProductWriteback(&value_updates, &row_formats, product_rows, alloc);
+
+    try testing.expectEqualStrings("OK", findSingleValueUpdate(value_updates.items, "Product!F2").?);
+    try testing.expectEqualStrings("MISSING_FULL_IDENTIFIER", findSingleValueUpdate(value_updates.items, "Product!F3").?);
+    try testing.expectEqualStrings("DUPLICATE_FULL_IDENTIFIER", findSingleValueUpdate(value_updates.items, "Product!F4").?);
+    try testing.expectEqual(@as(usize, 3), row_formats.items.len);
+    try testing.expectEqualStrings("#B6E1CD", row_formats.items[0].fill_hex);
+    try testing.expectEqualStrings("#FCE8B2", row_formats.items[1].fill_hex);
+    try testing.expectEqualStrings("#F4C7C3", row_formats.items[2].fill_hex);
+}
+
+test "appendProductWriteback recreates missing RTMify Status header" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status" },
+        &.{ "ASM-1000", "Rev C", "ASM-1000 Rev C", "Sensor Controller Unit", "Active" },
+    };
+
+    var value_updates: std.ArrayList(ValueUpdate) = .empty;
+    defer freeValueUpdates(&value_updates, alloc);
+    var row_formats: std.ArrayList(RowFormat) = .empty;
+    defer row_formats.deinit(alloc);
+
+    try appendProductWriteback(&value_updates, &row_formats, product_rows, alloc);
+
+    try testing.expectEqualStrings("RTMify Status", findSingleValueUpdate(value_updates.items, "Product!F1").?);
+    try testing.expectEqualStrings("OK", findSingleValueUpdate(value_updates.items, "Product!F2").?);
 }
 
 test "repoScanCycle emits E1101 for unknown refs and E1005 for hanging git" {

@@ -62,6 +62,8 @@ pub const E = struct {
     pub const numeric_fractional:       Code = 607;
     pub const numeric_unrecognized:     Code = 608;
     pub const id_invalid:               Code = 609;
+    pub const product_full_identifier_missing: Code = 610;
+    pub const product_duplicate_full_identifier: Code = 611;
     // Layer 6: Semantic validation
     pub const req_empty:                Code = 701;
     pub const req_short:                Code = 702;
@@ -105,6 +107,7 @@ pub const E = struct {
     pub const asil_inheritance:         Code = 1205;
     pub const chain_gap:                Code = 1206;
     pub const profile_not_configured:   Code = 1207;
+    pub const product_none_declared:    Code = 1208;
 };
 
 // ---------------------------------------------------------------------------
@@ -172,6 +175,8 @@ pub const all_codes = [_]Code{
     E.numeric_fractional,
     E.numeric_unrecognized,
     E.id_invalid,
+    E.product_full_identifier_missing,
+    E.product_duplicate_full_identifier,
     E.req_empty,
     E.req_short,
     E.req_no_shall,
@@ -209,6 +214,7 @@ pub const all_codes = [_]Code{
     E.asil_inheritance,
     E.chain_gap,
     E.profile_not_configured,
+    E.product_none_declared,
 };
 
 pub const catalog = [_]CatalogEntry{
@@ -251,6 +257,8 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 607, .title = "Fractional severity/likelihood value — ignored", .category = .row_parsing },
     .{ .code = 608, .title = "Unrecognized severity/likelihood value — ignored", .category = .row_parsing },
     .{ .code = 609, .title = "ID is not a valid structured ID — skipped", .category = .row_parsing },
+    .{ .code = 610, .title = "Product row missing full_identifier — skipped", .category = .row_parsing },
+    .{ .code = 611, .title = "Duplicate Product full_identifier — subsequent row skipped", .category = .row_parsing },
     .{ .code = 701, .title = "Requirement has no statement text", .category = .semantic_validation },
     .{ .code = 702, .title = "Requirement statement is very short (< 10 characters)", .category = .semantic_validation },
     .{ .code = 703, .title = "Requirement has no 'shall'", .category = .semantic_validation },
@@ -288,6 +296,7 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 1205, .title = "ASIL inheritance inconsistency detected", .category = .profile_traceability },
     .{ .code = 1206, .title = "Gap in traceability chain", .category = .profile_traceability },
     .{ .code = 1207, .title = "Industry profile not configured", .category = .profile_traceability },
+    .{ .code = 1208, .title = "Product tab has no declared products", .category = .profile_traceability },
 };
 
 /// Look up the human-readable title for a code. Returns "Unknown" for unlisted codes.
