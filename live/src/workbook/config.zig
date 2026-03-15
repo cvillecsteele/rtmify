@@ -13,6 +13,7 @@ pub const WorkbookConfig = struct {
     repo_paths: []const []const u8,
     db_path: []const u8,
     inbox_dir: []const u8,
+    removed_at: ?i64 = null,
     platform: ?provider_common.ProviderId = null,
     workbook_url: ?[]const u8 = null,
     workbook_label: ?[]const u8 = null,
@@ -41,19 +42,15 @@ pub const WorkbookConfig = struct {
     }
 
     pub fn clone(self: WorkbookConfig, alloc: Allocator) !WorkbookConfig {
-        const repo_paths = try cloneStringSlice(self.repo_paths, alloc);
-        errdefer {
-            for (repo_paths) |path| alloc.free(path);
-            alloc.free(repo_paths);
-        }
         return .{
             .id = try alloc.dupe(u8, self.id),
             .slug = try alloc.dupe(u8, self.slug),
             .display_name = try alloc.dupe(u8, self.display_name),
             .profile = try alloc.dupe(u8, self.profile),
-            .repo_paths = repo_paths,
+            .repo_paths = try cloneStringSlice(self.repo_paths, alloc),
             .db_path = try alloc.dupe(u8, self.db_path),
             .inbox_dir = try alloc.dupe(u8, self.inbox_dir),
+            .removed_at = self.removed_at,
             .platform = self.platform,
             .workbook_url = if (self.workbook_url) |v| try alloc.dupe(u8, v) else null,
             .workbook_label = if (self.workbook_label) |v| try alloc.dupe(u8, v) else null,
@@ -67,7 +64,7 @@ pub const WorkbookConfig = struct {
 };
 
 pub const LiveConfig = struct {
-    schema_version: u32 = 1,
+    schema_version: u32 = 2,
     active_workbook_id: ?[]const u8 = null,
     workbooks: []WorkbookConfig,
 
@@ -99,7 +96,12 @@ pub fn loadOrInit(alloc: Allocator, options: BootstrapOptions) !LiveConfig {
         else => return err,
     };
     defer alloc.free(bytes);
-    return loadFromSlice(bytes, alloc);
+
+    var cfg = try loadFromSlice(bytes, alloc);
+    errdefer cfg.deinit(alloc);
+    const changed = try normalizeAndValidate(&cfg, alloc);
+    if (changed) try save(&cfg, alloc);
+    return cfg;
 }
 
 pub fn save(cfg: *const LiveConfig, alloc: Allocator) !void {
@@ -124,6 +126,42 @@ pub fn activeWorkbookConst(cfg: *const LiveConfig) ?*const WorkbookConfig {
     const id = cfg.active_workbook_id orelse return null;
     for (cfg.workbooks) |*workbook| {
         if (std.mem.eql(u8, workbook.id, id)) return workbook;
+    }
+    return null;
+}
+
+pub fn findById(cfg: *LiveConfig, id: []const u8) ?*WorkbookConfig {
+    for (cfg.workbooks) |*workbook| {
+        if (std.mem.eql(u8, workbook.id, id)) return workbook;
+    }
+    return null;
+}
+
+pub fn findByIdConst(cfg: *const LiveConfig, id: []const u8) ?*const WorkbookConfig {
+    for (cfg.workbooks) |*workbook| {
+        if (std.mem.eql(u8, workbook.id, id)) return workbook;
+    }
+    return null;
+}
+
+pub fn findByDisplayName(cfg: *LiveConfig, display_name: []const u8) ?*WorkbookConfig {
+    for (cfg.workbooks) |*workbook| {
+        if (std.mem.eql(u8, workbook.display_name, display_name)) return workbook;
+    }
+    return null;
+}
+
+pub fn visibleWorkbookCount(cfg: *const LiveConfig) usize {
+    var count: usize = 0;
+    for (cfg.workbooks) |workbook| {
+        if (workbook.removed_at == null) count += 1;
+    }
+    return count;
+}
+
+pub fn firstVisibleWorkbookId(cfg: *const LiveConfig) ?[]const u8 {
+    for (cfg.workbooks) |workbook| {
+        if (workbook.removed_at == null) return workbook.id;
     }
     return null;
 }
@@ -174,10 +212,10 @@ pub fn replaceActiveConnection(
     const workbook = activeWorkbook(cfg) orelse return error.NoActiveWorkbook;
 
     workbook.platform = validated.platform;
-    replaceOptionalString(&workbook.workbook_url, validated.workbook_url, alloc);
-    replaceOptionalString(&workbook.workbook_label, validated.workbook_label, alloc);
-    replaceOptionalString(&workbook.credential_ref, credential_ref, alloc);
-    replaceOptionalStringOpt(&workbook.credential_display, validated.credential_display, alloc);
+    try replaceOptionalString(&workbook.workbook_url, validated.workbook_url, alloc);
+    try replaceOptionalString(&workbook.workbook_label, validated.workbook_label, alloc);
+    try replaceOptionalString(&workbook.credential_ref, credential_ref, alloc);
+    try replaceOptionalStringOpt(&workbook.credential_display, validated.credential_display, alloc);
 
     if (workbook.display_name.len == 0 or std.mem.eql(u8, workbook.display_name, "Workbook")) {
         alloc.free(workbook.display_name);
@@ -191,15 +229,147 @@ pub fn replaceActiveConnection(
 
     switch (validated.target) {
         .google => |google| {
-            replaceOptionalString(&workbook.google_sheet_id, google.sheet_id, alloc);
+            try replaceOptionalString(&workbook.google_sheet_id, google.sheet_id, alloc);
             clearOptionalString(&workbook.excel_drive_id, alloc);
             clearOptionalString(&workbook.excel_item_id, alloc);
         },
         .excel => |excel| {
-            replaceOptionalString(&workbook.excel_drive_id, excel.drive_id, alloc);
-            replaceOptionalString(&workbook.excel_item_id, excel.item_id, alloc);
+            try replaceOptionalString(&workbook.excel_drive_id, excel.drive_id, alloc);
+            try replaceOptionalString(&workbook.excel_item_id, excel.item_id, alloc);
             clearOptionalString(&workbook.google_sheet_id, alloc);
         },
+    }
+}
+
+pub fn activateWorkbookId(cfg: *LiveConfig, id: []const u8, alloc: Allocator) !void {
+    const workbook = findById(cfg, id) orelse return error.WorkbookNotFound;
+    if (workbook.removed_at != null) return error.WorkbookRemoved;
+    if (cfg.active_workbook_id) |existing| alloc.free(existing);
+    cfg.active_workbook_id = try alloc.dupe(u8, id);
+}
+
+pub fn renameWorkbook(cfg: *LiveConfig, id: []const u8, display_name: []const u8, alloc: Allocator) !void {
+    ensureDisplayNameAvailable(cfg, display_name, id) catch |err| return err;
+    const workbook = findById(cfg, id) orelse return error.WorkbookNotFound;
+    alloc.free(workbook.display_name);
+    workbook.display_name = try alloc.dupe(u8, display_name);
+}
+
+pub fn removeWorkbook(cfg: *LiveConfig, id: []const u8, alloc: Allocator) !void {
+    const workbook = findById(cfg, id) orelse return error.WorkbookNotFound;
+    if (workbook.removed_at != null) return error.WorkbookRemoved;
+    workbook.removed_at = std.time.timestamp();
+
+    if (cfg.active_workbook_id) |active_id| {
+        if (std.mem.eql(u8, active_id, id)) {
+            const next_id = firstVisibleWorkbookId(cfg);
+            alloc.free(active_id);
+            cfg.active_workbook_id = if (next_id) |value|
+                try alloc.dupe(u8, value)
+            else
+                null;
+        }
+    }
+}
+
+pub fn purgeWorkbookAt(cfg: *LiveConfig, idx: usize, alloc: Allocator) !void {
+    if (idx >= cfg.workbooks.len) return error.WorkbookNotFound;
+    var target = cfg.workbooks[idx];
+    target.deinit(alloc);
+
+    const new_items = try alloc.alloc(WorkbookConfig, cfg.workbooks.len - 1);
+    errdefer alloc.free(new_items);
+
+    var out_idx: usize = 0;
+    for (cfg.workbooks, 0..) |workbook, in_idx| {
+        if (in_idx == idx) continue;
+        new_items[out_idx] = workbook;
+        out_idx += 1;
+    }
+    alloc.free(cfg.workbooks);
+    cfg.workbooks = new_items;
+
+    const visible_id = firstVisibleWorkbookId(cfg);
+    if (cfg.active_workbook_id) |active_id| {
+        if (findByIdConst(cfg, active_id) == null) {
+            alloc.free(active_id);
+            cfg.active_workbook_id = if (visible_id) |value| try alloc.dupe(u8, value) else null;
+        }
+    } else if (visible_id) |value| {
+        cfg.active_workbook_id = try alloc.dupe(u8, value);
+    }
+}
+
+pub fn createWorkbookEntry(
+    cfg: *const LiveConfig,
+    display_name: []const u8,
+    validated: provider_common.ValidatedDraft,
+    credential_ref: []const u8,
+    repo_paths: []const []const u8,
+    alloc: Allocator,
+) !WorkbookConfig {
+    try ensureDisplayNameAvailable(cfg, display_name, null);
+
+    var bytes: [8]u8 = undefined;
+    std.crypto.random.bytes(&bytes);
+    const id = try std.fmt.allocPrint(alloc, "wb_{s}", .{std.fmt.bytesToHex(bytes, .lower)});
+    errdefer alloc.free(id);
+    const slug = try uniqueSlug(cfg, display_name, alloc);
+    errdefer alloc.free(slug);
+    const db_path = try workbook_paths.graphDbPath(slug, alloc);
+    errdefer alloc.free(db_path);
+    const inbox_dir = try workbook_paths.inboxDir(slug, alloc);
+    errdefer alloc.free(inbox_dir);
+
+    const profile = validated.profile orelse "generic";
+    const cloned_repos = try cloneStringSlice(repo_paths, alloc);
+    errdefer {
+        for (cloned_repos) |path| alloc.free(path);
+        alloc.free(cloned_repos);
+    }
+
+    var entry = WorkbookConfig{
+        .id = id,
+        .slug = slug,
+        .display_name = try alloc.dupe(u8, display_name),
+        .profile = try alloc.dupe(u8, profile),
+        .repo_paths = cloned_repos,
+        .db_path = db_path,
+        .inbox_dir = inbox_dir,
+        .platform = validated.platform,
+        .workbook_url = try alloc.dupe(u8, validated.workbook_url),
+        .workbook_label = try alloc.dupe(u8, validated.workbook_label),
+        .credential_ref = try alloc.dupe(u8, credential_ref),
+        .credential_display = if (validated.credential_display) |value| try alloc.dupe(u8, value) else null,
+    };
+    errdefer entry.deinit(alloc);
+
+    switch (validated.target) {
+        .google => |google| {
+            entry.google_sheet_id = try alloc.dupe(u8, google.sheet_id);
+        },
+        .excel => |excel| {
+            entry.excel_drive_id = try alloc.dupe(u8, excel.drive_id);
+            entry.excel_item_id = try alloc.dupe(u8, excel.item_id);
+        },
+    }
+
+    return entry;
+}
+
+pub fn appendWorkbook(cfg: *LiveConfig, entry: WorkbookConfig, make_active: bool, alloc: Allocator) !void {
+    const new_items = try alloc.alloc(WorkbookConfig, cfg.workbooks.len + 1);
+    errdefer alloc.free(new_items);
+    for (cfg.workbooks, 0..) |workbook, idx| {
+        new_items[idx] = workbook;
+    }
+    new_items[cfg.workbooks.len] = entry;
+    alloc.free(cfg.workbooks);
+    cfg.workbooks = new_items;
+
+    if (make_active or cfg.active_workbook_id == null) {
+        if (cfg.active_workbook_id) |existing| alloc.free(existing);
+        cfg.active_workbook_id = try alloc.dupe(u8, entry.id);
     }
 }
 
@@ -237,7 +407,7 @@ pub fn bootstrapConfig(alloc: Allocator, options: BootstrapOptions) !LiveConfig 
         .inbox_dir = inbox_dir,
     };
     return .{
-        .schema_version = 1,
+        .schema_version = 2,
         .active_workbook_id = try alloc.dupe(u8, id),
         .workbooks = workbooks,
     };
@@ -269,6 +439,103 @@ fn loadFromSlice(bytes: []const u8, alloc: Allocator) !LiveConfig {
     };
 }
 
+fn normalizeAndValidate(cfg: *LiveConfig, alloc: Allocator) !bool {
+    var changed = false;
+    if (cfg.schema_version < 2) {
+        cfg.schema_version = 2;
+        changed = true;
+    }
+
+    for (cfg.workbooks) |*workbook| {
+        if (workbook.removed_at == null and std.mem.eql(u8, workbook.display_name, "Workbook")) {
+            if (workbook.workbook_label) |label| {
+                alloc.free(workbook.display_name);
+                workbook.display_name = try alloc.dupe(u8, label);
+                changed = true;
+            }
+        }
+    }
+
+    try validateUniqueDisplayNames(cfg);
+    try validateUniqueSlugs(cfg);
+
+    if (cfg.active_workbook_id) |active_id| {
+        const active_cfg = findById(cfg, active_id);
+        if (active_cfg == null or active_cfg.?.removed_at != null) {
+            alloc.free(active_id);
+            cfg.active_workbook_id = null;
+            changed = true;
+        }
+    }
+
+    if (visibleWorkbookCount(cfg) == 0) {
+        if (cfg.active_workbook_id) |active_id| {
+            alloc.free(active_id);
+            cfg.active_workbook_id = null;
+            changed = true;
+        }
+    } else if (cfg.active_workbook_id == null) {
+        const first_id = firstVisibleWorkbookId(cfg) orelse return error.NoVisibleWorkbook;
+        cfg.active_workbook_id = try alloc.dupe(u8, first_id);
+        changed = true;
+    }
+
+    return changed;
+}
+
+fn validateUniqueDisplayNames(cfg: *const LiveConfig) !void {
+    for (cfg.workbooks, 0..) |left, i| {
+        for (cfg.workbooks[i + 1 ..]) |right| {
+            if (std.mem.eql(u8, left.display_name, right.display_name)) {
+                return error.DuplicateDisplayName;
+            }
+        }
+    }
+}
+
+fn validateUniqueSlugs(cfg: *const LiveConfig) !void {
+    for (cfg.workbooks, 0..) |left, i| {
+        for (cfg.workbooks[i + 1 ..]) |right| {
+            if (std.mem.eql(u8, left.slug, right.slug)) {
+                return error.DuplicateSlug;
+            }
+        }
+    }
+}
+
+fn uniqueSlug(cfg: *const LiveConfig, display_name: []const u8, alloc: Allocator) ![]u8 {
+    const base = try workbook_paths.slugify(display_name, alloc);
+    errdefer alloc.free(base);
+
+    if (!slugExists(cfg, base)) return base;
+
+    var suffix: usize = 2;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(alloc, "{s}-{d}", .{ base, suffix });
+        if (!slugExists(cfg, candidate)) {
+            alloc.free(base);
+            return candidate;
+        }
+        alloc.free(candidate);
+    }
+}
+
+fn slugExists(cfg: *const LiveConfig, slug: []const u8) bool {
+    for (cfg.workbooks) |workbook| {
+        if (std.mem.eql(u8, workbook.slug, slug)) return true;
+    }
+    return false;
+}
+
+fn ensureDisplayNameAvailable(cfg: *const LiveConfig, display_name: []const u8, ignore_id: ?[]const u8) !void {
+    for (cfg.workbooks) |workbook| {
+        if (ignore_id) |id| {
+            if (std.mem.eql(u8, workbook.id, id)) continue;
+        }
+        if (std.mem.eql(u8, workbook.display_name, display_name)) return error.DuplicateDisplayName;
+    }
+}
+
 fn parseWorkbook(value: std.json.Value, alloc: Allocator) !WorkbookConfig {
     if (value != .object) return error.InvalidJson;
     const id = json_util.getString(value, "id") orelse return error.InvalidJson;
@@ -298,6 +565,7 @@ fn parseWorkbook(value: std.json.Value, alloc: Allocator) !WorkbookConfig {
         .repo_paths = repo_paths,
         .db_path = try alloc.dupe(u8, db_path),
         .inbox_dir = try alloc.dupe(u8, inbox_dir),
+        .removed_at = try dupOptionalInt(value, "removed_at"),
         .platform = platform,
         .workbook_url = try dupOptionalString(value, "workbook_url", alloc),
         .workbook_label = try dupOptionalString(value, "workbook_label", alloc),
@@ -343,6 +611,12 @@ fn appendWorkbookJson(buf: *std.ArrayList(u8), workbook: WorkbookConfig, alloc: 
     try json_util.appendJsonQuoted(buf, workbook.db_path, alloc);
     try buf.appendSlice(alloc, ",\"inbox_dir\":");
     try json_util.appendJsonQuoted(buf, workbook.inbox_dir, alloc);
+    try buf.appendSlice(alloc, ",\"removed_at\":");
+    if (workbook.removed_at) |removed_at| {
+        try std.fmt.format(buf.writer(alloc), "{d}", .{removed_at});
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
     try buf.appendSlice(alloc, ",\"platform\":");
     try appendJsonStringOpt(buf, if (workbook.platform) |p| provider_common.providerIdString(p) else null, alloc);
     try buf.appendSlice(alloc, ",\"workbook_url\":");
@@ -371,6 +645,15 @@ fn dupOptionalString(value: std.json.Value, key: []const u8, alloc: Allocator) !
     };
 }
 
+fn dupOptionalInt(value: std.json.Value, key: []const u8) !?i64 {
+    const field = json_util.getObjectField(value, key) orelse return null;
+    return switch (field) {
+        .null => null,
+        .integer => field.integer,
+        else => return error.InvalidJson,
+    };
+}
+
 fn cloneStringSlice(values: []const []const u8, alloc: Allocator) ![]const []const u8 {
     const out = try alloc.alloc([]const u8, values.len);
     errdefer alloc.free(out);
@@ -380,14 +663,14 @@ fn cloneStringSlice(values: []const []const u8, alloc: Allocator) ![]const []con
     return out;
 }
 
-fn replaceOptionalString(dst: *?[]const u8, src: []const u8, alloc: Allocator) void {
+fn replaceOptionalString(dst: *?[]const u8, src: []const u8, alloc: Allocator) !void {
     clearOptionalString(dst, alloc);
-    dst.* = alloc.dupe(u8, src) catch @panic("OOM");
+    dst.* = try alloc.dupe(u8, src);
 }
 
-fn replaceOptionalStringOpt(dst: *?[]const u8, src: ?[]const u8, alloc: Allocator) void {
+fn replaceOptionalStringOpt(dst: *?[]const u8, src: ?[]const u8, alloc: Allocator) !void {
     clearOptionalString(dst, alloc);
-    if (src) |value| dst.* = alloc.dupe(u8, value) catch @panic("OOM");
+    if (src) |value| dst.* = try alloc.dupe(u8, value);
 }
 
 fn clearOptionalString(dst: *?[]const u8, alloc: Allocator) void {
@@ -412,6 +695,7 @@ test "bootstrapConfig creates single workbook entry" {
     try testing.expect(cfg.active_workbook_id != null);
     try testing.expect(cfg.workbooks[0].db_path.len > 0);
     try testing.expect(cfg.workbooks[0].inbox_dir.len > 0);
+    try testing.expectEqual(@as(?i64, null), cfg.workbooks[0].removed_at);
 }
 
 test "save and load roundtrip" {
@@ -426,4 +710,48 @@ test "save and load roundtrip" {
     defer loaded.deinit(testing.allocator);
     try testing.expectEqualStrings("aerospace", loaded.workbooks[0].profile);
     try testing.expectEqualStrings("/tmp/repo", loaded.workbooks[0].repo_paths[0]);
+}
+
+test "normalizeAndValidate migrates workbook display name and active id" {
+    var cfg = try bootstrapConfig(testing.allocator, .{});
+    defer cfg.deinit(testing.allocator);
+    cfg.schema_version = 1;
+    testing.allocator.free(cfg.workbooks[0].display_name);
+    cfg.workbooks[0].display_name = try testing.allocator.dupe(u8, "Workbook");
+    cfg.workbooks[0].workbook_label = try testing.allocator.dupe(u8, "sheet-123");
+    testing.allocator.free(cfg.active_workbook_id.?);
+    cfg.active_workbook_id = null;
+
+    const changed = try normalizeAndValidate(&cfg, testing.allocator);
+    try testing.expect(changed);
+    try testing.expectEqual(@as(u32, 2), cfg.schema_version);
+    try testing.expectEqualStrings("sheet-123", cfg.workbooks[0].display_name);
+    try testing.expect(cfg.active_workbook_id != null);
+}
+
+test "createWorkbookEntry enforces unique display names and unique slugs" {
+    var cfg = try bootstrapConfig(testing.allocator, .{});
+    defer cfg.deinit(testing.allocator);
+
+    var validated = provider_common.ValidatedDraft{
+        .platform = .google,
+        .profile = try testing.allocator.dupe(u8, "medical"),
+        .credential_json = try testing.allocator.dupe(u8, "{\"platform\":\"google\"}"),
+        .workbook_url = try testing.allocator.dupe(u8, "https://docs.google.com/spreadsheets/d/abc/edit"),
+        .workbook_label = try testing.allocator.dupe(u8, "abc"),
+        .credential_display = try testing.allocator.dupe(u8, "svc@example.com"),
+        .target = .{ .google = .{ .sheet_id = try testing.allocator.dupe(u8, "abc") } },
+    };
+    defer validated.deinit(testing.allocator);
+
+    var entry = try createWorkbookEntry(&cfg, "Workbook 2", validated, "cred_2", &.{}, testing.allocator);
+    defer entry.deinit(testing.allocator);
+    try testing.expectEqualStrings("workbook-2", entry.slug);
+
+    try appendWorkbook(&cfg, try entry.clone(testing.allocator), false, testing.allocator);
+
+    var second = try createWorkbookEntry(&cfg, "Workbook-2", validated, "cred_3", &.{}, testing.allocator);
+    defer second.deinit(testing.allocator);
+    try testing.expect(std.mem.startsWith(u8, second.slug, "workbook-2-"));
+    try testing.expectError(error.DuplicateDisplayName, createWorkbookEntry(&cfg, "Workbook 2", validated, "cred_4", &.{}, testing.allocator));
 }

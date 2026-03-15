@@ -14,97 +14,111 @@ const workbook = @import("../workbook/mod.zig");
 const shared = @import("shared.zig");
 
 pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
-    const last_sync = state.last_sync_at.load(.seq_cst);
-    const has_error = state.has_error.load(.seq_cst);
-    const sync_count = state.sync_count.load(.seq_cst);
-    const repo_scan_in_progress = state.repo_scan_in_progress.load(.seq_cst);
-    const repo_scan_last_started_at = state.repo_scan_last_started_at.load(.seq_cst);
-    const repo_scan_last_finished_at = state.repo_scan_last_finished_at.load(.seq_cst);
     var license_status = try license_service.getStatus(alloc);
     defer license_status.deinit(alloc);
     const license_valid = license_status.permits_use;
-    state.product_enabled.store(license_valid, .seq_cst);
+    if (registry.active_runtime) |active_runtime| {
+        state.product_enabled.store(license_valid, .seq_cst);
 
-    var err_buf: [256]u8 = undefined;
-    const err_len = state.getError(&err_buf);
-    const err_str = err_buf[0..err_len];
-    const workbook_cfg = try registry.activeConfig();
-    var loaded = try connection_mod.loadWorkbookConnection(workbook_cfg.*, secure_store, alloc);
-    defer loaded.deinit(alloc);
-    const configured = loaded == .active;
-    const block_reason: ?provider_common.ConnectionBlockReason = if (loaded == .blocked) loaded.blocked else null;
+        const last_sync = state.last_sync_at.load(.seq_cst);
+        const has_error = state.has_error.load(.seq_cst);
+        const sync_count = state.sync_count.load(.seq_cst);
+        const repo_scan_in_progress = state.repo_scan_in_progress.load(.seq_cst);
+        const repo_scan_last_started_at = state.repo_scan_last_started_at.load(.seq_cst);
+        const repo_scan_last_finished_at = state.repo_scan_last_finished_at.load(.seq_cst);
 
-    const platform_str = if (configured)
-        try alloc.dupe(u8, online_provider.providerIdString(loaded.active.platform))
-    else if (workbook_cfg.platform) |platform|
-        try alloc.dupe(u8, online_provider.providerIdString(platform))
-    else
-        null;
-    defer if (platform_str) |value| alloc.free(value);
-    const credential_display = if (configured)
-        if (loaded.active.credential_display) |value| try alloc.dupe(u8, value) else null
-    else if (workbook_cfg.credential_display) |value|
-        try alloc.dupe(u8, value)
-    else
-        null;
-    defer if (credential_display) |value| alloc.free(value);
-    const workbook_label = if (configured)
-        try alloc.dupe(u8, loaded.active.workbook_label)
-    else if (workbook_cfg.workbook_label) |value|
-        try alloc.dupe(u8, value)
-    else
-        null;
-    defer if (workbook_label) |value| alloc.free(value);
-    const workbook_url = if (configured)
-        try alloc.dupe(u8, loaded.active.workbook_url)
-    else if (workbook_cfg.workbook_url) |value|
-        try alloc.dupe(u8, value)
-    else
-        null;
-    defer if (workbook_url) |value| alloc.free(value);
+        var err_buf: [256]u8 = undefined;
+        const err_len = state.getError(&err_buf);
+        const err_str = err_buf[0..err_len];
+        const workbook_cfg = try registry.activeConfig();
+        var loaded = try connection_mod.loadWorkbookConnection(workbook_cfg.*, secure_store, alloc);
+        defer loaded.deinit(alloc);
+        const configured = loaded == .active;
+        const block_reason: ?provider_common.ConnectionBlockReason = if (loaded == .blocked) loaded.blocked else null;
+
+        const platform_str = if (configured)
+            try alloc.dupe(u8, online_provider.providerIdString(loaded.active.platform))
+        else if (workbook_cfg.platform) |platform|
+            try alloc.dupe(u8, online_provider.providerIdString(platform))
+        else
+            null;
+        defer if (platform_str) |value| alloc.free(value);
+        const credential_display = if (configured)
+            if (loaded.active.credential_display) |value| try alloc.dupe(u8, value) else null
+        else if (workbook_cfg.credential_display) |value|
+            try alloc.dupe(u8, value)
+        else
+            null;
+        defer if (credential_display) |value| alloc.free(value);
+        const workbook_label = if (configured)
+            try alloc.dupe(u8, loaded.active.workbook_label)
+        else if (workbook_cfg.workbook_label) |value|
+            try alloc.dupe(u8, value)
+        else
+            null;
+        defer if (workbook_label) |value| alloc.free(value);
+        const workbook_url = if (configured)
+            try alloc.dupe(u8, loaded.active.workbook_url)
+        else if (workbook_cfg.workbook_url) |value|
+            try alloc.dupe(u8, value)
+        else
+            null;
+        defer if (workbook_url) |value| alloc.free(value);
+        var active_summary = try registry.summaryForWorkbookId(active_runtime.config.id, alloc);
+        defer active_summary.deinit(alloc);
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+        try std.fmt.format(buf.writer(alloc), "{{\"configured\":{s},\"last_sync_at\":{d},\"has_error\":{s},\"error\":", .{
+            if (configured) "true" else "false", last_sync, if (has_error) "true" else "false",
+        });
+        try shared.appendJsonStr(&buf, err_str, alloc);
+        try buf.appendSlice(alloc, ",\"license\":");
+        try appendLicenseStatusJson(&buf, license_status, alloc);
+        try std.fmt.format(buf.writer(alloc), ",\"sync_count\":{d},\"license_valid\":{s},\"platform\":", .{
+            sync_count, if (license_valid) "true" else "false",
+        });
+        try shared.appendJsonStrOpt(&buf, platform_str, alloc);
+        try buf.appendSlice(alloc, ",\"credential_display\":");
+        try shared.appendJsonStrOpt(&buf, credential_display, alloc);
+        try buf.appendSlice(alloc, ",\"workbook_label\":");
+        try shared.appendJsonStrOpt(&buf, workbook_label, alloc);
+        try buf.appendSlice(alloc, ",\"workbook_url\":");
+        try shared.appendJsonStrOpt(&buf, workbook_url, alloc);
+        try buf.appendSlice(alloc, ",\"connection_block_reason\":");
+        try shared.appendJsonStrOpt(&buf, if (block_reason) |value| @tagName(value) else null, alloc);
+        try buf.appendSlice(alloc, ",\"secure_storage_backend\":");
+        try shared.appendJsonStr(&buf, secure_store_mod.backendName(secure_store.backend), alloc);
+        try buf.appendSlice(alloc, ",\"profile\":");
+        try shared.appendJsonStr(&buf, workbook_cfg.profile, alloc);
+        const last_scan = (try active_runtime.db.getConfig("last_scan_at", alloc)) orelse try alloc.dupe(u8, "never");
+        defer alloc.free(last_scan);
+        try buf.appendSlice(alloc, ",\"last_scan_at\":");
+        try shared.appendJsonStr(&buf, last_scan, alloc);
+        try std.fmt.format(buf.writer(alloc), ",\"repo_scan_in_progress\":{s},\"repo_scan_last_started_at\":{d},\"repo_scan_last_finished_at\":{d}", .{
+            if (repo_scan_in_progress) "true" else "false",
+            repo_scan_last_started_at,
+            repo_scan_last_finished_at,
+        });
+        try buf.appendSlice(alloc, ",\"active_workbook\":");
+        try appendActiveWorkbookJson(&buf, active_summary, alloc);
+        try buf.append(alloc, '}');
+        return alloc.dupe(u8, buf.items);
+    }
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    try std.fmt.format(buf.writer(alloc), "{{\"configured\":{s},\"last_sync_at\":{d},\"has_error\":{s},\"error\":", .{
-        if (configured) "true" else "false", last_sync, if (has_error) "true" else "false",
-    });
-    try shared.appendJsonStr(&buf, err_str, alloc);
-    try buf.appendSlice(alloc, ",\"license\":");
+    try std.fmt.format(buf.writer(alloc), "{{\"configured\":false,\"last_sync_at\":0,\"has_error\":false,\"error\":\"\",\"license\":", .{});
     try appendLicenseStatusJson(&buf, license_status, alloc);
-    try std.fmt.format(buf.writer(alloc), ",\"sync_count\":{d},\"license_valid\":{s},\"platform\":", .{
-        sync_count, if (license_valid) "true" else "false",
+    try std.fmt.format(buf.writer(alloc), ",\"sync_count\":0,\"license_valid\":{s},\"platform\":null,\"credential_display\":null,\"workbook_label\":null,\"workbook_url\":null,\"connection_block_reason\":null,\"secure_storage_backend\":", .{
+        if (license_valid) "true" else "false",
     });
-    try shared.appendJsonStrOpt(&buf, platform_str, alloc);
-    try buf.appendSlice(alloc, ",\"credential_display\":");
-    try shared.appendJsonStrOpt(&buf, credential_display, alloc);
-    try buf.appendSlice(alloc, ",\"workbook_label\":");
-    try shared.appendJsonStrOpt(&buf, workbook_label, alloc);
-    try buf.appendSlice(alloc, ",\"workbook_url\":");
-    try shared.appendJsonStrOpt(&buf, workbook_url, alloc);
-    try buf.appendSlice(alloc, ",\"connection_block_reason\":");
-    try shared.appendJsonStrOpt(&buf, if (block_reason) |value| @tagName(value) else null, alloc);
-    try buf.appendSlice(alloc, ",\"secure_storage_backend\":");
     try shared.appendJsonStr(&buf, secure_store_mod.backendName(secure_store.backend), alloc);
-    try buf.appendSlice(alloc, ",\"profile\":");
-    try shared.appendJsonStr(&buf, workbook_cfg.profile, alloc);
-    const active_runtime = try registry.active();
-    const last_scan = (try active_runtime.db.getConfig("last_scan_at", alloc)) orelse try alloc.dupe(u8, "never");
-    defer alloc.free(last_scan);
-    try buf.appendSlice(alloc, ",\"last_scan_at\":");
-    try shared.appendJsonStr(&buf, last_scan, alloc);
-    try std.fmt.format(buf.writer(alloc), ",\"repo_scan_in_progress\":{s},\"repo_scan_last_started_at\":{d},\"repo_scan_last_finished_at\":{d}", .{
-        if (repo_scan_in_progress) "true" else "false",
-        repo_scan_last_started_at,
-        repo_scan_last_finished_at,
-    });
-    try buf.append(alloc, '}');
+    try buf.appendSlice(alloc, ",\"profile\":null,\"last_scan_at\":\"never\",\"repo_scan_in_progress\":false,\"repo_scan_last_started_at\":0,\"repo_scan_last_finished_at\":0,\"active_workbook\":null}");
     return alloc.dupe(u8, buf.items);
 }
 
 pub fn handleInfo(registry: *workbook.registry.WorkbookRegistry, auth: *test_results_auth.AuthState, license_service: *license.Service, instance_info: anytype, alloc: Allocator) ![]const u8 {
-    const active_runtime = try registry.active();
-    const token = try auth.currentToken(alloc);
-    defer alloc.free(token);
     const test_results_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/api/v1/test-results", .{instance_info.actual_port});
     defer alloc.free(test_results_endpoint);
     const bom_endpoint = try std.fmt.allocPrint(alloc, "http://127.0.0.1:{d}/api/v1/bom", .{instance_info.actual_port});
@@ -121,7 +135,7 @@ pub fn handleInfo(registry: *workbook.registry.WorkbookRegistry, auth: *test_res
     try buf.appendSlice(alloc, ",\"live_version\":");
     try shared.appendJsonStr(&buf, instance_info.live_version, alloc);
     try buf.appendSlice(alloc, ",\"db_path\":");
-    try shared.appendJsonStr(&buf, active_runtime.config.db_path, alloc);
+    try shared.appendJsonStrOpt(&buf, if (registry.active_runtime) |runtime| runtime.config.db_path else null, alloc);
     try buf.appendSlice(alloc, ",\"log_path\":");
     try shared.appendJsonStr(&buf, instance_info.log_path, alloc);
     try buf.appendSlice(alloc, ",\"test_results_endpoint\":");
@@ -129,19 +143,50 @@ pub fn handleInfo(registry: *workbook.registry.WorkbookRegistry, auth: *test_res
     try buf.appendSlice(alloc, ",\"bom_endpoint\":");
     try shared.appendJsonStr(&buf, bom_endpoint, alloc);
     try buf.appendSlice(alloc, ",\"test_results_token\":");
-    try shared.appendJsonStr(&buf, token, alloc);
+    if (registry.active_runtime != null) {
+        const token = try auth.currentToken(alloc);
+        defer alloc.free(token);
+        try shared.appendJsonStr(&buf, token, alloc);
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
     try buf.appendSlice(alloc, ",\"inbox_dir\":");
-    try shared.appendJsonStr(&buf, active_runtime.config.inbox_dir, alloc);
+    try shared.appendJsonStrOpt(&buf, if (registry.active_runtime) |runtime| runtime.config.inbox_dir else null, alloc);
     try buf.appendSlice(alloc, ",\"test_results_inbox_dir\":");
-    try shared.appendJsonStr(&buf, active_runtime.config.inbox_dir, alloc);
+    try shared.appendJsonStrOpt(&buf, if (registry.active_runtime) |runtime| runtime.config.inbox_dir else null, alloc);
     try buf.appendSlice(alloc, ",\"test_results_auth_mode\":");
     try shared.appendJsonStr(&buf, "bearer_token", alloc);
     try buf.appendSlice(alloc, ",\"license_path\":");
     try shared.appendJsonStr(&buf, license_path, alloc);
     try buf.appendSlice(alloc, ",\"license_key_fingerprint\":");
     try shared.appendJsonStr(&buf, license_key_fingerprint, alloc);
+    try buf.appendSlice(alloc, ",\"active_workbook\":");
+    if (registry.live_config.active_workbook_id) |active_id| {
+        var summary = try registry.summaryForWorkbookId(active_id, alloc);
+        defer summary.deinit(alloc);
+        try appendActiveWorkbookJson(&buf, summary, alloc);
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+fn appendActiveWorkbookJson(buf: *std.ArrayList(u8), summary: workbook.registry.WorkbookSummary, alloc: Allocator) !void {
+    try buf.appendSlice(alloc, "{\"id\":");
+    try shared.appendJsonStr(buf, summary.id, alloc);
+    try buf.appendSlice(alloc, ",\"display_name\":");
+    try shared.appendJsonStr(buf, summary.display_name, alloc);
+    try buf.appendSlice(alloc, ",\"profile\":");
+    try shared.appendJsonStr(buf, summary.profile, alloc);
+    try buf.appendSlice(alloc, ",\"provider\":");
+    try shared.appendJsonStrOpt(buf, summary.provider, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"last_sync_at\":{d},\"sync_in_progress\":{s},\"inbox_dir\":", .{
+        summary.last_sync_at,
+        if (summary.sync_in_progress) "true" else "false",
+    });
+    try shared.appendJsonStr(buf, summary.inbox_dir, alloc);
+    try buf.append(alloc, '}');
 }
 
 pub fn licenseEnvelopeJson(status: license.LicenseStatus, alloc: Allocator) ![]const u8 {

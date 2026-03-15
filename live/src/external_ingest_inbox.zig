@@ -9,6 +9,7 @@ const test_results = @import("test_results.zig");
 pub const InboxCtx = struct {
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
+    control: *sync_live.WorkerControl,
     inbox_dir: []const u8,
     alloc: Allocator,
 };
@@ -26,16 +27,16 @@ pub fn destroyInboxCtx(ctx: *InboxCtx) void {
 pub fn inboxThread(ctx: *InboxCtx) void {
     defer destroyInboxCtx(ctx);
 
-    while (true) {
+    while (!ctx.control.stop_requested.load(.seq_cst)) {
         if (!ctx.state.product_enabled.load(.seq_cst)) {
-            std.Thread.sleep(5 * std.time.ns_per_s);
+            ctx.control.waitTimeout(5 * std.time.ns_per_s);
             continue;
         }
 
         processInboxOnce(ctx.db, ctx.inbox_dir, ctx.alloc) catch |err| {
             std.log.warn("external ingest inbox poll failed: {s}", .{@errorName(err)});
         };
-        std.Thread.sleep(5 * std.time.ns_per_s);
+        ctx.control.waitTimeout(5 * std.time.ns_per_s);
     }
 }
 

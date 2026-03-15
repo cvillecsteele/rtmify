@@ -27,6 +27,12 @@ pub fn workbookDir(slug: []const u8, alloc: Allocator) ![]u8 {
     return std.fs.path.join(alloc, &.{ root, "workbooks", slug });
 }
 
+pub fn inboxesRoot(alloc: Allocator) ![]u8 {
+    const root = try liveRoot(alloc);
+    defer alloc.free(root);
+    return std.fs.path.join(alloc, &.{ root, "inboxes" });
+}
+
 pub fn graphDbPath(slug: []const u8, alloc: Allocator) ![]u8 {
     const dir = try workbookDir(slug, alloc);
     defer alloc.free(dir);
@@ -40,9 +46,9 @@ pub fn apiTokenPath(slug: []const u8, alloc: Allocator) ![]u8 {
 }
 
 pub fn inboxDir(slug: []const u8, alloc: Allocator) ![]u8 {
-    const dir = try workbookDir(slug, alloc);
+    const dir = try inboxesRoot(alloc);
     defer alloc.free(dir);
-    return std.fs.path.join(alloc, &.{ dir, "inbox" });
+    return std.fs.path.join(alloc, &.{ dir, slug });
 }
 
 pub fn slugify(display_name: []const u8, alloc: Allocator) ![]u8 {

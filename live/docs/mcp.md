@@ -75,6 +75,36 @@ The compatibility rule is simple:
 - old clients may continue reading `content[].text`
 - MCP-native clients should prefer `structuredContent` when it is present
 
+Every tool response now carries explicit workbook context:
+
+- structured tools return:
+  - `structuredContent.workbook`
+  - `structuredContent.data`
+- narrative tools prefix the markdown with `[Workbook: ...]`
+  and return structured content shaped like:
+  - `workbook`
+  - `markdown`
+
+This is intentional. Live now supports multiple workbooks inside one running
+server, so MCP clients must always be able to tell which workbook they are
+reading.
+
+## Workbook Tools
+
+New workbook-management tools:
+- `list_workbooks`
+- `get_active_workbook`
+- `switch_workbook`
+
+`switch_workbook` accepts either:
+- `id`
+- `display_name`
+
+Switching is hot at the MCP boundary:
+- the MCP endpoint stays the same
+- the active workbook runtime changes underneath it
+- subsequent tool calls operate on the newly active workbook
+
 ## Important Tool Contracts
 
 ### `get_node`

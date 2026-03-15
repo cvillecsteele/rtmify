@@ -48,6 +48,14 @@ pub const handlePostProfileResponse = mod.handlePostProfileResponse;
 pub const handleGetRepos = mod.handleGetRepos;
 pub const handlePostRepo = mod.handlePostRepo;
 pub const handlePostRepoResponse = mod.handlePostRepoResponse;
+pub const handleGetWorkbooks = mod.handleGetWorkbooks;
+pub const handleGetWorkbooksResponse = mod.handleGetWorkbooksResponse;
+pub const handlePostWorkbooks = mod.handlePostWorkbooks;
+pub const handlePostWorkbooksResponse = mod.handlePostWorkbooksResponse;
+pub const handlePatchWorkbookResponse = mod.handlePatchWorkbookResponse;
+pub const handleActivateWorkbookResponse = mod.handleActivateWorkbookResponse;
+pub const handleRemoveWorkbookResponse = mod.handleRemoveWorkbookResponse;
+pub const handleDeleteWorkbookResponse = mod.handleDeleteWorkbookResponse;
 
 pub const handleCoverageReport = mod.handleCoverageReport;
 pub const handleClearSuspect = mod.handleClearSuspect;

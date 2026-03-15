@@ -2,6 +2,11 @@
 ## Product Requirements Document
 ### Version 0.1
 
+Note: Live now manages multiple workbook entries inside one running server.
+One workbook is active at a time. UI routes, sync, inbox watching, and MCP
+operate on that active workbook context, while each workbook keeps its own
+graph DB, token file, and inbox path.
+
 ---
 
 ## 1. What This Is

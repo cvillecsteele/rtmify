@@ -102,6 +102,10 @@
     }
     .header-title { font-size: 16px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(96% 0.010 258); }
     .header-subtitle { font-size: 11px; color: oklch(62% 0.018 258); letter-spacing: 0.05em; text-transform: uppercase; }
+    .header-workbook { display: flex; flex-direction: column; gap: 2px; min-width: 280px; margin-left: auto; }
+    .header-workbook-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(70% 0.02 258); }
+    .header-workbook-select { width: 100%; background: oklch(24% 0.05 258); color: oklch(96% 0.01 258); border: 1px solid oklch(34% 0.04 258); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+    .header-workbook-meta { font-size: 11px; color: oklch(74% 0.016 258); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     /* Primary nav */
     nav.nav-primary {
@@ -1017,6 +1021,7 @@
     <div class="lobby-screen active" data-screen="1">
       <p class="screen-label">Step 1 of 4</p>
       <h2 class="screen-headline" id="lobby-headline">What standard governs your work?</h2>
+      <input id="lobby-display-name" class="lobby-input" type="text" placeholder="Workbook display name" aria-label="Workbook display name" oninput="lobbyStateFromInputs()">
       <div class="profile-list" id="profile-list"></div>
       <button class="authorize-btn" onclick="lobbyNext(1)">
         <span class="authorize-btn-label">Continue →</span>
@@ -1151,6 +1156,13 @@
     <span class="header-title">RTMify</span>
     <span class="header-subtitle">Requirements Traceability</span>
   </button>
+  <div class="header-workbook">
+    <label class="header-workbook-label" for="workbook-switcher">Active Workbook</label>
+    <select id="workbook-switcher" class="header-workbook-select" onchange="switchWorkbookFromHeader()">
+      <option value="">Loading…</option>
+    </select>
+    <div id="header-workbook-meta" class="header-workbook-meta">Loading workbook context…</div>
+  </div>
   <span id="suspect-header-badge" class="header-badge" style="display:none"
     onclick="showTab('review')"></span>
 </header>
@@ -1172,6 +1184,7 @@
       </svg>
     </button>
     <div class="settings-dropdown" id="settings-panel" style="display:none">
+      <button onclick="showSettingsTab('workbooks')">Workbooks</button>
       <button onclick="showSettingsTab('info')">System Info</button>
     </div>
   </div>
@@ -1555,6 +1568,48 @@ audit_readiness_summary(profile="aerospace")</div>
         <li>Read <code>requirement://REQ-001</code> and summarize the open gaps.</li>
         <li>Use <code>trace_requirement</code> to prepare an audit-ready requirement summary.</li>
       </ul>
+    </div>
+  </section>
+
+  <!-- Workbooks tab -->
+  <section id="tab-workbooks">
+    <div class="toolbar">
+      <h2>Workbooks</h2>
+      <div>
+        <button class="btn" onclick="openAddWorkbook()">Add Workbook</button>
+        <button class="btn" onclick="loadWorkbooksView()">Refresh</button>
+      </div>
+    </div>
+    <div id="workbooks-error" class="error-banner" style="display:none"></div>
+    <div class="card card--padded">
+      <h3 class="mb-10">Available Workbooks</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Profile</th>
+            <th>Provider</th>
+            <th>Last Sync</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="workbooks-body"></tbody>
+      </table>
+    </div>
+    <div class="card card--padded mt-12">
+      <h3 class="mb-10">Removed Workbooks</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Profile</th>
+            <th>Removed</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="removed-workbooks-body"></tbody>
+      </table>
     </div>
   </section>
 

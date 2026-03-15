@@ -10,7 +10,7 @@
     'chain-gaps': 'analysis', 'impact': 'analysis', 'review': 'analysis',
     'guide-errors': 'guide', 'mcp-ai': 'guide',
     'code': 'code', 'reports': 'reports',
-    'info': 'settings',
+    'workbooks': 'settings', 'info': 'settings',
   };
 
   // Default sub-tab per group
@@ -20,6 +20,13 @@
     guide: 'guide-errors',
     code: 'code',
     reports: 'reports',
+  };
+
+  const workbookState = {
+    activeWorkbookId: null,
+    workbooks: [],
+    removedWorkbooks: [],
+    switching: false,
   };
 
   let guideErrorsCache = null;
@@ -68,6 +75,7 @@
     document.querySelectorAll('.nav-primary button[data-group]').forEach(b =>
       b.classList.remove('active'));
     document.querySelectorAll('.nav-sub').forEach(sn => sn.classList.remove('active'));
+    if (name === 'workbooks') loadWorkbooksView();
     if (name === 'info') loadInfo();
   }
 
@@ -117,6 +125,22 @@
       case 'delete-repo':
         e.preventDefault();
         void deleteRepo(Number(actionEl.dataset.slot || 0));
+        return true;
+      case 'switch-workbook':
+        e.preventDefault();
+        void switchWorkbook(actionEl.dataset.id || '');
+        return true;
+      case 'rename-workbook':
+        e.preventDefault();
+        void renameWorkbook(actionEl.dataset.id || '');
+        return true;
+      case 'remove-workbook':
+        e.preventDefault();
+        void removeWorkbook(actionEl.dataset.id || '');
+        return true;
+      case 'purge-workbook':
+        e.preventDefault();
+        void purgeWorkbook(actionEl.dataset.id || '', actionEl.dataset.name || '');
         return true;
       case 'expand-file': {
         e.preventDefault();
@@ -319,6 +343,7 @@
     _closeAllExpanded();
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
     await loadProfileState();
+    await loadWorkbooksState();
     loadMcpHelp();
     loadInfo();
   }
@@ -368,6 +393,7 @@
       dbEl.textContent = info.db_path || 'unknown';
       logEl.textContent = info.log_path || 'unknown';
       renderTestResultsApiInfo(info, testResultsEndpointEl, bomEndpointEl, testResultsTokenEl, testResultsInboxEl);
+      updateWorkbookContext(info.active_workbook || null);
     } catch (e) {
       errEl.textContent = 'Failed to load info: ' + e.message;
       errEl.style.display = 'block';
@@ -381,6 +407,167 @@
       if (testResultsTokenEl) testResultsTokenEl.textContent = '—';
       if (testResultsInboxEl) testResultsInboxEl.textContent = '—';
     }
+  }
+
+  async function loadWorkbooksState() {
+    try {
+      const res = await fetch('/api/workbooks', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      workbookState.activeWorkbookId = data.active_workbook_id || null;
+      workbookState.workbooks = Array.isArray(data.workbooks) ? data.workbooks : [];
+      workbookState.removedWorkbooks = Array.isArray(data.removed_workbooks) ? data.removed_workbooks : [];
+      renderWorkbookContext();
+      renderWorkbooksTable();
+    } catch (_) {
+      workbookState.activeWorkbookId = null;
+      workbookState.workbooks = [];
+      workbookState.removedWorkbooks = [];
+      renderWorkbookContext();
+      renderWorkbooksTable();
+    }
+  }
+
+  function updateWorkbookContext(activeWorkbook) {
+    if (!activeWorkbook) return;
+    workbookState.activeWorkbookId = activeWorkbook.id || workbookState.activeWorkbookId;
+    renderWorkbookContext(activeWorkbook);
+  }
+
+  function renderWorkbookContext(activeWorkbookOverride = null) {
+    const selectEl = document.getElementById('workbook-switcher');
+    const metaEl = document.getElementById('header-workbook-meta');
+    if (!selectEl || !metaEl) return;
+    const workbooks = workbookState.workbooks || [];
+    const active = activeWorkbookOverride || workbooks.find(w => w.id === workbookState.activeWorkbookId) || null;
+    selectEl.disabled = workbookState.switching;
+    if (!workbooks.length) {
+      selectEl.innerHTML = '<option value="">No workbooks</option>';
+      selectEl.value = '';
+      metaEl.textContent = 'Connect a workbook to begin.';
+      return;
+    }
+    selectEl.innerHTML = workbooks.map(w => `<option value="${esc(w.id || '')}">${esc(w.display_name || w.workbook_label || w.id || '')}</option>`).join('');
+    selectEl.value = workbookState.activeWorkbookId || '';
+    const provider = active?.provider || 'unconfigured';
+    const profile = active?.profile || 'unknown';
+    const sync = active?.sync_in_progress ? 'syncing' : (active?.last_sync_at ? `last sync ${formatUnixTimestamp(active.last_sync_at)}` : 'never synced');
+    metaEl.textContent = `${profile} · ${provider} · ${sync}`;
+  }
+
+  function renderWorkbooksTable() {
+    const bodyEl = document.getElementById('workbooks-body');
+    const removedEl = document.getElementById('removed-workbooks-body');
+    if (bodyEl) {
+      if (!workbookState.workbooks.length) {
+        bodyEl.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>No workbooks configured</strong><br>Use Add Workbook to connect one.</td></tr>';
+      } else {
+        bodyEl.innerHTML = workbookState.workbooks.map(w => {
+          const sync = w.last_sync_at ? formatUnixTimestamp(w.last_sync_at) : 'Never';
+          const status = w.sync_in_progress ? 'Syncing…' : (w.has_error ? `Error: ${esc(w.last_error || 'sync failed')}` : 'Ready');
+          return `<tr>
+            <td><strong>${esc(w.display_name || '')}</strong>${w.is_active ? ' <span class="badge">Active</span>' : ''}</td>
+            <td>${esc(w.profile || '')}</td>
+            <td>${esc(w.provider || '—')}</td>
+            <td>${esc(sync)}</td>
+            <td>${status}</td>
+            <td>
+              ${w.is_active ? '' : `<button class="btn" data-action="switch-workbook" data-id="${esc(w.id || '')}">Activate</button>`}
+              <button class="btn" data-action="rename-workbook" data-id="${esc(w.id || '')}">Rename</button>
+              <button class="btn-danger" data-action="remove-workbook" data-id="${esc(w.id || '')}">Remove</button>
+            </td>
+          </tr>`;
+        }).join('');
+      }
+    }
+    if (removedEl) {
+      if (!workbookState.removedWorkbooks.length) {
+        removedEl.innerHTML = '<tr><td colspan="4" class="empty-state">No removed workbooks.</td></tr>';
+      } else {
+        removedEl.innerHTML = workbookState.removedWorkbooks.map(w => `<tr>
+          <td><strong>${esc(w.display_name || '')}</strong></td>
+          <td>${esc(w.profile || '')}</td>
+          <td>${w.removed_at ? esc(formatUnixTimestamp(w.removed_at)) : '—'}</td>
+          <td><button class="btn-danger" data-action="purge-workbook" data-id="${esc(w.id || '')}" data-name="${esc(w.display_name || '')}">Purge</button></td>
+        </tr>`).join('');
+      }
+    }
+  }
+
+  async function loadWorkbooksView() {
+    const errEl = document.getElementById('workbooks-error');
+    if (errEl) errEl.style.display = 'none';
+    try {
+      await loadWorkbooksState();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = 'Failed to load workbooks: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function switchWorkbook(id) {
+    if (!id || workbookState.switching || id === workbookState.activeWorkbookId) return;
+    workbookState.switching = true;
+    renderWorkbookContext();
+    try {
+      const res = await fetch(`/api/workbooks/${encodeURIComponent(id)}/activate`, { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadWorkbooksState();
+      await loadData();
+    } catch (e) {
+      alert('Failed to switch workbook: ' + e.message);
+    } finally {
+      workbookState.switching = false;
+      renderWorkbookContext();
+    }
+  }
+
+  async function switchWorkbookFromHeader() {
+    const selectEl = document.getElementById('workbook-switcher');
+    if (!selectEl) return;
+    await switchWorkbook(selectEl.value);
+  }
+
+  async function renameWorkbook(id) {
+    const workbook = workbookState.workbooks.find(w => w.id === id);
+    if (!workbook) return;
+    const nextName = window.prompt('New workbook display name:', workbook.display_name || '');
+    if (!nextName || nextName.trim() === '' || nextName.trim() === workbook.display_name) return;
+    const res = await fetch(`/api/workbooks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ display_name: nextName.trim() }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `HTTP ${res.status}`);
+    }
+    await loadWorkbooksState();
+    loadInfo();
+  }
+
+  async function removeWorkbook(id) {
+    const workbook = workbookState.workbooks.find(w => w.id === id);
+    if (!workbook) return;
+    if (!window.confirm(`Remove workbook "${workbook.display_name}"? This hides it but does not delete its files.`)) return;
+    const res = await fetch(`/api/workbooks/${encodeURIComponent(id)}/remove`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await loadWorkbooksState();
+    await loadData();
+  }
+
+  async function purgeWorkbook(id, displayName) {
+    const confirmation = window.prompt(`Type the workbook name to purge it permanently:\n${displayName}`);
+    if (!confirmation) return;
+    const res = await fetch(`/api/workbooks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm_display_name: confirmation }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await loadWorkbooksState();
   }
 
   function renderTestResultsApiInfo(info, endpointEl, bomEndpointEl, tokenEl, inboxEl) {
@@ -810,7 +997,8 @@
     return { upstream, downstream };
   }
 
-  async function showLobby() {
+  async function showLobby(mode = 'setup') {
+    lobbyMode = mode;
     document.getElementById('lobby').classList.add('visible');
     _trapLobby();
     try {
@@ -831,6 +1019,8 @@
         return;
       }
     } catch (_) {}
+    lobbyState.displayName = '';
+    document.getElementById('lobby-display-name').value = '';
     resetLobbyScreens(1);
     lobbyCurrentScreen = 1;
     updateLobbyNav();
@@ -853,6 +1043,11 @@
   }
 
   function applyStatus(status) {
+    if (status.active_workbook && status.active_workbook.display_name) {
+      lobbyState.displayName = status.active_workbook.display_name;
+      const displayNameEl = document.getElementById('lobby-display-name');
+      if (displayNameEl) displayNameEl.value = status.active_workbook.display_name;
+    }
     if (status.platform) {
       lobbyState.provider = status.platform;
       selectProvider(status.platform);
@@ -1548,6 +1743,7 @@
   // --- Lobby ---
 
   const lobbyState = {
+    displayName: '',
     profileId: null,
     provider: 'google',
     googleCredentialJson: '',
@@ -1560,6 +1756,7 @@
   };
 
   let lobbyCurrentScreen = 1;
+  let lobbyMode = 'setup';
 
   const LOBBY_PROFILES = [
     { id:'aerospace',  backendId:'aerospace', label:'Aerospace',                    standards:'DO-178C · AS9100D',                      tagline:'Authorize your DO-178C traceability instrument' },
@@ -1660,6 +1857,11 @@
     const errEl = document.getElementById('lobby-error');
     errEl.style.display = 'none';
     if (fromScreen === 1) {
+      if (!lobbyState.displayName) {
+        errEl.textContent = 'Enter a workbook display name to continue.';
+        errEl.style.display = 'block';
+        return;
+      }
       if (!lobbyState.profileId) {
         errEl.textContent = 'Select a profile to continue.';
         errEl.style.display = 'block';
@@ -1697,6 +1899,7 @@
   }
 
   function lobbyStateFromInputs() {
+    lobbyState.displayName = document.getElementById('lobby-display-name').value.trim();
     const workbookUrl = document.getElementById('lobby-url').value.trim();
     if (workbookUrl !== lobbyState.workbookUrl) lobbyState.prefilledConnection = false;
     lobbyState.workbookUrl = workbookUrl;
@@ -1753,7 +1956,13 @@
   function openWorkspace() {
     document.getElementById('lobby').classList.remove('visible');
     _releaseLobby();
+    loadWorkbooksState();
     loadData();
+  }
+
+  function openAddWorkbook() {
+    showSettingsTab('workbooks');
+    showLobby('add');
   }
 
   function clearCredential() {
@@ -1801,6 +2010,7 @@
     }
 
     if (status.configured) {
+      await loadWorkbooksState();
       await loadData();
       await handleGuideHash();
       return;
@@ -1812,6 +2022,7 @@
     _trapLobby();
 
     applyStatus(status);
+    await loadWorkbooksState();
   }
 
   const PROFILE_DESCRIPTIONS = {
@@ -1825,6 +2036,7 @@
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
     if (!profile) return null;
     const draft = {
+      display_name: lobbyState.displayName,
       platform: lobbyState.provider,
       profile: profile.backendId,
       workbook_url: lobbyState.workbookUrl,
@@ -1857,6 +2069,7 @@
       label.textContent = 'Using saved connection…';
       await new Promise(r => setTimeout(r, 150));
       showSuccess();
+      await loadWorkbooksState();
       await loadData();
       await handleGuideHash();
       return;
@@ -1873,7 +2086,7 @@
     label.textContent = 'Verifying credentials…';
 
     try {
-      const res = await fetch('/api/connection', {
+      const res = await fetch(lobbyMode === 'add' ? '/api/workbooks' : '/api/connection', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(draft),
@@ -1897,6 +2110,7 @@
     label.textContent = 'Connected.';
     await new Promise(r => setTimeout(r, 300));
     showSuccess();
+    await loadWorkbooksState();
     await loadData();
     await handleGuideHash();
   }

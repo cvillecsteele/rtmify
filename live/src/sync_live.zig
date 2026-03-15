@@ -37,6 +37,7 @@ const RowFormat = provider_common.RowFormat;
 pub const SyncState = struct {
     last_sync_at: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     has_error: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    sync_in_progress: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     sync_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     /// True once a sync thread has been spawned; prevents double-start.
     sync_started: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -78,6 +79,34 @@ pub const SyncState = struct {
     }
 };
 
+pub const WorkerControl = struct {
+    stop_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    immediate_sync_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cond_mu: std.Thread.Mutex = .{},
+    cond: std.Thread.Condition = .{},
+
+    pub fn requestStop(self: *WorkerControl) void {
+        self.stop_requested.store(true, .seq_cst);
+        self.cond_mu.lock();
+        defer self.cond_mu.unlock();
+        self.cond.broadcast();
+    }
+
+    pub fn requestImmediateSync(self: *WorkerControl) void {
+        self.immediate_sync_requested.store(true, .seq_cst);
+        self.cond_mu.lock();
+        defer self.cond_mu.unlock();
+        self.cond.broadcast();
+    }
+
+    pub fn waitTimeout(self: *WorkerControl, timeout_ns: u64) void {
+        self.cond_mu.lock();
+        defer self.cond_mu.unlock();
+        if (self.stop_requested.load(.seq_cst) or self.immediate_sync_requested.load(.seq_cst)) return;
+        self.cond.timedWait(&self.cond_mu, timeout_ns) catch {};
+    }
+};
+
 // ---------------------------------------------------------------------------
 // SyncConfig — passed to the sync thread at spawn time
 // ---------------------------------------------------------------------------
@@ -87,6 +116,7 @@ pub const SyncConfig = struct {
     workbook_slug: []const u8,
     profile: profile_mod.ProfileId,
     active: ActiveConnection,
+    control: *WorkerControl,
     /// Allocator for the sync thread
     alloc: Allocator,
     /// Database handle (shared)
@@ -105,6 +135,8 @@ pub fn syncThread(cfg: SyncConfig) void {
     const alloc = gpa_state.allocator();
     defer cfg.alloc.free(cfg.workbook_id);
     defer cfg.alloc.free(cfg.workbook_slug);
+    defer cfg.state.sync_started.store(false, .seq_cst);
+    defer cfg.state.sync_in_progress.store(false, .seq_cst);
     var owned_active = cfg.active;
     defer owned_active.deinit(cfg.alloc);
 
@@ -125,25 +157,28 @@ pub fn syncThread(cfg: SyncConfig) void {
     defer if (last_change_token) |tok| alloc.free(tok);
     var backoff: u64 = 30; // seconds
 
-    while (true) {
+    while (!cfg.control.stop_requested.load(.seq_cst)) {
         if (!cfg.state.product_enabled.load(.seq_cst)) {
-            std.Thread.sleep(30 * std.time.ns_per_s);
+            cfg.control.waitTimeout(30 * std.time.ns_per_s);
             continue;
         }
 
+        const force_sync = cfg.control.immediate_sync_requested.swap(false, .seq_cst);
         const change_token = runtime.changeToken(alloc) catch |e| {
             const msg = @errorName(e);
             cfg.state.setError(msg);
+            cfg.db.storeConfig("last_sync_error", msg) catch {};
+            cfg.db.storeConfig("last_sync_ok", "0") catch {};
             std.log.err("sync: change token refresh failed: {s}", .{msg});
-            std.Thread.sleep(backoff * std.time.ns_per_s);
+            cfg.control.waitTimeout(backoff * std.time.ns_per_s);
             backoff = @min(backoff * 2, 300);
             continue;
         };
 
         if (last_change_token) |prev| {
-            if (std.mem.eql(u8, prev, change_token)) {
+            if (!force_sync and std.mem.eql(u8, prev, change_token)) {
                 alloc.free(change_token);
-                std.Thread.sleep(30 * std.time.ns_per_s);
+                cfg.control.waitTimeout(30 * std.time.ns_per_s);
                 continue;
             }
             alloc.free(prev);
@@ -168,21 +203,34 @@ pub fn syncThread(cfg: SyncConfig) void {
             }
         }
 
+        cfg.state.sync_in_progress.store(true, .seq_cst);
         runSyncCycle(cfg.db, cfg.profile, &runtime, cfg.state, alloc) catch |e| {
+            cfg.state.sync_in_progress.store(false, .seq_cst);
             const msg = @errorName(e);
             cfg.state.setError(msg);
+            cfg.db.storeConfig("last_sync_error", msg) catch {};
+            cfg.db.storeConfig("last_sync_ok", "0") catch {};
             std.log.err("sync: cycle failed: {s}", .{msg});
-            std.Thread.sleep(backoff * std.time.ns_per_s);
+            cfg.control.waitTimeout(backoff * std.time.ns_per_s);
             backoff = @min(backoff * 2, 300);
             continue;
         };
+        cfg.state.sync_in_progress.store(false, .seq_cst);
 
-        cfg.state.last_sync_at.store(std.time.timestamp(), .seq_cst);
+        const synced_at = std.time.timestamp();
+        cfg.state.last_sync_at.store(synced_at, .seq_cst);
         _ = cfg.state.sync_count.fetchAdd(1, .seq_cst);
         cfg.state.clearError();
+        {
+            const timestamp = std.fmt.allocPrint(alloc, "{d}", .{synced_at}) catch null;
+            defer if (timestamp) |value| alloc.free(value);
+            if (timestamp) |value| cfg.db.storeConfig("last_sync_at", value) catch {};
+        }
+        cfg.db.storeConfig("last_sync_error", "") catch {};
+        cfg.db.storeConfig("last_sync_ok", "1") catch {};
         backoff = 30; // reset on success
 
-        std.Thread.sleep(30 * std.time.ns_per_s);
+        cfg.control.waitTimeout(30 * std.time.ns_per_s);
     }
 }
 
@@ -720,6 +768,7 @@ pub const RepoScanCtx = struct {
     db: *GraphDb,
     repo_paths: []const []const u8,
     state: *SyncState,
+    control: ?*WorkerControl = null,
     alloc: Allocator,
     git_exe_override: ?[]const u8 = null,
     git_timeout_ms_override: ?u64 = null,
@@ -762,9 +811,13 @@ pub fn repoScanThread(ctx: *RepoScanCtx) void {
         }
     }
 
-    while (true) {
+    while (!(if (ctx.control) |control| control.stop_requested.load(.seq_cst) else false)) {
         if (!ctx.state.product_enabled.load(.seq_cst)) {
-            std.Thread.sleep(30 * std.time.ns_per_s);
+            if (ctx.control) |control| {
+                control.waitTimeout(30 * std.time.ns_per_s);
+            } else {
+                std.Thread.sleep(30 * std.time.ns_per_s);
+            }
             continue;
         }
 
@@ -776,16 +829,16 @@ pub fn repoScanThread(ctx: *RepoScanCtx) void {
             std.log.warn("repo scan cycle failed: {s}", .{@errorName(e)});
         };
 
-        std.Thread.sleep(60 * std.time.ns_per_s);
+        if (ctx.control) |control| {
+            control.waitTimeout(60 * std.time.ns_per_s);
+        } else {
+            std.Thread.sleep(60 * std.time.ns_per_s);
+        }
     }
 }
 
-pub fn triggerRepoScanNow(db: *GraphDb, state: *SyncState, alloc: Allocator) !void {
-    var idx: usize = 0;
-    while (idx < 64) : (idx += 1) {
-        const repo_key = try std.fmt.allocPrint(alloc, "repo_path_{d}", .{idx});
-        defer alloc.free(repo_key);
-        const repo_path = (try db.getConfig(repo_key, alloc)) orelse continue;
+pub fn triggerRepoScanNow(db: *GraphDb, state: *SyncState, repo_paths: []const []const u8, alloc: Allocator) !void {
+    for (repo_paths) |repo_path| {
         const last_scan_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{repo_path});
         defer alloc.free(last_scan_key);
         try db.storeConfig(last_scan_key, "0");
@@ -793,7 +846,7 @@ pub fn triggerRepoScanNow(db: *GraphDb, state: *SyncState, alloc: Allocator) !vo
 
     var ctx = RepoScanCtx{
         .db = db,
-        .repo_paths = &.{},
+        .repo_paths = repo_paths,
         .state = state,
         .alloc = alloc,
     };
@@ -1699,7 +1752,7 @@ test "triggerRepoScanNow forces full file rescan regardless of last_scan cursor"
     defer alloc.free(last_scan_key);
     try db.storeConfig(last_scan_key, "9999999999");
 
-    try triggerRepoScanNow(&db, &state, alloc);
+    try triggerRepoScanNow(&db, &state, &.{fixture.path}, alloc);
 
     const annotation_id = try std.fmt.allocPrint(alloc, "{s}:1", .{file_path});
     defer alloc.free(annotation_id);

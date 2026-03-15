@@ -15,6 +15,7 @@ const chain_mod = @import("chain.zig");
 const test_results = @import("test_results.zig");
 const bom = @import("bom.zig");
 const workbook = @import("workbook/mod.zig");
+const shared = @import("routes/shared.zig");
 
 const ToolPayload = struct {
     text: []const u8,
@@ -67,6 +68,9 @@ const prompts_json =
 
 const tools_json =
     \\[
+    \\{"name":"list_workbooks","description":"List configured non-removed workbooks in this Live server.","inputSchema":{"type":"object","properties":{},"required":[]},"outputSchema":{"type":"object"}},
+    \\{"name":"get_active_workbook","description":"Get the currently active workbook.","inputSchema":{"type":"object","properties":{},"required":[]},"outputSchema":{"type":"object"}},
+    \\{"name":"switch_workbook","description":"Switch the active workbook by id or display name.","inputSchema":{"oneOf":[{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]},{"type":"object","properties":{"display_name":{"type":"string"}},"required":["display_name"]}]},"outputSchema":{"type":"object"}},
     \\{"name":"get_rtm","description":"Get the Requirements Traceability Matrix. Optional limit/offset and suspect-only filtering.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"},"suspect_only":{"type":"boolean"}},"required":[]},"outputSchema":{"type":"array"}},
     \\{"name":"get_gaps","description":"Get requirements with no test linked. Optional limit and offset.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]},"outputSchema":{"type":"array"}},
     \\{"name":"get_suspects","description":"Get all suspect nodes. Optional limit and offset.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]},"outputSchema":{"type":"array"}},
@@ -138,10 +142,21 @@ pub fn handlePost(
     registry: *workbook.registry.WorkbookRegistry,
     secure_store_ref: *secure_store.Store,
     state: *sync_live.SyncState,
+    license_service: *license.Service,
+    refresh_active_runtime_fn: ?*const fn (*workbook.registry.WorkbookRegistry, *secure_store.Store, *license.Service, Allocator) void,
     alloc: Allocator,
 ) !void {
-    const active_runtime = try registry.active();
-    const db = &active_runtime.db;
+    var scratch_db: ?graph_live.GraphDb = null;
+    defer {
+        if (scratch_db) |*db_ref| db_ref.deinit();
+    }
+    const active_runtime = registry.active_runtime;
+    const db = if (active_runtime) |runtime|
+        &runtime.db
+    else blk: {
+        scratch_db = try graph_live.GraphDb.init(":memory:");
+        break :blk &scratch_db.?;
+    };
     var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
         return sendError(req, "null", -32600, "Invalid Request", alloc);
     };
@@ -172,36 +187,36 @@ pub fn handlePost(
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "tools/call")) {
-        try dispatchToolCall(req, root, id_raw, registry, db, secure_store_ref, state, active_runtime.config.profile, alloc);
+        try dispatchToolCall(req, root, id_raw, registry, db, secure_store_ref, state, if (active_runtime) |runtime| runtime.config.profile else "generic", license_service, refresh_active_runtime_fn, alloc);
     } else if (std.mem.eql(u8, method, "resources/list")) {
         const result = try resourcesListResult(db, alloc);
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "resources/read")) {
-        try dispatchResourceRead(req, root, id_raw, registry, db, secure_store_ref, state, active_runtime.config.profile, alloc);
+        try dispatchResourceRead(req, root, id_raw, registry, db, secure_store_ref, state, if (active_runtime) |runtime| runtime.config.profile else "generic", alloc);
     } else if (std.mem.eql(u8, method, "prompts/list")) {
         const result = try promptsListResult(alloc);
         defer alloc.free(result);
         try sendResult(req, id_raw, result, alloc);
     } else if (std.mem.eql(u8, method, "prompts/get")) {
-        try dispatchPromptGet(req, root, id_raw, registry, db, secure_store_ref, state, active_runtime.config.profile, alloc);
+        try dispatchPromptGet(req, root, id_raw, registry, db, secure_store_ref, state, if (active_runtime) |runtime| runtime.config.profile else "generic", alloc);
     } else {
         try sendError(req, id_raw, -32601, "Method not found", alloc);
     }
 }
 
-fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !void {
+fn dispatchToolCall(req: *std.http.Server.Request, root: std.json.Value, id_raw: []const u8, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, license_service: *license.Service, refresh_active_runtime_fn: ?*const fn (*workbook.registry.WorkbookRegistry, *secure_store.Store, *license.Service, Allocator) void, alloc: Allocator) !void {
     const params = json_util.getObjectField(root, "params") orelse return sendError(req, id_raw, -32602, "Missing params", alloc);
     const name = json_util.getString(params, "name") orelse return sendError(req, id_raw, -32602, "Missing tool name", alloc);
     const args = json_util.getObjectField(params, "arguments");
-    const dispatch = buildToolPayload(name, args, registry, db, secure_store_ref, state, profile_name, alloc) catch |e| switch (e) {
+    const dispatch = buildToolPayload(name, args, registry, db, secure_store_ref, state, profile_name, license_service, refresh_active_runtime_fn, alloc) catch |e| switch (e) {
         error.NotFound => return sendError(req, id_raw, -32004, "Not found", alloc),
         error.InvalidArgument => return sendError(req, id_raw, -32602, "Invalid arguments", alloc),
         else => return e,
     };
     defer dispatch.deinit(alloc);
     switch (dispatch) {
-        .payload => |payload| try sendToolPayload(req, id_raw, payload, alloc),
+        .payload => |payload| try sendToolPayload(req, id_raw, name, registry, payload, alloc),
         .invalid_arguments => |msg| try sendError(req, id_raw, -32602, msg, alloc),
         .not_found => try sendError(req, id_raw, -32004, "Not found", alloc),
     }
@@ -257,8 +272,29 @@ fn textPayloadOwned(text: []const u8) ToolPayload {
     return .{ .text = text };
 }
 
-fn buildToolPayload(name: []const u8, args: ?std.json.Value, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !ToolDispatch {
-    if (std.mem.eql(u8, name, "get_rtm")) {
+fn buildToolPayload(name: []const u8, args: ?std.json.Value, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, secure_store_ref: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, license_service: *license.Service, refresh_active_runtime_fn: ?*const fn (*workbook.registry.WorkbookRegistry, *secure_store.Store, *license.Service, Allocator) void, alloc: Allocator) !ToolDispatch {
+    if (std.mem.eql(u8, name, "list_workbooks")) {
+        return .{ .payload = jsonPayloadOwned(try listWorkbooksJson(registry, alloc)) };
+    } else if (std.mem.eql(u8, name, "get_active_workbook")) {
+        return .{ .payload = jsonPayloadOwned(try activeWorkbookJson(registry, alloc)) };
+    } else if (std.mem.eql(u8, name, "switch_workbook")) {
+        const workbook_id = if (args) |a| json_util.getString(a, "id") else null;
+        const display_name = if (args) |a| json_util.getString(a, "display_name") else null;
+        const target_id = if (workbook_id) |id|
+            id
+        else if (display_name) |name_value|
+            blk: {
+                const cfg = workbook.config.findByDisplayName(&registry.live_config, name_value) orelse return invalidArgumentsDispatch("switch_workbook requires an existing 'id' or 'display_name'", alloc);
+                break :blk cfg.id;
+            }
+        else
+            return invalidArgumentsDispatch("switch_workbook requires 'id' or 'display_name'", alloc);
+        _ = try registry.activateWorkbook(target_id, alloc);
+        if (refresh_active_runtime_fn) |f| f(registry, secure_store_ref, license_service, alloc);
+        return .{ .payload = jsonPayloadOwned(try activeWorkbookJson(registry, alloc)) };
+    } else if (toolRequiresActiveWorkbook(name) and registry.active_runtime == null) {
+        return invalidArgumentsDispatch("No active workbook", alloc);
+    } else if (std.mem.eql(u8, name, "get_rtm")) {
         const data = try routes.handleRtm(db, alloc);
         defer alloc.free(data);
         return .{ .payload = try filteredArrayPayload(data, args, .{ .suspect_field = true }, alloc) };
@@ -307,12 +343,7 @@ fn buildToolPayload(name: []const u8, args: ?std.json.Value, registry: *workbook
         const data = try routes.handleSchema(db, alloc);
         return .{ .payload = jsonPayloadOwned(data) };
     } else if (std.mem.eql(u8, name, "get_status")) {
-        var license_service = try license.initDefaultHmacFile(alloc, .{
-            .product = .live,
-            .trial_policy = .requires_license,
-        });
-        defer license_service.deinit(alloc);
-        const data = try routes.handleStatus(registry, secure_store_ref, state, &license_service, alloc);
+        const data = try routes.handleStatus(registry, secure_store_ref, state, license_service, alloc);
         return .{ .payload = jsonPayloadOwned(data) };
     } else if (std.mem.eql(u8, name, "clear_suspect")) {
         const node_id = try requireStringArg(args, "id");
@@ -723,13 +754,17 @@ fn resourceReadResult(uri: []const u8, registry: *workbook.registry.WorkbookRegi
     else
         return error.NotFound;
     defer alloc.free(text);
+    const heading = try workbookHeading(registry, alloc);
+    defer alloc.free(heading);
+    const contextual = try std.fmt.allocPrint(alloc, "{s}{s}", .{ heading, text });
+    defer alloc.free(contextual);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "{\"contents\":[{\"uri\":");
     try json_util.appendJsonQuoted(&buf, uri, alloc);
     try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\",\"text\":");
-    try json_util.appendJsonQuoted(&buf, text, alloc);
+    try json_util.appendJsonQuoted(&buf, contextual, alloc);
     try buf.appendSlice(alloc, "}]}");
     return alloc.dupe(u8, buf.items);
 }
@@ -742,7 +777,6 @@ fn promptGetResult(name: []const u8, args: ?std.json.Value, registry: *workbook.
     _ = db;
     _ = secure_store_ref;
     _ = state;
-    _ = registry;
     _ = profile_name;
     const body = if (std.mem.eql(u8, name, "trace_requirement")) blk: {
         const id = try requireStringArg(args, "id");
@@ -768,13 +802,17 @@ fn promptGetResult(name: []const u8, args: ?std.json.Value, registry: *workbook.
         break :blk try std.fmt.allocPrint(alloc, "Summarize design history for requirement {s}. Read design-history://{s}. Return: Requirement, Upstream Need, Design Inputs/Outputs, Configuration Control, Verification, Commits, and Open Traceability Gaps.", .{ req_id, req_id });
     } else return error.NotFound;
     defer alloc.free(body);
+    const heading = try workbookHeading(registry, alloc);
+    defer alloc.free(heading);
+    const contextual_body = try std.fmt.allocPrint(alloc, "{s}{s}", .{ heading, body });
+    defer alloc.free(contextual_body);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "{\"description\":");
     try json_util.appendJsonQuoted(&buf, name, alloc);
     try buf.appendSlice(alloc, ",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":");
-    try json_util.appendJsonQuoted(&buf, body, alloc);
+    try json_util.appendJsonQuoted(&buf, contextual_body, alloc);
     try buf.appendSlice(alloc, "}}]}");
     return alloc.dupe(u8, buf.items);
 }
@@ -801,6 +839,115 @@ fn getBoolArg(args: ?std.json.Value, key: []const u8) ?bool {
         .bool => v.bool,
         else => null,
     } else null;
+}
+
+fn toolRequiresActiveWorkbook(name: []const u8) bool {
+    return !(std.mem.eql(u8, name, "list_workbooks") or
+        std.mem.eql(u8, name, "get_active_workbook") or
+        std.mem.eql(u8, name, "switch_workbook") or
+        std.mem.eql(u8, name, "get_status") or
+        std.mem.eql(u8, name, "status_summary"));
+}
+
+fn toolIsNarrative(name: []const u8) bool {
+    return std.mem.eql(u8, name, "requirement_trace") or
+        std.mem.eql(u8, name, "gap_explanation") or
+        std.mem.eql(u8, name, "impact_summary") or
+        std.mem.eql(u8, name, "status_summary") or
+        std.mem.eql(u8, name, "review_summary");
+}
+
+fn workbookContextJson(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) ![]u8 {
+    if (registry.live_config.active_workbook_id) |active_id| {
+        var summary = try registry.summaryForWorkbookId(active_id, alloc);
+        defer summary.deinit(alloc);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(alloc);
+        try buf.appendSlice(alloc, "{\"id\":");
+        try json_util.appendJsonQuoted(&buf, summary.id, alloc);
+        try buf.appendSlice(alloc, ",\"display_name\":");
+        try json_util.appendJsonQuoted(&buf, summary.display_name, alloc);
+        try buf.appendSlice(alloc, ",\"profile\":");
+        try json_util.appendJsonQuoted(&buf, summary.profile, alloc);
+        try buf.appendSlice(alloc, ",\"provider\":");
+        if (summary.provider) |provider| {
+            try json_util.appendJsonQuoted(&buf, provider, alloc);
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
+        try buf.append(alloc, '}');
+        return alloc.dupe(u8, buf.items);
+    }
+    return alloc.dupe(u8, "null");
+}
+
+fn workbookHeading(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) ![]u8 {
+    if (registry.live_config.active_workbook_id) |active_id| {
+        const cfg = workbook.config.findByIdConst(&registry.live_config, active_id) orelse return alloc.dupe(u8, "[Workbook: none]\n\n");
+        return std.fmt.allocPrint(alloc, "[Workbook: {s}]\n\n", .{cfg.display_name});
+    }
+    return alloc.dupe(u8, "[Workbook: none]\n\n");
+}
+
+fn listWorkbooksJson(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) ![]u8 {
+    const visible = try registry.listVisible(alloc);
+    defer workbook.registry.deinitSummarySlice(visible, alloc);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"active_workbook_id\":");
+    try shared.appendJsonStrOpt(&buf, registry.live_config.active_workbook_id, alloc);
+    try buf.appendSlice(alloc, ",\"workbooks\":[");
+    for (visible, 0..) |summary, idx| {
+        if (idx > 0) try buf.append(alloc, ',');
+        try appendWorkbookSummaryJson(&buf, summary, alloc);
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+fn activeWorkbookJson(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"workbook\":");
+    if (registry.live_config.active_workbook_id) |active_id| {
+        var summary = try registry.summaryForWorkbookId(active_id, alloc);
+        defer summary.deinit(alloc);
+        try appendWorkbookSummaryJson(&buf, summary, alloc);
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
+    try buf.append(alloc, '}');
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendWorkbookSummaryJson(buf: *std.ArrayList(u8), summary: workbook.registry.WorkbookSummary, alloc: Allocator) !void {
+    try buf.appendSlice(alloc, "{\"id\":");
+    try shared.appendJsonStr(buf, summary.id, alloc);
+    try buf.appendSlice(alloc, ",\"slug\":");
+    try shared.appendJsonStr(buf, summary.slug, alloc);
+    try buf.appendSlice(alloc, ",\"display_name\":");
+    try shared.appendJsonStr(buf, summary.display_name, alloc);
+    try buf.appendSlice(alloc, ",\"profile\":");
+    try shared.appendJsonStr(buf, summary.profile, alloc);
+    try buf.appendSlice(alloc, ",\"provider\":");
+    try shared.appendJsonStrOpt(buf, summary.provider, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_label\":");
+    try shared.appendJsonStrOpt(buf, summary.workbook_label, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"is_active\":{s},\"removed_at\":", .{
+        if (summary.is_active) "true" else "false",
+    });
+    try shared.appendJsonIntOpt(buf, summary.removed_at, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"last_sync_at\":{d},\"sync_in_progress\":{s},\"has_error\":{s},\"last_error\":", .{
+        summary.last_sync_at,
+        if (summary.sync_in_progress) "true" else "false",
+        if (summary.has_error) "true" else "false",
+    });
+    try shared.appendJsonStrOpt(buf, summary.last_error, alloc);
+    try buf.appendSlice(alloc, ",\"inbox_dir\":");
+    try shared.appendJsonStr(buf, summary.inbox_dir, alloc);
+    try buf.appendSlice(alloc, ",\"db_path\":");
+    try shared.appendJsonStr(buf, summary.db_path, alloc);
+    try buf.append(alloc, '}');
 }
 
 fn nodeMatchesRepo(item: std.json.Value, repo: []const u8) bool {
@@ -1308,11 +1455,22 @@ fn sendResult(req: *std.http.Server.Request, id_raw: []const u8, result_json: []
     try req.respond(resp, .{ .status = .ok, .extra_headers = &json_rpc_headers, .keep_alive = false });
 }
 
-fn toolPayloadResultJson(id_raw: []const u8, payload: ToolPayload, alloc: Allocator) ![]u8 {
+fn toolPayloadResultJson(id_raw: []const u8, tool_name: []const u8, registry: *workbook.registry.WorkbookRegistry, payload: ToolPayload, alloc: Allocator) ![]u8 {
+    const context_json = try workbookContextJson(registry, alloc);
+    defer alloc.free(context_json);
+    const contextual_text = blk: {
+        if (toolIsNarrative(tool_name)) {
+            const heading = try workbookHeading(registry, alloc);
+            defer alloc.free(heading);
+            break :blk try std.fmt.allocPrint(alloc, "{s}{s}", .{ heading, payload.text });
+        }
+        break :blk try alloc.dupe(u8, payload.text);
+    };
+    defer alloc.free(contextual_text);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try std.fmt.format(buf.writer(alloc), "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":", .{id_raw});
-    try json_util.appendJsonQuoted(&buf, payload.text, alloc);
+    try json_util.appendJsonQuoted(&buf, contextual_text, alloc);
     try buf.append(alloc, '}');
     if (payload.note) |note| {
         try buf.appendSlice(alloc, ",{\"type\":\"text\",\"text\":");
@@ -1322,14 +1480,21 @@ fn toolPayloadResultJson(id_raw: []const u8, payload: ToolPayload, alloc: Alloca
     try buf.appendSlice(alloc, "]");
     if (payload.structured_json) |json| {
         try buf.appendSlice(alloc, ",\"structuredContent\":");
-        try buf.appendSlice(alloc, json);
+        try std.fmt.format(buf.writer(alloc), "{{\"workbook\":{s},\"data\":{s}}}", .{ context_json, json });
+    } else if (toolIsNarrative(tool_name)) {
+        try buf.appendSlice(alloc, ",\"structuredContent\":");
+        try buf.appendSlice(alloc, "{\"workbook\":");
+        try buf.appendSlice(alloc, context_json);
+        try buf.appendSlice(alloc, ",\"markdown\":");
+        try json_util.appendJsonQuoted(&buf, contextual_text, alloc);
+        try buf.append(alloc, '}');
     }
     try buf.appendSlice(alloc, "}}");
     return alloc.dupe(u8, buf.items);
 }
 
-fn sendToolPayload(req: *std.http.Server.Request, id_raw: []const u8, payload: ToolPayload, alloc: Allocator) !void {
-    const resp = try toolPayloadResultJson(id_raw, payload, alloc);
+fn sendToolPayload(req: *std.http.Server.Request, id_raw: []const u8, tool_name: []const u8, registry: *workbook.registry.WorkbookRegistry, payload: ToolPayload, alloc: Allocator) !void {
+    const resp = try toolPayloadResultJson(id_raw, tool_name, registry, payload, alloc);
     defer alloc.free(resp);
     try req.respond(resp, .{ .status = .ok, .extra_headers = &json_rpc_headers, .keep_alive = false });
 }
@@ -1370,6 +1535,12 @@ fn findToolForTest(root: std.json.Value, name: []const u8) ?std.json.Value {
         if (std.mem.eql(u8, item_name, name)) return item;
     }
     return null;
+}
+
+fn buildToolPayloadForTest(name: []const u8, args: ?std.json.Value, registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, store: *secure_store.Store, state: *sync_live.SyncState, profile_name: []const u8, alloc: Allocator) !ToolDispatch {
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+    return buildToolPayload(name, args, registry, db, store, state, profile_name, &license_service, null, alloc);
 }
 
 test "json rpc parsing tolerates whitespace after colon" {
@@ -1543,7 +1714,7 @@ test "large output tools honor limit with truncation note" {
     defer store.deinit(testing.allocator);
     var registry = try makeTestRegistry(testing.allocator, &store, "generic");
     defer registry.deinit(testing.allocator);
-    const dispatch = try buildToolPayload("get_rtm", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch = try buildToolPayloadForTest("get_rtm", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     const payload = switch (dispatch) {
         .payload => |payload| payload,
@@ -1551,13 +1722,15 @@ test "large output tools honor limit with truncation note" {
     };
     try testing.expect(payload.note != null);
     try testing.expect(payload.structured_json != null);
-    const resp = try toolPayloadResultJson("1", payload, testing.allocator);
+    const resp = try toolPayloadResultJson("1", "get_rtm", &registry, payload, testing.allocator);
     defer testing.allocator.free(resp);
     var parsed = try parseJsonForTest(resp, testing.allocator);
     defer parsed.deinit();
     const result = json_util.getObjectField(parsed.value, "result") orelse return error.TestUnexpectedResult;
-    try testing.expect(json_util.getObjectField(result, "structuredContent") != null);
-    try testing.expect(json_util.getObjectField(result, "structuredContent").? == .array);
+    const structured = json_util.getObjectField(result, "structuredContent") orelse return error.TestUnexpectedResult;
+    try testing.expect(structured == .object);
+    try testing.expect(json_util.getObjectField(structured, "workbook") != null);
+    try testing.expect(json_util.getObjectField(structured, "data") != null);
 }
 
 test "get_node honors include_edges and include_properties flags" {
@@ -1576,7 +1749,7 @@ test "get_node honors include_edges and include_properties flags" {
     var args_default = std.json.ObjectMap.init(testing.allocator);
     defer args_default.deinit();
     try args_default.put("id", .{ .string = "REQ-001" });
-    const dispatch_default = try buildToolPayload("get_node", .{ .object = args_default }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch_default = try buildToolPayloadForTest("get_node", .{ .object = args_default }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch_default.deinit(testing.allocator);
     const payload_default = switch (dispatch_default) {
         .payload => |payload| payload,
@@ -1591,7 +1764,7 @@ test "get_node honors include_edges and include_properties flags" {
     defer args_no_edges.deinit();
     try args_no_edges.put("id", .{ .string = "REQ-001" });
     try args_no_edges.put("include_edges", .{ .bool = false });
-    const dispatch_no_edges = try buildToolPayload("get_node", .{ .object = args_no_edges }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch_no_edges = try buildToolPayloadForTest("get_node", .{ .object = args_no_edges }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch_no_edges.deinit(testing.allocator);
     const payload_no_edges = switch (dispatch_no_edges) {
         .payload => |payload| payload,
@@ -1606,7 +1779,7 @@ test "get_node honors include_edges and include_properties flags" {
     defer args_no_props.deinit();
     try args_no_props.put("id", .{ .string = "REQ-001" });
     try args_no_props.put("include_properties", .{ .bool = false });
-    const dispatch_no_props = try buildToolPayload("get_node", .{ .object = args_no_props }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch_no_props = try buildToolPayloadForTest("get_node", .{ .object = args_no_props }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch_no_props.deinit(testing.allocator);
     const payload_no_props = switch (dispatch_no_props) {
         .payload => |payload| payload,
@@ -1629,7 +1802,7 @@ test "get_bom_item invalid selector returns specific message" {
     var args_obj = std.json.ObjectMap.init(testing.allocator);
     defer args_obj.deinit();
     try args_obj.put("bom_name", .{ .string = "pcba" });
-    const dispatch = try buildToolPayload("get_bom_item", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch = try buildToolPayloadForTest("get_bom_item", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     switch (dispatch) {
         .invalid_arguments => |msg| try testing.expectEqualStrings("get_bom_item requires either 'id' or the full selector: full_product_identifier, bom_type, bom_name, part, revision", msg),
@@ -1649,7 +1822,7 @@ test "implementation changes tool validates required arguments explicitly" {
     var args_obj = std.json.ObjectMap.init(testing.allocator);
     defer args_obj.deinit();
     try args_obj.put("since", .{ .string = "2026-03-05T00:00:00Z" });
-    const dispatch = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch = try buildToolPayloadForTest("implementation_changes_since", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     switch (dispatch) {
         .invalid_arguments => |msg| try testing.expectEqualStrings("implementation_changes_since requires 'since' and 'node_type'", msg),
@@ -1680,7 +1853,7 @@ test "implementation changes tool returns bounded rows" {
     defer store.deinit(testing.allocator);
     var registry = try makeTestRegistry(testing.allocator, &store, "generic");
     defer registry.deinit(testing.allocator);
-    const dispatch = try buildToolPayload("implementation_changes_since", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch = try buildToolPayloadForTest("implementation_changes_since", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     const payload = switch (dispatch) {
         .payload => |payload| payload,
@@ -1726,7 +1899,7 @@ test "get_bom tool returns product bom tree" {
     var registry = try makeTestRegistry(testing.allocator, &store, "generic");
     defer registry.deinit(testing.allocator);
 
-    const dispatch = try buildToolPayload("get_bom", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    const dispatch = try buildToolPayloadForTest("get_bom", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
     defer dispatch.deinit(testing.allocator);
     const payload = switch (dispatch) {
         .payload => |payload| payload,

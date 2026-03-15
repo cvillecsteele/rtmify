@@ -48,6 +48,14 @@ pub const handlePostRepo = connection.handlePostRepo;
 pub const handlePostRepoResponse = connection.handlePostRepoResponse;
 pub const handleDeleteRepo = connection.handleDeleteRepo;
 pub const handleDeleteRepoResponse = connection.handleDeleteRepoResponse;
+pub const handleGetWorkbooks = connection.handleGetWorkbooks;
+pub const handleGetWorkbooksResponse = connection.handleGetWorkbooksResponse;
+pub const handlePostWorkbooks = connection.handlePostWorkbooks;
+pub const handlePostWorkbooksResponse = connection.handlePostWorkbooksResponse;
+pub const handlePatchWorkbookResponse = connection.handlePatchWorkbookResponse;
+pub const handleActivateWorkbookResponse = connection.handleActivateWorkbookResponse;
+pub const handleRemoveWorkbookResponse = connection.handleRemoveWorkbookResponse;
+pub const handleDeleteWorkbookResponse = connection.handleDeleteWorkbookResponse;
 
 pub const handleProvisionPreview = provision.handleProvisionPreview;
 pub const handleProvision = provision.handleProvision;

@@ -7,3 +7,4 @@ pub const LiveConfig = config.LiveConfig;
 pub const WorkbookConfig = config.WorkbookConfig;
 pub const WorkbookRuntime = runtime.WorkbookRuntime;
 pub const WorkbookRegistry = registry.WorkbookRegistry;
+pub const WorkbookSummary = registry.WorkbookSummary;

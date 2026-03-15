@@ -269,57 +269,25 @@ pub fn main() !void {
         .inbox_dir_override = inbox_dir_override,
     });
     defer registry.deinit(gpa);
-    const active_runtime = try registry.active();
-
-    var startup_license_status = try license_service.getStatus(gpa);
-    defer startup_license_status.deinit(gpa);
-    active_runtime.sync_state.product_enabled.store(startup_license_status.permits_use, .seq_cst);
-    if (!startup_license_status.permits_use) {
-        std.log.warn("license check: {s} — product routes will be gated", .{@tagName(startup_license_status.state)});
-    }
-
     if (profile_name) |name| {
         try workbook.config.setActiveProfile(&registry.live_config, name, gpa);
     }
-    for (repo_paths.items) |path| {
-        var found = false;
-        for (active_runtime.config.repo_paths) |existing| {
-            if (std.mem.eql(u8, existing, path)) {
-                found = true;
-                break;
+    if (registry.active()) |active_runtime| {
+        for (repo_paths.items) |path| {
+            var found = false;
+            for (active_runtime.config.repo_paths) |existing| {
+                if (std.mem.eql(u8, existing, path)) {
+                    found = true;
+                    break;
+                }
             }
+            if (!found) try workbook.config.addActiveRepoPath(&registry.live_config, path, gpa);
         }
-        if (!found) try workbook.config.addActiveRepoPath(&registry.live_config, path, gpa);
-    }
-    active_runtime.config.deinit(gpa);
-    active_runtime.config = try (try registry.activeConfig()).clone(gpa);
+        try registry.syncRuntimeConfigFromActive(gpa);
+    } else |_| {}
     try registry.save(gpa);
 
-    var loaded_active = try connection_mod.loadWorkbookConnection(active_runtime.config, &secure_store, gpa);
-    defer loaded_active.deinit(gpa);
-    if (startup_license_status.permits_use) {
-        if (loaded_active == .active) {
-            const started = maybeStartSync(active_runtime, loaded_active.active, gpa) catch |e| blk: {
-                std.log.warn("sync thread not started: {s}", .{@errorName(e)});
-                break :blk false;
-            };
-            if (started) std.log.info("sync thread started for configured provider connection", .{});
-        }
-    }
-
-    // Always spawn repo scan thread (picks up repos from DB dynamically each cycle)
-    {
-        const scan_ctx = try createRepoScanThreadCtx(std.heap.page_allocator, &active_runtime.db, active_runtime.config.repo_paths, &active_runtime.sync_state);
-        const t = try std.Thread.spawn(.{}, sync_live.repoScanThread, .{scan_ctx});
-        t.detach();
-        std.log.info("repo scan thread started", .{});
-    }
-    {
-        const inbox_ctx = try createInboxThreadCtx(std.heap.page_allocator, &active_runtime.db, &active_runtime.sync_state, active_runtime.config.inbox_dir);
-        const t = try std.Thread.spawn(.{}, external_ingest_inbox.inboxThread, .{inbox_ctx});
-        t.detach();
-        std.log.info("external ingest inbox thread started dir={s}", .{active_runtime.config.inbox_dir});
-    }
+    refreshActiveRuntimeCallback(&registry, &secure_store, &license_service, gpa);
 
     // Find first available port (8000-8010) via quick probe
     var actual_port = port;
@@ -355,7 +323,7 @@ pub fn main() !void {
             .log_path = log_path_value,
         },
         .alloc = gpa,
-        .ensure_sync_started_fn = ensureSyncStartedCallback,
+        .refresh_active_runtime_fn = refreshActiveRuntimeCallback,
     };
     server.listen(actual_port, ctx) catch |e| return e;
 }
@@ -372,6 +340,7 @@ fn createRepoScanThreadCtx(
     db: *graph_live.GraphDb,
     repo_paths: []const []const u8,
     state: *sync_live.SyncState,
+    control: *sync_live.WorkerControl,
 ) !*sync_live.RepoScanCtx {
     const owned_repo_paths = try duplicateStringSlice(alloc, repo_paths);
     errdefer {
@@ -385,6 +354,7 @@ fn createRepoScanThreadCtx(
         .db = db,
         .repo_paths = owned_repo_paths,
         .state = state,
+        .control = control,
         .alloc = alloc,
     };
     return ctx;
@@ -394,6 +364,7 @@ fn createInboxThreadCtx(
     alloc: std.mem.Allocator,
     db: *graph_live.GraphDb,
     state: *sync_live.SyncState,
+    control: *sync_live.WorkerControl,
     inbox_dir: []const u8,
 ) !*external_ingest_inbox.InboxCtx {
     const owned_inbox_dir = try alloc.dupe(u8, inbox_dir);
@@ -404,6 +375,7 @@ fn createInboxThreadCtx(
     ctx.* = .{
         .db = db,
         .state = state,
+        .control = control,
         .inbox_dir = owned_inbox_dir,
         .alloc = alloc,
     };
@@ -435,7 +407,8 @@ test "repo scan thread context cleanup releases owned memory" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
     var state: sync_live.SyncState = .{};
-    const ctx = try createRepoScanThreadCtx(alloc, &db, &.{ "/tmp/repo-a", "/tmp/repo-b" }, &state);
+    var control: sync_live.WorkerControl = .{};
+    const ctx = try createRepoScanThreadCtx(alloc, &db, &.{ "/tmp/repo-a", "/tmp/repo-b" }, &state, &control);
 
     try testing.expect(gpa.total_requested_bytes > 0);
     try testing.expectEqual(@as(usize, 2), ctx.repo_paths.len);
@@ -454,7 +427,8 @@ test "inbox thread context cleanup releases owned memory" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
     var state: sync_live.SyncState = .{};
-    const ctx = try createInboxThreadCtx(alloc, &db, &state, "/tmp/inbox");
+    var control: sync_live.WorkerControl = .{};
+    const ctx = try createInboxThreadCtx(alloc, &db, &state, &control, "/tmp/inbox");
 
     try testing.expect(gpa.total_requested_bytes > 0);
     try testing.expectEqualStrings("/tmp/inbox", ctx.inbox_dir);
@@ -463,33 +437,49 @@ test "inbox thread context cleanup releases owned memory" {
     try testing.expectEqual(@as(usize, 0), gpa.total_requested_bytes);
 }
 
-/// Callback passed to ServerCtx so that POST /api/connection can trigger sync start.
-fn ensureSyncStartedCallback(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, alloc: std.mem.Allocator) void {
-    var runtime = registry.active() catch return;
-    if (runtime.sync_state.sync_started.load(.seq_cst)) return;
+fn stopActiveWorkers(registry: *workbook.registry.WorkbookRegistry, alloc: std.mem.Allocator) void {
+    if (registry.takeActiveWorkers()) |workers| {
+        workers.control.requestStop();
+        if (workers.sync_thread) |thread| thread.join();
+        if (workers.repo_thread) |thread| thread.join();
+        if (workers.inbox_thread) |thread| thread.join();
+        alloc.destroy(workers.control);
+    }
+}
 
-    var loaded = connection_mod.loadWorkbookConnection(runtime.config, secure_store, alloc) catch return;
-    defer loaded.deinit(alloc);
-    if (loaded != .active) return;
-
-    const started = maybeStartSync(runtime, loaded.active, alloc) catch |e| blk: {
-        std.log.warn("POST /api/connection: sync start failed: {s}", .{@errorName(e)});
-        break :blk false;
+fn refreshActiveRuntimeCallback(
+    registry: *workbook.registry.WorkbookRegistry,
+    secure_store: *secure_store_mod.Store,
+    license_service: *license.Service,
+    alloc: std.mem.Allocator,
+) void {
+    stopActiveWorkers(registry, alloc);
+    registry.reloadActiveRuntime(alloc, secure_store) catch |err| switch (err) {
+        error.NoActiveWorkbook => return,
+        else => {
+            std.log.warn("active runtime reload failed: {s}", .{@errorName(err)});
+            return;
+        },
     };
-    if (started) std.log.info("sync thread started via POST /api/connection", .{});
+    startActiveWorkers(registry, secure_store, license_service, alloc) catch |err| {
+        std.log.warn("active workers start failed: {s}", .{@errorName(err)});
+    };
 }
 
 fn maybeStartSync(
     workbook_runtime: *workbook.runtime.WorkbookRuntime,
     active: @import("provider_common.zig").ActiveConnection,
+    control: *sync_live.WorkerControl,
     alloc: std.mem.Allocator,
-) !bool {
+) !std.Thread {
     // Guard: only start once
-    if (workbook_runtime.sync_state.sync_started.cmpxchgStrong(false, true, .seq_cst, .seq_cst) != null) return false;
+    if (workbook_runtime.sync_state.sync_started.cmpxchgStrong(false, true, .seq_cst, .seq_cst) != null) {
+        return error.SyncAlreadyStarted;
+    }
 
     var provider_runtime = online_provider.ProviderRuntime.init(active, alloc) catch {
         workbook_runtime.sync_state.sync_started.store(false, .seq_cst);
-        return false;
+        return error.ProviderInitFailed;
     };
     provider_runtime.deinit(alloc);
 
@@ -498,14 +488,61 @@ fn maybeStartSync(
         .workbook_slug = try alloc.dupe(u8, workbook_runtime.config.slug),
         .profile = @import("profile.zig").fromString(workbook_runtime.config.profile) orelse .generic,
         .active = try active.clone(alloc),
+        .control = control,
         .alloc = alloc,
         .db = &workbook_runtime.db,
         .state = &workbook_runtime.sync_state,
     };
 
-    const t = try std.Thread.spawn(.{}, sync_live.syncThread, .{cfg});
-    t.detach();
-    return true;
+    return std.Thread.spawn(.{}, sync_live.syncThread, .{cfg});
+}
+
+fn startActiveWorkers(
+    registry: *workbook.registry.WorkbookRegistry,
+    secure_store: *secure_store_mod.Store,
+    license_service: *license.Service,
+    alloc: std.mem.Allocator,
+) !void {
+    const runtime = registry.active() catch return;
+    var license_status = try license_service.getStatus(alloc);
+    defer license_status.deinit(alloc);
+    runtime.sync_state.product_enabled.store(license_status.permits_use, .seq_cst);
+    if (!license_status.permits_use) {
+        std.log.warn("license check: {s} — product routes will be gated", .{@tagName(license_status.state)});
+    }
+
+    const control = try alloc.create(sync_live.WorkerControl);
+    control.* = .{};
+    control.requestImmediateSync();
+
+    var workers: workbook.registry.ActiveWorkers = .{ .control = control };
+    errdefer {
+        control.requestStop();
+        if (workers.sync_thread) |thread| thread.join();
+        if (workers.repo_thread) |thread| thread.join();
+        if (workers.inbox_thread) |thread| thread.join();
+        alloc.destroy(control);
+    }
+
+    {
+        const scan_ctx = try createRepoScanThreadCtx(std.heap.page_allocator, &runtime.db, runtime.config.repo_paths, &runtime.sync_state, control);
+        workers.repo_thread = try std.Thread.spawn(.{}, sync_live.repoScanThread, .{scan_ctx});
+        std.log.info("repo scan thread started", .{});
+    }
+    {
+        const inbox_ctx = try createInboxThreadCtx(std.heap.page_allocator, &runtime.db, &runtime.sync_state, control, runtime.config.inbox_dir);
+        workers.inbox_thread = try std.Thread.spawn(.{}, external_ingest_inbox.inboxThread, .{inbox_ctx});
+        std.log.info("external ingest inbox thread started dir={s}", .{runtime.config.inbox_dir});
+    }
+
+    var loaded = try connection_mod.loadWorkbookConnection(runtime.config, secure_store, alloc);
+    defer loaded.deinit(alloc);
+    if (license_status.permits_use and loaded == .active) {
+        workers.sync_thread = try maybeStartSync(runtime, loaded.active, control, alloc);
+        std.log.info("sync thread started for configured provider connection", .{});
+    }
+
+    registry.installActiveWorkers(workers);
 }
 
 fn unescapeNewlines(s: []const u8, alloc: std.mem.Allocator) ![]u8 {
@@ -587,8 +624,7 @@ test "maybeStartSync returns false and resets state for invalid credential" {
         .target = .{ .google = .{ .sheet_id = try alloc.dupe(u8, "sheet-123") } },
     };
     defer active.deinit(alloc);
-
-    const started = try maybeStartSync(&runtime, active, alloc);
-    try testing.expect(!started);
+    var control: sync_live.WorkerControl = .{};
+    try testing.expectError(error.ProviderInitFailed, maybeStartSync(&runtime, active, &control, alloc));
     try testing.expect(!runtime.sync_state.sync_started.load(.seq_cst));
 }
