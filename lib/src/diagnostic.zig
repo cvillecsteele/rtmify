@@ -64,6 +64,11 @@ pub const E = struct {
     pub const id_invalid:               Code = 609;
     pub const product_full_identifier_missing: Code = 610;
     pub const product_duplicate_full_identifier: Code = 611;
+    pub const decomposition_parent_missing: Code = 612;
+    pub const decomposition_child_missing: Code = 613;
+    pub const decomposition_duplicate: Code = 614;
+    pub const decomposition_unknown_requirement: Code = 615;
+    pub const decomposition_self_reference: Code = 616;
     // Layer 6: Semantic validation
     pub const req_empty:                Code = 701;
     pub const req_short:                Code = 702;
@@ -177,6 +182,11 @@ pub const all_codes = [_]Code{
     E.id_invalid,
     E.product_full_identifier_missing,
     E.product_duplicate_full_identifier,
+    E.decomposition_parent_missing,
+    E.decomposition_child_missing,
+    E.decomposition_duplicate,
+    E.decomposition_unknown_requirement,
+    E.decomposition_self_reference,
     E.req_empty,
     E.req_short,
     E.req_no_shall,
@@ -259,6 +269,11 @@ pub const catalog = [_]CatalogEntry{
     .{ .code = 609, .title = "ID is not a valid structured ID — skipped", .category = .row_parsing },
     .{ .code = 610, .title = "Product row missing full_identifier — skipped", .category = .row_parsing },
     .{ .code = 611, .title = "Duplicate Product full_identifier — subsequent row skipped", .category = .row_parsing },
+    .{ .code = 612, .title = "Decomposition row missing parent_id — skipped", .category = .row_parsing },
+    .{ .code = 613, .title = "Decomposition row missing child_id — skipped", .category = .row_parsing },
+    .{ .code = 614, .title = "Duplicate decomposition row — subsequent row skipped", .category = .row_parsing },
+    .{ .code = 615, .title = "Decomposition references unknown Requirement ID — edge skipped", .category = .row_parsing },
+    .{ .code = 616, .title = "Decomposition self-reference is not allowed — row skipped", .category = .row_parsing },
     .{ .code = 701, .title = "Requirement has no statement text", .category = .semantic_validation },
     .{ .code = 702, .title = "Requirement statement is very short (< 10 characters)", .category = .semantic_validation },
     .{ .code = 703, .title = "Requirement has no 'shall'", .category = .semantic_validation },

@@ -118,7 +118,7 @@ const medical_tabs = &[_][]const u8{
 };
 
 const aerospace_tabs = &[_][]const u8{
-    "User Needs", "Requirements", "Tests", "Risks", "Configuration Items", "Product",
+    "User Needs", "Requirements", "Tests", "Risks", "Configuration Items", "Product", "Decomposition",
 };
 
 const automotive_tabs = &[_][]const u8{
@@ -248,5 +248,18 @@ test "all profiles include Product tab" {
             }
         }
         try testing.expect(found);
+    }
+}
+
+test "only aerospace profile includes Decomposition tab" {
+    inline for (profiles) |p| {
+        var found = false;
+        for (p.tabs) |tab| {
+            if (std.mem.eql(u8, tab, "Decomposition")) {
+                found = true;
+                break;
+            }
+        }
+        try testing.expectEqual(p.id == .aerospace, found);
     }
 }

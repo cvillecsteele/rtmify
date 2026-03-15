@@ -170,14 +170,14 @@ Default profiles shipped with the product:
 | Profile | Standards | Tabs Provisioned |
 |---------|----------|-----------------|
 | `medical-device` | ISO 13485, IEC 62304, FDA 21 CFR Part 820 | User Needs, Requirements, Tests, Risks, Product, Design Inputs, Design Outputs, Configuration Items |
-| `aerospace-sw` | DO-178C | User Needs, Requirements, Tests, Risks, Product, Configuration Items |
+| `aerospace-sw` | DO-178C | User Needs, Requirements, Tests, Risks, Product, Configuration Items, Decomposition |
 | `aerospace-quality` | AS9100 | User Needs, Requirements, Tests, Risks, Product, Configuration Items |
 | `automotive-safety` | ISO 26262 | User Needs, Requirements, Tests, Risks, Product, Configuration Items |
 | `automotive-process` | ASPICE | User Needs, Requirements, Tests, Risks, Product |
 | `generic` | No industry-specific gaps, all traceability optional | User Needs, Requirements, Tests, Risks, Product |
 
-`Product` is provisioned and ingested only by Live. Trace and the shared
-template/report path ignore that tab entirely in this cut.
+`Product` and `Decomposition` are provisioned and ingested only by Live. Trace
+and the shared template/report path ignore both tabs entirely in this cut.
 
 ---
 
@@ -186,6 +186,7 @@ template/report path ignore that tab entirely in this cut.
 | Node Type | Description | Properties |
 |-----------|-------------|------------|
 | `Product` | Live-only product declaration row keyed by `full_identifier` for future manufacturing joins | `assembly`, `revision`, `full_identifier`, `description`, `product_status` |
+| `Decomposition` | Live-only requirement refinement rows that create `REFINED_BY` edges between Requirement nodes | `parent_id`, `child_id` |
 | `BOM` | Live-only named hardware or software BOM attached to a Product | `full_product_identifier`, `bom_name`, `bom_type`, `source_format`, `ingested_at` |
 | `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `purl`, `license`, `hashes` |
 | `DesignInput` | Formal design input derived from a requirement (FDA/IEC 62304) | `description`, `source_req`, `status` |
@@ -234,6 +235,10 @@ Live accepts product-scoped external evidence through the local ingestion API an
 - `application/json` for RTMify hardware BOM JSON, CycloneDX JSON, and SPDX JSON
 
 The inbox at `~/.rtmify/inbox` uses the same bearer token and dispatches `.json` and `.csv` files by content. Product matching is exact on `Product.full_identifier`; BOM and SBOM uploads are Live-only and do not affect Trace output.
+
+For DO-178C workbooks, Live also provisions a `Decomposition` tab with
+`parent_id` and `child_id`. Each nonblank row creates `Requirement(parent) --REFINED_BY--> Requirement(child)`.
+There is no writeback or status column on this tab in the first cut.
 
 For operator-focused ingestion instructions and minimal payload examples, see [BOM Ingestion Guide](./bom_ingestion.md).
 
@@ -736,6 +741,12 @@ New MCP tools exposed at `127.0.0.1:8000/mcp`:
 | `chain_gaps` | Industry-profile-specific chain gaps |
 
 The `design_history` tool is the high-value one. An engineer connected to Live via Claude asks "show me the full design history for REQ-001" and gets the complete chain from user need to git blame, with every gap flagged.
+
+Live MCP now exposes structured tool data for machine consumption while keeping
+the existing text payloads for compatibility. JSON-returning tools include
+`structuredContent`; narrative tools remain Markdown-first. BOM occurrence facts
+stored on edge properties are preserved in both JSON node detail and
+human-readable Markdown resource output.
 
 ---
 

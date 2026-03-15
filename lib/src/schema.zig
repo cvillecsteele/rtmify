@@ -18,6 +18,7 @@ const Row = xlsx.Row;
 
 pub const IngestStats = struct {
     product_count: u32 = 0,
+    decomposition_count: u32 = 0,
     requirement_count: u32 = 0,
     user_need_count: u32 = 0,
     test_group_count: u32 = 0,
@@ -30,14 +31,15 @@ pub const IngestStats = struct {
 
 pub const IngestOptions = struct {
     enable_product_tab: bool = false,
+    enable_decomposition_tab: bool = false,
 };
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Ingest all four XLSX sheets into g.
-/// Call order: User Needs → Tests → Requirements → Risks
+/// Ingest workbook sheets into g.
+/// Call order: Product? → User Needs → Tests → Requirements → Decomposition? → Risks
 /// (so that edge targets exist before edges are created).
 pub fn ingest(g: *Graph, sheets: []const SheetData) !void {
     return ingestWithOptions(g, sheets, .{});
@@ -82,6 +84,11 @@ pub fn ingestValidatedWithOptions(g: *Graph, sheets: []const SheetData, diag: *D
         return diagnostic.ValidationError.RequirementsTabNotFound;
     };
     try ingestRequirements(g, req_sheet, diag, &stats);
+    if (options.enable_decomposition_tab) {
+        if (resolveTab(sheets, "Decomposition", decomposition_tab_synonyms, diag)) |s| {
+            try ingestDecomposition(g, s, diag, &stats);
+        }
+    }
     if (resolveTab(sheets, "Risks", risks_synonyms, diag)) |s| {
         try ingestRisks(g, s, diag, &stats);
     } else {
@@ -144,6 +151,9 @@ const config_items_synonyms = &[_][]const u8{
 };
 const product_tab_synonyms = &[_][]const u8{
     "products", "product configuration", "product config", "configurations", "device configurations",
+};
+const decomposition_tab_synonyms = &[_][]const u8{
+    "requirement decomposition", "requirement refinement", "refinement", "hlr-llr",
 };
 
 // ---------------------------------------------------------------------------
@@ -352,6 +362,8 @@ const product_revision_syns    = &[_][]const u8{ "Revision", "Rev", "Version" };
 const product_identifier_syns  = &[_][]const u8{ "Full Identifier", "Full ID", "Canonical Identifier", "Configuration Identifier" };
 const product_description_syns = &[_][]const u8{ "Description", "Product Description", "Name" };
 const product_status_syns      = &[_][]const u8{ "Status", "Lifecycle Status", "Configuration Status" };
+const decomposition_parent_syns = &[_][]const u8{ "Parent ID", "Parent Requirement", "Parent Req ID", "HLR ID", "High-Level Requirement" };
+const decomposition_child_syns  = &[_][]const u8{ "Child ID", "Child Requirement", "Child Req ID", "LLR ID", "Low-Level Requirement" };
 
 // ---------------------------------------------------------------------------
 // Column resolution (Layer 4)
@@ -879,6 +891,70 @@ fn ingestRequirements(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *I
                 try g.addEdge(id, tg_id, .tested_by);
             }
         }
+    }
+}
+
+fn ingestDecomposition(g: *Graph, sheet: SheetData, diag: *Diagnostics, stats: *IngestStats) !void {
+    if (sheet.rows.len < 2) return;
+    const headers = sheet.rows[0];
+    const data = sheet.rows[1..];
+    const a = diag.arena.allocator();
+
+    const c_parent = resolveCol(headers, &.{}, "parent_id", decomposition_parent_syns, sheet.name, diag, false);
+    const c_child = resolveCol(headers, &.{}, "child_id", decomposition_child_syns, sheet.name, diag, false);
+
+    var seen_pairs = std.StringHashMap(void).init(a);
+    defer seen_pairs.deinit();
+
+    for (data, 0..) |row, ri| {
+        const row_num: u32 = @intCast(ri + 2);
+        const raw_parent = cell(row, c_parent);
+        const raw_child = cell(row, c_child);
+
+        if (isBlankEquivalent(raw_parent) and isBlankEquivalent(raw_child)) continue;
+
+        if (isBlankEquivalent(raw_parent)) {
+            try diag.warn(diagnostic.E.decomposition_parent_missing, .row_parsing, sheet.name, row_num,
+                "Decomposition row missing parent_id — skipping", .{});
+            continue;
+        }
+        if (isBlankEquivalent(raw_child)) {
+            try diag.warn(diagnostic.E.decomposition_child_missing, .row_parsing, sheet.name, row_num,
+                "Decomposition row missing child_id — skipping", .{});
+            continue;
+        }
+
+        const parent_id = try normalizeId(raw_parent, a, diag, sheet.name, row_num);
+        if (parent_id.len == 0) continue;
+        const child_id = try normalizeId(raw_child, a, diag, sheet.name, row_num);
+        if (child_id.len == 0) continue;
+
+        if (std.mem.eql(u8, parent_id, child_id)) {
+            try diag.warn(diagnostic.E.decomposition_self_reference, .row_parsing, sheet.name, row_num,
+                "Decomposition self-reference '{s}' is not allowed — skipping", .{parent_id});
+            continue;
+        }
+
+        const pair_key = try std.fmt.allocPrint(a, "{s}\x1f{s}", .{ parent_id, child_id });
+        if (seen_pairs.contains(pair_key)) {
+            try diag.warn(diagnostic.E.decomposition_duplicate, .row_parsing, sheet.name, row_num,
+                "duplicate decomposition row '{s}' -> '{s}' — skipping", .{ parent_id, child_id });
+            continue;
+        }
+
+        const parent = g.getNode(parent_id);
+        const child = g.getNode(child_id);
+        if (parent == null or child == null or
+            parent.?.node_type != .requirement or child.?.node_type != .requirement)
+        {
+            try diag.warn(diagnostic.E.decomposition_unknown_requirement, .row_parsing, sheet.name, row_num,
+                "Decomposition references unknown Requirement ID '{s}' -> '{s}' — skipping", .{ parent_id, child_id });
+            continue;
+        }
+
+        try seen_pairs.put(pair_key, {});
+        try g.addEdge(parent_id, child_id, .refined_by);
+        stats.decomposition_count += 1;
     }
 }
 
@@ -2611,6 +2687,223 @@ test "product tab with header only emits no product declared info" {
     const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_product_tab = true });
     try testing.expectEqual(@as(u32, 0), stats.product_count);
     try testing.expect(diagnosticsContainCode(&d, diagnostic.E.product_none_declared));
+}
+
+test "decomposition tab is ignored by default ingest options" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "REQ-HLR-001", "REQ-LLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidated(&g, sheets, &d);
+    try testing.expectEqual(@as(u32, 0), stats.decomposition_count);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-HLR-001", testing.allocator, &edges);
+    for (edges.items) |edge| {
+        try testing.expect(edge.label != .refined_by);
+    }
+}
+
+test "decomposition tab ingests REFINED_BY edges when enabled" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "REQ-HLR-001", "REQ-LLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 1), stats.decomposition_count);
+
+    var edges: std.ArrayList(graph.Edge) = .empty;
+    defer edges.deinit(testing.allocator);
+    try g.edgesFrom("REQ-HLR-001", testing.allocator, &edges);
+
+    var found = false;
+    for (edges.items) |edge| {
+        if (edge.label == .refined_by and std.mem.eql(u8, edge.to_id, "REQ-LLR-001")) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "decomposition tab missing parent_id emits warning and skips edge" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "", "REQ-LLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.decomposition_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.decomposition_parent_missing));
+}
+
+test "decomposition tab missing child_id emits warning and skips edge" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "REQ-HLR-001", "" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.decomposition_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.decomposition_child_missing));
+}
+
+test "decomposition tab duplicate pair emits warning and keeps first edge" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "REQ-HLR-001", "REQ-LLR-001" },
+        &.{ "REQ-HLR-001", "REQ-LLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 1), stats.decomposition_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.decomposition_duplicate));
+}
+
+test "decomposition tab unknown requirement emits warning and skips edge" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "REQ-HLR-999", "REQ-LLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.decomposition_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.decomposition_unknown_requirement));
+}
+
+test "decomposition tab self-reference emits warning and skips edge" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "REQ-HLR-001", "REQ-HLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.decomposition_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.decomposition_self_reference));
+}
+
+test "decomposition tab invalid structured ID uses existing invalid-id diagnostic" {
+    const decomp_rows: []const []const []const u8 = &.{
+        &.{ "parent_id", "child_id" },
+        &.{ "not/an/id", "REQ-LLR-001" },
+    };
+    const req_rows: []const []const []const u8 = &.{
+        &.{ "ID", "Statement" },
+        &.{ "REQ-HLR-001", "High-level requirement SHALL govern mode logic" },
+        &.{ "REQ-LLR-001", "Low-level requirement SHALL implement mode transition logic" },
+    };
+    const sheets: []const SheetData = &.{
+        .{ .name = "Requirements", .rows = req_rows },
+        .{ .name = "Decomposition", .rows = decomp_rows },
+    };
+
+    var g = Graph.init(testing.allocator);
+    defer g.deinit();
+    var d = Diagnostics.init(testing.allocator);
+    defer d.deinit();
+
+    const stats = try ingestValidatedWithOptions(&g, sheets, &d, .{ .enable_decomposition_tab = true });
+    try testing.expectEqual(@as(u32, 0), stats.decomposition_count);
+    try testing.expect(diagnosticsContainCode(&d, diagnostic.E.id_invalid));
 }
 
 test "existing 4-tab behavior unchanged with DI/DO/CI tabs present" {

@@ -206,11 +206,18 @@ fn runSyncCycle(
     const risk_rows = try runtime.readRows("Risks", a);
     const existing_tabs = try runtime.listTabs(a);
     defer online_provider.freeTabRefs(existing_tabs, a);
+    const profile_name = (try db.getConfig("profile", a)) orelse "generic";
+    const profile_id = profile_mod.fromString(profile_name) orelse .generic;
+    const enable_decomposition_tab = profile_id == .aerospace;
     // Extended tabs — only fetch them if they actually exist to avoid noisy provider errors.
     const di_rows = try readOptionalTab(runtime, existing_tabs, "Design Inputs", a);
     const do_rows = try readOptionalTab(runtime, existing_tabs, "Design Outputs", a);
     const ci_rows = try readOptionalTab(runtime, existing_tabs, "Configuration Items", a);
     const product_rows = try readOptionalTab(runtime, existing_tabs, "Product", a);
+    const decomposition_rows = if (enable_decomposition_tab)
+        try readOptionalTab(runtime, existing_tabs, "Decomposition", a)
+    else
+        &.{};
 
     // 2. Convert [][][]const u8 rows to xlsx.SheetData
     const sheet_data = [_]xlsx.SheetData{
@@ -222,6 +229,7 @@ fn runSyncCycle(
         .{ .name = "Design Outputs", .rows = @ptrCast(do_rows) },
         .{ .name = "Configuration Items", .rows = @ptrCast(ci_rows) },
         .{ .name = "Product", .rows = @ptrCast(product_rows) },
+        .{ .name = "Decomposition", .rows = @ptrCast(decomposition_rows) },
     };
 
     // 3. Ingest into ephemeral in-memory Graph via schema.zig
@@ -231,7 +239,10 @@ fn runSyncCycle(
     var diag = @import("rtmify").diagnostic.Diagnostics.init(a);
     defer diag.deinit();
 
-    _ = schema.ingestValidatedWithOptions(&g, &sheet_data, &diag, .{ .enable_product_tab = true }) catch |e| {
+    _ = schema.ingestValidatedWithOptions(&g, &sheet_data, &diag, .{
+        .enable_product_tab = true,
+        .enable_decomposition_tab = enable_decomposition_tab,
+    }) catch |e| {
         std.log.warn("sync: ingest errors (continuing): {s}", .{@errorName(e)});
     };
 

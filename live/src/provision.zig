@@ -44,6 +44,9 @@ const tab_header_map = &[_]TabHeaders{
     .{ .name = "Product", .headers = &.{
         "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status",
     }},
+    .{ .name = "Decomposition", .headers = &.{
+        "parent_id", "child_id",
+    }},
 };
 
 fn headersForTab(tab_name: []const u8) ?[]const []const u8 {
@@ -199,6 +202,14 @@ test "headersForTab returns Product headers" {
     try testing.expectEqualStrings("RTMify Status", hdrs.?[5]);
 }
 
+test "headersForTab returns Decomposition headers" {
+    const hdrs = headersForTab("Decomposition");
+    try testing.expect(hdrs != null);
+    try testing.expectEqual(@as(usize, 2), hdrs.?.len);
+    try testing.expectEqualStrings("parent_id", hdrs.?[0]);
+    try testing.expectEqualStrings("child_id", hdrs.?[1]);
+}
+
 test "headersForTab returns null for unknown tab" {
     try testing.expect(headersForTab("Unknown Tab XYZ") == null);
 }
@@ -216,8 +227,9 @@ test "collectMissingTabs excludes genuinely existing tabs with spaces" {
         for (missing) |tab| alloc.free(tab);
         alloc.free(missing);
     }
-    try testing.expectEqual(@as(usize, 4), missing.len);
+    try testing.expectEqual(@as(usize, 5), missing.len);
     try testing.expectEqualStrings("Tests", missing[0]);
+    try testing.expectEqualStrings("Decomposition", missing[4]);
 }
 
 test "columnLetters maps spreadsheet columns" {
