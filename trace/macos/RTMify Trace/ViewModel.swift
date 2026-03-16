@@ -2,6 +2,40 @@ import Foundation
 import SwiftUI
 import AppKit
 
+enum TraceProfile: Int32, CaseIterable, Identifiable {
+    case generic = 0
+    case medical = 1
+    case aerospace = 2
+    case automotive = 3
+
+    var id: Int32 { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .generic: return "Generic"
+        case .medical: return "Medical"
+        case .aerospace: return "Aerospace"
+        case .automotive: return "Automotive"
+        }
+    }
+}
+
+struct AnalysisSummary {
+    let profile: TraceProfile
+    let shortName: String
+    let displayName: String
+    let standards: String
+    let warningCount: Int
+    let genericGapCount: Int
+    let profileGapCount: Int
+    let totalGapCount: Int
+}
+
+struct LoadedGraph {
+    let graph: OpaquePointer
+    let summary: AnalysisSummary
+}
+
 #if SWIFT_PACKAGE
 struct BridgeError: Error {
     let message: String
@@ -16,45 +50,48 @@ struct LicenseStatus {
     let licenseSigningKeyFingerprint: String? = nil
 }
 
-func rtmifyLoad(path: String) async throws -> OpaquePointer { throw BridgeError(message: "not available in tests") }
+func rtmifyLoad(path: String, profile: TraceProfile) async throws -> LoadedGraph {
+    throw BridgeError(message: "not available in tests")
+}
 func rtmifyGenerate(graph: OpaquePointer, format: String, outputPath: String, projectName: String) async throws {}
 func rtmifyLicenseStatus() throws -> LicenseStatus { throw BridgeError(message: "not available in tests") }
 func rtmifyInstallLicense(path: String) async throws -> LicenseStatus { throw BridgeError(message: "not available in tests") }
 func rtmifyClearLicense() async throws -> LicenseStatus { throw BridgeError(message: "not available in tests") }
 func rtmifyRecordSuccessfulUse() async throws {}
 func rtmify_free(_ graph: OpaquePointer) {}
-func rtmify_gap_count(_ graph: OpaquePointer) -> Int32 { 0 }
-func rtmify_warning_count() -> Int32 { 0 }
 #endif
 
 struct FileSummary {
     let path: String
     let displayName: String
-    let gapCount: Int
-    let warningCount: Int
+    let analysis: AnalysisSummary
 }
 
 struct GenerateResult {
     let outputPaths: [String]
-    let gapCount: Int
+    let analysis: AnalysisSummary
 }
 
 enum AppState {
     case licenseGate
     case dropZone
+    case loading(message: String)
     case fileLoaded(summary: FileSummary)
-    case generating
+    case generating(message: String)
     case done(result: GenerateResult)
 }
 
 @MainActor
 final class ViewModel: ObservableObject {
+    typealias WorkbookLoader = (String, TraceProfile) async throws -> LoadedGraph
+    typealias ReportGenerator = (OpaquePointer, String, String, String) async throws -> Void
     typealias LicenseStatusFetcher = () throws -> LicenseStatus
     typealias LicenseInstaller = (String) async throws -> LicenseStatus
     typealias LicenseClearer = () async throws -> LicenseStatus
     typealias SuccessfulUseRecorder = () async throws -> Void
 
     @Published var state: AppState = .dropZone
+    @Published var selectedProfile: TraceProfile = .generic
     @Published var errorMessage: String? = nil
     @Published var licenseError: String? = nil
     @Published var licenseStatusMessage: String? = nil
@@ -63,17 +100,23 @@ final class ViewModel: ObservableObject {
 
     private var graph: OpaquePointer? = nil
     private var loadedPath: String? = nil
+    private let loadWorkbook: WorkbookLoader
+    private let generateReport: ReportGenerator
     private let fetchLicenseStatus: LicenseStatusFetcher
     private let installLicenseAtPath: LicenseInstaller
     private let clearInstalledLicense: LicenseClearer
     private let recordSuccessfulUse: SuccessfulUseRecorder
 
     init(
+        loadWorkbook: @escaping WorkbookLoader = rtmifyLoad,
+        generateReport: @escaping ReportGenerator = rtmifyGenerate,
         fetchLicenseStatus: @escaping LicenseStatusFetcher = rtmifyLicenseStatus,
         installLicenseAtPath: @escaping LicenseInstaller = rtmifyInstallLicense,
         clearInstalledLicense: @escaping LicenseClearer = rtmifyClearLicense,
         recordSuccessfulUse: @escaping SuccessfulUseRecorder = rtmifyRecordSuccessfulUse
     ) {
+        self.loadWorkbook = loadWorkbook
+        self.generateReport = generateReport
         self.fetchLicenseStatus = fetchLicenseStatus
         self.installLicenseAtPath = installLicenseAtPath
         self.clearInstalledLicense = clearInstalledLicense
@@ -147,22 +190,30 @@ final class ViewModel: ObservableObject {
 
     func load(path: String) {
         freeGraph()
+        state = .loading(message: "Analyzing workbook for \(selectedProfile.displayName) profile...")
         Task {
             do {
-                let g = try await rtmifyLoad(path: path)
-                graph = g
+                let loaded = try await loadWorkbook(path, selectedProfile)
+                graph = loaded.graph
                 loadedPath = path
-                let gaps = Int(rtmify_gap_count(g))
-                let warnings = Int(rtmify_warning_count())
                 let name = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
-                let summary = FileSummary(path: path, displayName: name,
-                                         gapCount: gaps, warningCount: warnings)
+                let summary = FileSummary(path: path, displayName: name, analysis: loaded.summary)
                 state = .fileLoaded(summary: summary)
             } catch let e as BridgeError {
+                state = .dropZone
                 errorMessage = e.message
             } catch {
+                state = .dropZone
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    func updateSelectedProfile(_ profile: TraceProfile) {
+        guard selectedProfile != profile else { return }
+        selectedProfile = profile
+        if let path = loadedPath {
+            load(path: path)
         }
     }
 
@@ -175,11 +226,11 @@ final class ViewModel: ObservableObject {
 
     func generate(format: String) {
         guard let g = graph, let inputPath = loadedPath else { return }
-        let gapCount = Int(rtmify_gap_count(g))
+        guard case .fileLoaded(let summary) = state else { return }
         let projectName = URL(fileURLWithPath: inputPath)
             .deletingPathExtension().lastPathComponent
 
-        state = .generating
+        state = .generating(message: "Generating \(selectedProfile.displayName) report...")
 
         Task {
             do {
@@ -187,29 +238,22 @@ final class ViewModel: ObservableObject {
                     var paths: [String] = []
                     for fmt in ["pdf", "docx", "md"] {
                         let out = outputPath(forInput: inputPath, format: fmt)
-                        try await rtmifyGenerate(graph: g, format: fmt,
-                                                 outputPath: out, projectName: projectName)
+                        try await generateReport(g, fmt, out, projectName)
                         paths.append(out)
                     }
                     try? await recordSuccessfulUse()
-                    state = .done(result: GenerateResult(outputPaths: paths, gapCount: gapCount))
+                    state = .done(result: GenerateResult(outputPaths: paths, analysis: summary.analysis))
                 } else {
                     let out = outputPath(forInput: inputPath, format: format)
-                    try await rtmifyGenerate(graph: g, format: format,
-                                             outputPath: out, projectName: projectName)
+                    try await generateReport(g, format, out, projectName)
                     try? await recordSuccessfulUse()
-                    state = .done(result: GenerateResult(outputPaths: [out], gapCount: gapCount))
+                    state = .done(result: GenerateResult(outputPaths: [out], analysis: summary.analysis))
                 }
             } catch let e as BridgeError {
-                // Restore file-loaded state on error
-                let warnings = Int(rtmify_warning_count())
-                let name = URL(fileURLWithPath: inputPath).deletingPathExtension().lastPathComponent
-                let summary = FileSummary(path: inputPath, displayName: name,
-                                         gapCount: gapCount, warningCount: warnings)
                 state = .fileLoaded(summary: summary)
                 errorMessage = e.message
             } catch {
-                state = .dropZone
+                state = .fileLoaded(summary: summary)
                 errorMessage = error.localizedDescription
             }
         }

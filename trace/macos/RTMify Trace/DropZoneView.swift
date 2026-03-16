@@ -52,6 +52,26 @@ struct DropZoneView: View {
 
             // Controls
             VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Profile")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Profile", selection: Binding(
+                        get: { vm.selectedProfile },
+                        set: { vm.updateSelectedProfile($0) }
+                    )) {
+                        ForEach(TraceProfile.allCases) { profile in
+                            Text(profile.displayName).tag(profile)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Profiles change validation rules, gap analysis, and report sections.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 24)
+
                 Picker("Format", selection: $format) {
                     Text("PDF").tag("pdf")
                     Text("Word").tag("docx")
@@ -102,8 +122,17 @@ struct DropZoneView: View {
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
 
-            if summary.gapCount > 0 {
-                Label("\(summary.gapCount) gap\(summary.gapCount == 1 ? "" : "s") detected",
+            Text("Profile: \(summary.analysis.displayName)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("Standards: \(summary.analysis.standards)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            if summary.analysis.totalGapCount > 0 {
+                Label("\(summary.analysis.totalGapCount) gap\(summary.analysis.totalGapCount == 1 ? "" : "s") detected",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.yellow)
@@ -112,8 +141,14 @@ struct DropZoneView: View {
                     .background(Color.yellow.opacity(0.15), in: Capsule())
             }
 
-            if summary.warningCount > 0 {
-                Text("\(summary.warningCount) warning\(summary.warningCount == 1 ? "" : "s")")
+            if summary.analysis.profileGapCount > 0 {
+                Text("\(summary.analysis.genericGapCount) generic + \(summary.analysis.profileGapCount) profile-specific")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if summary.analysis.warningCount > 0 {
+                Text("\(summary.analysis.warningCount) warning\(summary.analysis.warningCount == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

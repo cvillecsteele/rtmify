@@ -15,14 +15,29 @@ struct DoneView: View {
             Text("Report Generated")
                 .font(.title2.bold())
 
-            if result.gapCount > 0 {
-                Label("\(result.gapCount) gap\(result.gapCount == 1 ? "" : "s") found in RTM",
+            Text("Profile: \(result.analysis.displayName)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text(result.analysis.standards)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            if result.analysis.totalGapCount > 0 {
+                Label("\(result.analysis.totalGapCount) gap\(result.analysis.totalGapCount == 1 ? "" : "s") found in RTM",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.yellow)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(Color.yellow.opacity(0.15), in: Capsule())
+            }
+
+            if result.analysis.profileGapCount > 0 {
+                Text("\(result.analysis.genericGapCount) generic + \(result.analysis.profileGapCount) profile-specific")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 6) {

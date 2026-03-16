@@ -17,6 +17,7 @@ pub const diagnostic = @import("diagnostic.zig");
 pub const profile = @import("profile.zig");
 pub const chain = @import("chain.zig");
 pub const report = @import("report.zig");
+pub const analysis = @import("analysis.zig");
 
 // ---------------------------------------------------------------------------
 // C ABI status codes
@@ -64,6 +65,24 @@ pub const RtmifyLicenseStatus = extern struct {
     license_signing_key_fingerprint: [65]u8,
 };
 
+pub const RtmifyProfile = enum(c_int) {
+    generic = 0,
+    medical = 1,
+    aerospace = 2,
+    automotive = 3,
+};
+
+pub const RtmifyAnalysisSummary = extern struct {
+    profile: c_int,
+    profile_short_name: [16]u8,
+    profile_display_name: [32]u8,
+    profile_standards: [128]u8,
+    warning_count: c_int,
+    generic_gap_count: c_int,
+    profile_gap_count: c_int,
+    total_gap_count: c_int,
+};
+
 // ---------------------------------------------------------------------------
 // Opaque graph handle (heap-allocated, owns its GPA and Graph)
 // ---------------------------------------------------------------------------
@@ -71,6 +90,9 @@ pub const RtmifyLicenseStatus = extern struct {
 pub const RtmifyGraph = struct {
     gpa_state: std.heap.GeneralPurposeAllocator(.{}),
     g: graph.Graph,
+    profile: profile.ProfileId,
+    warning_count: c_int,
+    report_ctx: ?report.ReportContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -94,11 +116,71 @@ pub export fn rtmify_last_error() [*:0]const u8 {
     return @ptrCast(&last_error_buf);
 }
 
+fn toRtmifyProfile(profile_id: profile.ProfileId) RtmifyProfile {
+    return switch (profile_id) {
+        .generic => .generic,
+        .medical => .medical,
+        .aerospace => .aerospace,
+        .automotive => .automotive,
+    };
+}
+
+fn fromRtmifyProfile(value: c_int) ?profile.ProfileId {
+    return switch (value) {
+        @intFromEnum(RtmifyProfile.generic) => .generic,
+        @intFromEnum(RtmifyProfile.medical) => .medical,
+        @intFromEnum(RtmifyProfile.aerospace) => .aerospace,
+        @intFromEnum(RtmifyProfile.automotive) => .automotive,
+        else => null,
+    };
+}
+
+fn writeFixedCString(dest: anytype, src: []const u8) void {
+    @memset(dest, 0);
+    const len = @min(src.len, dest.len - 1);
+    @memcpy(dest[0..len], src[0..len]);
+}
+
+fn fillAnalysisSummary(handle: *const RtmifyGraph, out_summary: *RtmifyAnalysisSummary) void {
+    const prof = profile.get(handle.profile);
+    var generic_gap_count: c_int = 0;
+    var profile_gap_count: c_int = 0;
+    var total_gap_count: c_int = 0;
+
+    if (handle.report_ctx) |ctx| {
+        for (ctx.generic_gaps) |gap| {
+            if (gap.severity == .hard) generic_gap_count += 1;
+        }
+        for (ctx.profile_gaps) |gap| {
+            if (gap.severity == .err) profile_gap_count += 1;
+        }
+        total_gap_count = @intCast(@min(report.hardGapCount(ctx.merged_gaps), @as(usize, std.math.maxInt(c_int))));
+    } else {
+        const count = computeGapCount(&handle.g) catch 0;
+        total_gap_count = @intCast(@min(count, @as(usize, std.math.maxInt(c_int))));
+        generic_gap_count = total_gap_count;
+    }
+
+    out_summary.* = .{
+        .profile = @intFromEnum(toRtmifyProfile(handle.profile)),
+        .profile_short_name = undefined,
+        .profile_display_name = undefined,
+        .profile_standards = undefined,
+        .warning_count = handle.warning_count,
+        .generic_gap_count = generic_gap_count,
+        .profile_gap_count = profile_gap_count,
+        .total_gap_count = total_gap_count,
+    };
+    writeFixedCString(&out_summary.profile_short_name, prof.short_name);
+    writeFixedCString(&out_summary.profile_display_name, prof.name);
+    writeFixedCString(&out_summary.profile_standards, prof.standards);
+}
+
 // ---------------------------------------------------------------------------
 // Internal helper: load sheets into an already-initialised handle
 // ---------------------------------------------------------------------------
 
-fn loadSheets(handle: *RtmifyGraph, path: []const u8) RtmifyStatus {
+fn loadSheetsWithProfile(handle: *RtmifyGraph, path: []const u8, profile_id: profile.ProfileId) RtmifyStatus {
     const gpa = handle.gpa_state.allocator();
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
     defer parse_arena.deinit();
@@ -120,13 +202,25 @@ fn loadSheets(handle: *RtmifyGraph, path: []const u8) RtmifyStatus {
         }
     };
 
-    _ = schema.ingestValidated(&handle.g, sheets, &diag) catch |err| {
+    analysis.warnMissingProfileTabs(sheets, profile_id, &diag) catch |err| {
+        last_warning_count = @intCast(diag.warning_count);
+        setError("failed to inspect workbook tabs: {s}", .{@errorName(err)});
+        return .err_missing_tab;
+    };
+
+    _ = schema.ingestValidatedWithOptions(&handle.g, sheets, &diag, analysis.ingestOptionsForProfile(profile_id)) catch |err| {
         last_warning_count = @intCast(diag.warning_count);
         setError("failed to ingest spreadsheet: {s}", .{@errorName(err)});
         return .err_missing_tab;
     };
 
     last_warning_count = @intCast(diag.warning_count);
+    handle.warning_count = last_warning_count;
+    handle.profile = profile_id;
+    handle.report_ctx = report.buildReportContext(&handle.g, profile_id, gpa) catch |err| {
+        setError("failed to analyze workbook: {s}", .{@errorName(err)});
+        return .err_missing_tab;
+    };
     return .ok;
 }
 
@@ -135,7 +229,21 @@ fn loadSheets(handle: *RtmifyGraph, path: []const u8) RtmifyStatus {
 // ---------------------------------------------------------------------------
 
 pub export fn rtmify_load(xlsx_path: [*:0]const u8, out_graph: **RtmifyGraph) RtmifyStatus {
+    var summary: RtmifyAnalysisSummary = undefined;
+    return rtmify_load_with_profile(xlsx_path, @intFromEnum(RtmifyProfile.generic), out_graph, &summary);
+}
+
+pub export fn rtmify_load_with_profile(
+    xlsx_path: [*:0]const u8,
+    profile_value: c_int,
+    out_graph: **RtmifyGraph,
+    out_summary: *RtmifyAnalysisSummary,
+) RtmifyStatus {
     const path = std.mem.span(xlsx_path);
+    const profile_id = fromRtmifyProfile(profile_value) orelse {
+        setError("invalid profile: {d}", .{profile_value});
+        return .err_invalid_xlsx;
+    };
 
     const handle = std.heap.page_allocator.create(RtmifyGraph) catch {
         setError("out of memory", .{});
@@ -144,8 +252,11 @@ pub export fn rtmify_load(xlsx_path: [*:0]const u8, out_graph: **RtmifyGraph) Rt
     handle.gpa_state = .init;
     const gpa = handle.gpa_state.allocator();
     handle.g = graph.Graph.init(gpa);
+    handle.profile = .generic;
+    handle.warning_count = 0;
+    handle.report_ctx = null;
 
-    const status = loadSheets(handle, path);
+    const status = loadSheetsWithProfile(handle, path, profile_id);
     if (status != .ok) {
         handle.g.deinit();
         _ = handle.gpa_state.deinit();
@@ -153,6 +264,7 @@ pub export fn rtmify_load(xlsx_path: [*:0]const u8, out_graph: **RtmifyGraph) Rt
         return status;
     }
 
+    fillAnalysisSummary(handle, out_summary);
     out_graph.* = handle;
     return .ok;
 }
@@ -162,6 +274,7 @@ pub export fn rtmify_load(xlsx_path: [*:0]const u8, out_graph: **RtmifyGraph) Rt
 // ---------------------------------------------------------------------------
 
 pub export fn rtmify_free(handle: *RtmifyGraph) void {
+    if (handle.report_ctx) |ctx| report.deinitReportContext(ctx, handle.gpa_state.allocator());
     handle.g.deinit();
     _ = handle.gpa_state.deinit();
     std.heap.page_allocator.destroy(handle);
@@ -178,8 +291,16 @@ fn computeGapCount(g: *const graph.Graph) !usize {
 }
 
 pub export fn rtmify_gap_count(handle: *const RtmifyGraph) c_int {
+    if (handle.report_ctx) |ctx| {
+        return @intCast(@min(report.hardGapCount(ctx.merged_gaps), @as(usize, std.math.maxInt(c_int))));
+    }
     const count = computeGapCount(&handle.g) catch return -1;
     return @intCast(@min(count, @as(usize, std.math.maxInt(c_int))));
+}
+
+pub export fn rtmify_graph_summary(handle: *const RtmifyGraph, out_summary: *RtmifyAnalysisSummary) RtmifyStatus {
+    fillAnalysisSummary(handle, out_summary);
+    return .ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +357,27 @@ pub export fn rtmify_generate(
     defer file.close();
     const dw = file.deprecatedWriter();
 
-    if (std.mem.eql(u8, fmt_str, "md")) {
+    if (handle.report_ctx) |ctx| {
+        if (std.mem.eql(u8, fmt_str, "md")) {
+            render_md.renderMdWithContext(&handle.g, ctx, proj_name, timestamp, dw) catch |err| {
+                setError("markdown render failed: {s}", .{@errorName(err)});
+                return .err_output;
+            };
+        } else if (std.mem.eql(u8, fmt_str, "docx")) {
+            render_docx.renderDocxWithContext(&handle.g, ctx, proj_name, timestamp, dw) catch |err| {
+                setError("docx render failed: {s}", .{@errorName(err)});
+                return .err_output;
+            };
+        } else if (std.mem.eql(u8, fmt_str, "pdf")) {
+            render_pdf.renderPdfWithContext(&handle.g, ctx, proj_name, timestamp, dw) catch |err| {
+                setError("pdf render failed: {s}", .{@errorName(err)});
+                return .err_output;
+            };
+        } else {
+            setError("unknown format: {s}", .{fmt_str});
+            return .err_output;
+        }
+    } else if (std.mem.eql(u8, fmt_str, "md")) {
         render_md.renderMd(&handle.g, proj_name, timestamp, dw) catch |err| {
             setError("markdown render failed: {s}", .{@errorName(err)});
             return .err_output;
@@ -568,6 +709,7 @@ test "lib imports" {
     _ = license;
     _ = render_pdf;
     _ = diagnostic;
+    _ = analysis;
 }
 
 test "rtmify_last_error is valid pointer" {
@@ -590,6 +732,9 @@ test "rtmify_gap_count empty graph" {
     defer _ = handle.gpa_state.deinit();
     handle.g = graph.Graph.init(handle.gpa_state.allocator());
     defer handle.g.deinit();
+    handle.profile = .generic;
+    handle.warning_count = 0;
+    handle.report_ctx = null;
 
     try testing.expectEqual(@as(c_int, 0), rtmify_gap_count(handle));
 }
@@ -601,6 +746,9 @@ test "rtmify_gap_count counts only hard gaps" {
     defer _ = handle.gpa_state.deinit();
     handle.g = graph.Graph.init(handle.gpa_state.allocator());
     defer handle.g.deinit();
+    handle.profile = .generic;
+    handle.warning_count = 0;
+    handle.report_ctx = null;
 
     try handle.g.addNode("REQ-001", .requirement, &.{});
     try handle.g.addNode("REQ-002", .requirement, &.{.{ .key = "declared_test_group_ref_count", .value = "1" }});
@@ -613,4 +761,23 @@ test "rtmify_gap_count counts only hard gaps" {
     // RSK-001 = no mitigation requirement = 1 hard gap
     // UN-001 and TG-001 contribute advisory gaps only
     try testing.expectEqual(@as(c_int, 5), rtmify_gap_count(handle));
+}
+
+test "rtmify_load_with_profile on missing file returns file-not-found" {
+    var handle: *RtmifyGraph = undefined;
+    var summary: RtmifyAnalysisSummary = undefined;
+    const status = rtmify_load_with_profile("/nonexistent/path/to/file.xlsx", @intFromEnum(RtmifyProfile.medical), &handle, &summary);
+    try testing.expectEqual(RtmifyStatus.err_file_not_found, status);
+}
+
+test "rtmify_load_with_profile populates medical summary" {
+    var handle: *RtmifyGraph = undefined;
+    var summary: RtmifyAnalysisSummary = undefined;
+    const status = rtmify_load_with_profile("test/fixtures/RTMify_Profile_Tabs_Golden.xlsx", @intFromEnum(RtmifyProfile.medical), &handle, &summary);
+    try testing.expectEqual(RtmifyStatus.ok, status);
+    defer rtmify_free(handle);
+
+    try testing.expectEqual(@as(c_int, @intFromEnum(RtmifyProfile.medical)), summary.profile);
+    try testing.expect(summary.profile_gap_count > 0);
+    try testing.expect(summary.total_gap_count >= summary.profile_gap_count);
 }

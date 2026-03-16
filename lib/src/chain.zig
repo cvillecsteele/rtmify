@@ -129,7 +129,7 @@ fn appendGap(check: SpecialGapCheck, node_id: []const u8, message: []const u8, a
         .gap_type = try alloc.dupe(u8, check.gap_type),
         .node_id = try alloc.dupe(u8, node_id),
         .severity = check.severity,
-        .message = try alloc.dupe(u8, message),
+        .message = message,
         .profile_rule = try alloc.dupe(u8, check.profile_rule),
         .clause = if (check.clause) |clause| try alloc.dupe(u8, clause) else null,
     });

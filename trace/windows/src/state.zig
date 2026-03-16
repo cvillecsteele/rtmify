@@ -24,14 +24,25 @@ pub const AppStateTag = enum {
 pub const FileSummary = struct {
     path_utf8: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
     display_name: [256:0]u8 = std.mem.zeroes([256:0]u8),
-    gap_count: i32 = 0,
+    profile: bridge.RtmifyProfile = .generic,
+    profile_display_name: [32:0]u8 = std.mem.zeroes([32:0]u8),
+    profile_standards: [128:0]u8 = std.mem.zeroes([128:0]u8),
+    generic_gap_count: i32 = 0,
+    profile_gap_count: i32 = 0,
+    total_gap_count: i32 = 0,
     warning_count: i32 = 0,
 };
 
 pub const GenerateResult = struct {
     output_paths: [3][1024:0]u8 = std.mem.zeroes([3][1024:0]u8),
     path_count: usize = 0,
-    gap_count: i32 = 0,
+    profile: bridge.RtmifyProfile = .generic,
+    profile_display_name: [32:0]u8 = std.mem.zeroes([32:0]u8),
+    profile_standards: [128:0]u8 = std.mem.zeroes([128:0]u8),
+    generic_gap_count: i32 = 0,
+    profile_gap_count: i32 = 0,
+    total_gap_count: i32 = 0,
+    warning_count: i32 = 0,
 };
 
 pub const AppState = struct {
@@ -41,6 +52,7 @@ pub const AppState = struct {
     result: ?GenerateResult = null,
     activation_error: [256:0]u8 = std.mem.zeroes([256:0]u8),
     has_activation_error: bool = false,
+    selected_profile: bridge.RtmifyProfile = .generic,
     format: Format = .pdf,
 };
 

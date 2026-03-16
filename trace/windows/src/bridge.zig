@@ -33,11 +33,29 @@ pub const RTMIFY_ERR_MISSING_TAB: i32 = 3;
 pub const RTMIFY_ERR_LICENSE: i32 = 4;
 pub const RTMIFY_ERR_OUTPUT: i32 = 5;
 
+pub const RtmifyProfile = enum(i32) {
+    generic = 0,
+    medical = 1,
+    aerospace = 2,
+    automotive = 3,
+};
+
 // ---------------------------------------------------------------------------
 // Opaque graph handle
 // ---------------------------------------------------------------------------
 
 pub const RtmifyGraph = opaque {};
+pub const RtmifyAnalysisSummary = extern struct {
+    profile: i32,
+    profile_short_name: [16]u8,
+    profile_display_name: [32]u8,
+    profile_standards: [128]u8,
+    warning_count: i32,
+    generic_gap_count: i32,
+    profile_gap_count: i32,
+    total_gap_count: i32,
+};
+
 pub const RtmifyLicenseStatus = extern struct {
     state: i32,
     permits_use: i32,
@@ -57,6 +75,12 @@ pub extern fn rtmify_load(
     xlsx_path: [*:0]const u8,
     out_graph: **RtmifyGraph,
 ) i32;
+pub extern fn rtmify_load_with_profile(
+    xlsx_path: [*:0]const u8,
+    profile: i32,
+    out_graph: **RtmifyGraph,
+    out_summary: *RtmifyAnalysisSummary,
+) i32;
 
 pub extern fn rtmify_generate(
     graph: *const RtmifyGraph,
@@ -66,6 +90,7 @@ pub extern fn rtmify_generate(
 ) i32;
 
 pub extern fn rtmify_gap_count(graph: *const RtmifyGraph) i32;
+pub extern fn rtmify_graph_summary(graph: *const RtmifyGraph, out_summary: *RtmifyAnalysisSummary) i32;
 pub extern fn rtmify_warning_count() i32;
 pub extern fn rtmify_last_error() [*:0]const u8;
 pub extern fn rtmify_free(graph: *RtmifyGraph) void;
@@ -91,6 +116,7 @@ pub const WM_LICENSE_COMPLETE: UINT = WM_APP + 3;
 pub const LoadContext = struct {
     hwnd: HWND,
     path_utf8: [1024:0]u8,
+    profile: RtmifyProfile,
 };
 
 pub const GenerateContext = struct {
@@ -108,39 +134,105 @@ pub const LicenseInstallContext = struct {
     path: [1024:0]u8,
 };
 
+pub const LoadResult = struct {
+    status: i32,
+    graph: ?*RtmifyGraph,
+    summary: RtmifyAnalysisSummary,
+    path_utf8: [1024:0]u8,
+    error_message: [512:0]u8,
+};
+
+pub const GenerateResult = struct {
+    status: i32,
+    error_message: [512:0]u8,
+};
+
+pub const LicenseInstallResult = struct {
+    status: i32,
+    error_message: [512:0]u8,
+};
+
+fn copyCString(dest: anytype, src: []const u8) void {
+    @memset(dest, 0);
+    const n = @min(src.len, dest.len - 1);
+    @memcpy(dest[0..n], src[0..n]);
+}
+
+fn copyLastError(dest: anytype) void {
+    copyCString(dest, std.mem.span(rtmify_last_error()));
+}
+
 // ---------------------------------------------------------------------------
 // Worker functions
 // ---------------------------------------------------------------------------
 
 fn loadWorker(ctx: *LoadContext) void {
+    const result = std.heap.page_allocator.create(LoadResult) catch {
+        std.heap.page_allocator.destroy(ctx);
+        return;
+    };
+    result.* = .{
+        .status = RTMIFY_ERR_INVALID_XLSX,
+        .graph = null,
+        .summary = std.mem.zeroes(RtmifyAnalysisSummary),
+        .path_utf8 = std.mem.zeroes([1024:0]u8),
+        .error_message = std.mem.zeroes([512:0]u8),
+    };
+    copyCString(&result.path_utf8, std.mem.sliceTo(&ctx.path_utf8, 0));
+
     var graph: *RtmifyGraph = undefined;
-    const status = rtmify_load(&ctx.path_utf8, &graph);
-    const lp: LPARAM = if (status == RTMIFY_OK) @bitCast(@intFromPtr(graph)) else 0;
-    _ = PostMessageW(ctx.hwnd, WM_LOAD_COMPLETE, @intCast(status), lp);
+    result.status = rtmify_load_with_profile(&ctx.path_utf8, @intFromEnum(ctx.profile), &graph, &result.summary);
+    if (result.status == RTMIFY_OK) {
+        result.graph = graph;
+    } else {
+        copyLastError(&result.error_message);
+    }
+    _ = PostMessageW(ctx.hwnd, WM_LOAD_COMPLETE, 0, @bitCast(@intFromPtr(result)));
     std.heap.page_allocator.destroy(ctx);
 }
 
 fn generateWorker(ctx: *GenerateContext) void {
-    var status: i32 = RTMIFY_OK;
+    const result = std.heap.page_allocator.create(GenerateResult) catch {
+        std.heap.page_allocator.destroy(ctx);
+        return;
+    };
+    result.* = .{
+        .status = RTMIFY_OK,
+        .error_message = std.mem.zeroes([512:0]u8),
+    };
     var i: usize = 0;
     while (i < ctx.count) : (i += 1) {
-        status = rtmify_generate(
+        result.status = rtmify_generate(
             ctx.graph,
             &ctx.formats[i],
             &ctx.output_paths[i],
             &ctx.project_name,
         );
-        if (status != RTMIFY_OK) break;
+        if (result.status != RTMIFY_OK) {
+            copyLastError(&result.error_message);
+            break;
+        }
     }
-    _ = PostMessageW(ctx.hwnd, WM_GENERATE_COMPLETE, @intCast(status), 0);
+    _ = PostMessageW(ctx.hwnd, WM_GENERATE_COMPLETE, 0, @bitCast(@intFromPtr(result)));
     std.heap.page_allocator.destroy(ctx);
 }
 
 fn licenseInstallWorker(ctx: *LicenseInstallContext) void {
+    const result = std.heap.page_allocator.create(LicenseInstallResult) catch {
+        std.heap.page_allocator.destroy(ctx);
+        return;
+    };
+    result.* = .{
+        .status = RTMIFY_ERR_LICENSE,
+        .error_message = std.mem.zeroes([512:0]u8),
+    };
     var license_status: RtmifyLicenseStatus = undefined;
     const api_status = rtmify_trace_license_install(&ctx.path, &license_status);
-    const status: i32 = if (api_status == 0 and license_status.permits_use != 0) RTMIFY_OK else RTMIFY_ERR_LICENSE;
-    _ = PostMessageW(ctx.hwnd, WM_LICENSE_COMPLETE, @intCast(status), 0);
+    result.status = if (api_status == 0 and license_status.permits_use != 0) RTMIFY_OK else RTMIFY_ERR_LICENSE;
+    if (result.status != RTMIFY_OK) {
+        copyLastError(&result.error_message);
+    }
+    _ = PostMessageW(ctx.hwnd, WM_LICENSE_COMPLETE, 0, @bitCast(@intFromPtr(result)));
     std.heap.page_allocator.destroy(ctx);
 }
 
@@ -148,10 +240,11 @@ fn licenseInstallWorker(ctx: *LicenseInstallContext) void {
 // Spawn helpers — allocate context, detach thread
 // ---------------------------------------------------------------------------
 
-pub fn spawnLoad(hwnd: HWND, path: []const u8) void {
+pub fn spawnLoad(hwnd: HWND, path: []const u8, profile: RtmifyProfile) void {
     const ctx = std.heap.page_allocator.create(LoadContext) catch return;
     ctx.hwnd = hwnd;
     ctx.path_utf8 = std.mem.zeroes([1024:0]u8);
+    ctx.profile = profile;
     const n = @min(path.len, 1023);
     @memcpy(ctx.path_utf8[0..n], path[0..n]);
     const thread = std.Thread.spawn(.{}, loadWorker, .{ctx}) catch {

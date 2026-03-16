@@ -1,6 +1,6 @@
 # RTMify Trace — macOS App
 
-Native SwiftUI application that wraps `librtmify.a` in a drag-and-drop GUI. All XLSX parsing, graph construction, gap detection, and report rendering happen in the Zig library. Swift handles the window, file drops, signed-license import, and progress display.
+Native SwiftUI application that wraps `librtmify.a` in a drag-and-drop GUI. All XLSX parsing, profile-aware graph construction, gap detection, and report rendering happen in the Zig library. Swift handles the window, file drops, explicit profile selection, signed-license import, and progress display.
 
 ---
 
@@ -122,7 +122,7 @@ sys/trace/macos/
 │   ├── ViewModel.swift           ← AppState machine, all async C calls
 │   ├── RTMifyBridge.swift        ← async Swift wrappers over C ABI
 │   ├── LicenseGateView.swift     ← signed-license import gate
-│   ├── DropZoneView.swift        ← drag-and-drop zone, file summary, format picker
+│   ├── DropZoneView.swift        ← drag-and-drop zone, profile picker, file summary, format picker
 │   ├── DoneView.swift            ← results, Show in Finder, Generate Another
 │   ├── rtmify-bridge.h           ← C ABI declarations (bridging header)
 │   ├── Info.plist                ← bundle ID io.rtmify.trace, macOS 13+
@@ -153,27 +153,31 @@ sys/trace/macos/
 │  │      librtmify.a (Zig)      │   │
 │  │  XLSX parsing (7 layers)    │   │
 │  │  Graph construction         │   │
-│  │  Gap detection              │   │
+│  │  Profile-aware gap detection│   │
 │  │  PDF / DOCX / MD rendering  │   │
 │  │  Signed license files       │   │
 │  └─────────────────────────────┘   │
 └─────────────────────────────────────┘
 ```
 
-**C ABI surface** (all 9 functions in `rtmify-bridge.h`):
+**Key C ABI surface** (`rtmify-bridge.h`):
 
 ```c
-rtmify_load()              // parse XLSX → opaque graph handle
-rtmify_generate()          // graph + format + path → output file
-rtmify_gap_count()         // number of traceability gaps
-rtmify_warning_count()     // number of validation warnings
-rtmify_last_error()        // human-readable error from last failure
-rtmify_free()              // release graph handle
+rtmify_load()                            // generic wrapper for backward compatibility
+rtmify_load_with_profile()               // parse XLSX with selected profile → graph + summary
+rtmify_graph_summary()                   // profile, standards, warnings, generic/profile gap counts
+rtmify_generate()                        // graph + format + path → output file using stored report context
+rtmify_gap_count()                       // total hard/error findings for the loaded profile
+rtmify_warning_count()                   // legacy warning helper
+rtmify_last_error()                      // human-readable error from last failure
+rtmify_free()                            // release graph handle
 rtmify_trace_license_get_status()            // Trace status + free-run policy
 rtmify_trace_license_install()               // install signed license file
 rtmify_trace_license_clear()                 // remove installed license file
 rtmify_trace_license_record_successful_use() // consume Trace free run
 ```
+
+The app uses `rtmify_load_with_profile()` and keeps the selected profile explicit in the UI. Changing the profile reloads the workbook and regenerates the same profile-aware summary the CLI would compute for that workbook/profile pair.
 
 ---
 

@@ -10,6 +10,7 @@ const license = rtmify.license;
 const diagnostic = rtmify.diagnostic;
 const profile_mod = rtmify.profile;
 const report_mod = rtmify.report;
+const analysis = rtmify.analysis;
 const Diagnostics = diagnostic.Diagnostics;
 
 const VERSION = @import("build_options").version;
@@ -416,47 +417,6 @@ fn generateReport(
     }
 }
 
-fn ingestOptionsForProfile(profile_id: profile_mod.ProfileId) schema.IngestOptions {
-    return switch (profile_id) {
-        .generic => .{},
-        .medical => .{
-            .enable_product_tab = true,
-            .enable_design_inputs_tab = true,
-            .enable_design_outputs_tab = true,
-            .enable_config_items_tab = true,
-        },
-        .aerospace => .{
-            .enable_product_tab = true,
-            .enable_decomposition_tab = true,
-            .enable_config_items_tab = true,
-        },
-        .automotive => .{
-            .enable_product_tab = true,
-            .enable_config_items_tab = true,
-        },
-    };
-}
-
-fn warnMissingProfileTabs(sheets: []const xlsx.SheetData, profile_id: profile_mod.ProfileId, diag: *Diagnostics) !void {
-    if (profile_id == .generic) return;
-    const prof = profile_mod.get(profile_id);
-    for (prof.tabs) |tab| {
-        if (std.mem.eql(u8, tab, "User Needs") or
-            std.mem.eql(u8, tab, "Requirements") or
-            std.mem.eql(u8, tab, "Tests") or
-            std.mem.eql(u8, tab, "Risks")) continue;
-        if (schema.hasTab(sheets, tab)) continue;
-        try diag.warn(
-            diagnostic.E.profile_expected_tab_missing,
-            .profile,
-            null,
-            null,
-            "Profile '{s}' expects tab '{s}', but it is not present in this workbook",
-            .{ prof.short_name, tab },
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Main run logic (returns exit code)
 // ---------------------------------------------------------------------------
@@ -599,10 +559,10 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
         return EXIT_INPUT;
     };
 
-    try warnMissingProfileTabs(sheets, args.profile, &diag);
+    try analysis.warnMissingProfileTabs(sheets, args.profile, &diag);
 
     var g = graph.Graph.init(alloc);
-    _ = schema.ingestValidatedWithOptions(&g, sheets, &diag, ingestOptionsForProfile(args.profile)) catch |err| {
+    _ = schema.ingestValidatedWithOptions(&g, sheets, &diag, analysis.ingestOptionsForProfile(args.profile)) catch |err| {
         try diag.printSummary(stderr);
         try stderr.print("Error: failed to ingest spreadsheet: {s}\n", .{@errorName(err)});
         return EXIT_INPUT;
@@ -819,19 +779,19 @@ test "parseArgs invalid profile" {
 }
 
 test "ingestOptionsForProfile enables expected tabs" {
-    const medical = ingestOptionsForProfile(.medical);
+    const medical = analysis.ingestOptionsForProfile(.medical);
     try testing.expect(medical.enable_product_tab);
     try testing.expect(medical.enable_design_inputs_tab);
     try testing.expect(medical.enable_design_outputs_tab);
     try testing.expect(medical.enable_config_items_tab);
 
-    const aerospace = ingestOptionsForProfile(.aerospace);
+    const aerospace = analysis.ingestOptionsForProfile(.aerospace);
     try testing.expect(aerospace.enable_product_tab);
     try testing.expect(aerospace.enable_decomposition_tab);
     try testing.expect(aerospace.enable_config_items_tab);
     try testing.expect(!aerospace.enable_design_inputs_tab);
 
-    const generic = ingestOptionsForProfile(.generic);
+    const generic = analysis.ingestOptionsForProfile(.generic);
     try testing.expect(!generic.enable_product_tab);
     try testing.expect(!generic.enable_design_inputs_tab);
     try testing.expect(!generic.enable_decomposition_tab);
@@ -841,7 +801,7 @@ test "warnMissingProfileTabs emits warnings and is non-fatal" {
     var diag = Diagnostics.init(testing.allocator);
     defer diag.deinit();
 
-    try warnMissingProfileTabs(minimal_core_sheets[0..], .medical, &diag);
+    try analysis.warnMissingProfileTabs(minimal_core_sheets[0..], .medical, &diag);
 
     try testing.expect(diag.warning_count >= 1);
     try testing.expectEqual(@as(u32, 0), diag.error_count);

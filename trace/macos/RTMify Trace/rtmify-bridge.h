@@ -3,6 +3,24 @@
 #include <stdint.h>
 
 typedef struct RtmifyGraph RtmifyGraph;
+typedef enum RtmifyProfile {
+    RTMIFY_PROFILE_GENERIC = 0,
+    RTMIFY_PROFILE_MEDICAL = 1,
+    RTMIFY_PROFILE_AEROSPACE = 2,
+    RTMIFY_PROFILE_AUTOMOTIVE = 3,
+} RtmifyProfile;
+
+typedef struct RtmifyAnalysisSummary {
+    int32_t profile;
+    char profile_short_name[16];
+    char profile_display_name[32];
+    char profile_standards[128];
+    int32_t warning_count;
+    int32_t generic_gap_count;
+    int32_t profile_gap_count;
+    int32_t total_gap_count;
+} RtmifyAnalysisSummary;
+
 typedef struct RtmifyLicenseStatus {
     int32_t state;
     int32_t permits_use;
@@ -22,9 +40,12 @@ typedef struct RtmifyLicenseStatus {
 #define RTMIFY_ERR_OUTPUT          5
 
 int32_t rtmify_load(const char* xlsx_path, RtmifyGraph** out_graph);
+int32_t rtmify_load_with_profile(const char* xlsx_path, int32_t profile,
+                                 RtmifyGraph** out_graph, RtmifyAnalysisSummary* out_summary);
 int32_t rtmify_generate(const RtmifyGraph* graph, const char* format,
                         const char* output_path, const char* project_name);
 int32_t rtmify_gap_count(const RtmifyGraph* graph);
+int32_t rtmify_graph_summary(const RtmifyGraph* graph, RtmifyAnalysisSummary* out_summary);
 int32_t rtmify_warning_count(void);
 const char* rtmify_last_error(void);
 void rtmify_free(RtmifyGraph* graph);

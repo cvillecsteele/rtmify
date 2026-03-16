@@ -2,6 +2,7 @@
 //           visibility management, WM_PAINT custom drawing, DPI, font.
 
 const std = @import("std");
+const bridge = @import("bridge.zig");
 const state = @import("state.zig");
 
 // ---------------------------------------------------------------------------
@@ -186,6 +187,7 @@ extern "gdi32" fn CreateFontIndirectW(lplf: *const LOGFONTW) callconv(.winapi) ?
 pub const IDC_IMPORT_LICENSE_BTN: usize = 101;
 pub const IDC_CLEAR_LICENSE_BTN: usize = 102;
 pub const IDC_ACTIV_ERR: usize = 104;
+pub const IDC_PROFILE_COMBO: usize = 200;
 pub const IDC_FORMAT_COMBO: usize = 201;
 pub const IDC_BROWSE_BTN: usize = 202;
 pub const IDC_GENERATE_BTN: usize = 203;
@@ -203,6 +205,7 @@ pub const IDC_AGAIN_BTN: usize = 304;
 pub var import_license_btn: ?*anyopaque = null;
 pub var clear_license_btn: ?*anyopaque = null;
 pub var activ_err: ?*anyopaque = null;
+pub var profile_combo: ?*anyopaque = null;
 pub var format_combo: ?*anyopaque = null;
 pub var browse_btn: ?*anyopaque = null;
 pub var generate_btn: ?*anyopaque = null;
@@ -288,12 +291,33 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
 
     // --- Drop zone controls ---
 
+    profile_combo = CreateWindowExW(
+        0,
+        CLS_COMBO,
+        null,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
+        sc(20, dpi), sc(272, dpi), sc(180, dpi), sc(220, dpi),
+        hwnd, @ptrFromInt(IDC_PROFILE_COMBO), hinstance, null,
+    );
+    if (profile_combo) |combo| {
+        const combo_strs = [_][*:0]const u16{
+            toUtf16Z("Generic"),
+            toUtf16Z("Medical"),
+            toUtf16Z("Aerospace"),
+            toUtf16Z("Automotive"),
+        };
+        for (combo_strs) |s| {
+            _ = SendMessageW(combo, CB_ADDSTRING, 0, @bitCast(@intFromPtr(s)));
+        }
+        _ = SendMessageW(combo, CB_SETCURSEL, 0, 0);
+    }
+
     format_combo = CreateWindowExW(
         0,
         CLS_COMBO,
         null,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
-        sc(20, dpi), sc(308, dpi), sc(160, dpi), sc(200, dpi),
+        sc(220, dpi), sc(272, dpi), sc(180, dpi), sc(220, dpi),
         hwnd, @ptrFromInt(IDC_FORMAT_COMBO), hinstance, null,
     );
     if (format_combo) |combo| {
@@ -314,7 +338,7 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         CLS_BTN,
         toUtf16Z("Browse..."),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        sc(193, dpi), sc(308, dpi), sc(80, dpi), sc(28, dpi),
+        sc(20, dpi), sc(308, dpi), sc(120, dpi), sc(28, dpi),
         hwnd, @ptrFromInt(IDC_BROWSE_BTN), hinstance, null,
     );
 
@@ -323,7 +347,7 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         CLS_BTN,
         toUtf16Z("Generate"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_DISABLED | BS_PUSHBUTTON,
-        sc(286, dpi), sc(308, dpi), sc(114, dpi), sc(28, dpi),
+        sc(153, dpi), sc(308, dpi), sc(140, dpi), sc(28, dpi),
         hwnd, @ptrFromInt(IDC_GENERATE_BTN), hinstance, null,
     );
 
@@ -332,7 +356,7 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         CLS_BTN,
         toUtf16Z("Clear"),
         WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
-        sc(286, dpi), sc(344, dpi), sc(114, dpi), sc(28, dpi),
+        sc(306, dpi), sc(308, dpi), sc(94, dpi), sc(28, dpi),
         hwnd, @ptrFromInt(IDC_CLEAR_BTN), hinstance, null,
     );
 
@@ -341,7 +365,7 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         CLS_STATIC,
         null,
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        sc(20, dpi), sc(348, dpi), sc(260, dpi), sc(28, dpi),
+        sc(20, dpi), sc(344, dpi), sc(380, dpi), sc(36, dpi),
         hwnd, @ptrFromInt(IDC_STATUS_TEXT), hinstance, null,
     );
 
@@ -398,7 +422,7 @@ pub fn setFont(hwnd: HWND) void {
 
     // Apply to all child controls
     const ctls = [_]?*anyopaque{
-        import_license_btn, clear_license_btn, activ_err, format_combo, browse_btn,
+        import_license_btn, clear_license_btn, activ_err, profile_combo, format_combo, browse_btn,
         generate_btn, clear_btn, status_text, output_text, show_btn,
         open_btn, again_btn,
     };
@@ -420,6 +444,7 @@ pub fn updateVisibility(tag: state.AppStateTag) void {
 
     // Drop zone controls
     const dz = @intFromBool(tag == .drop_zone or tag == .file_loaded or tag == .generating);
+    if (profile_combo) |c| _ = ShowWindow(c, if (dz != 0) SW_SHOW else SW_HIDE);
     if (format_combo) |c| _ = ShowWindow(c, if (dz != 0) SW_SHOW else SW_HIDE);
     if (browse_btn) |c| _ = ShowWindow(c, if (dz != 0) SW_SHOW else SW_HIDE);
     if (generate_btn) |c| _ = ShowWindow(c, if (dz != 0) SW_SHOW else SW_HIDE);
@@ -496,6 +521,32 @@ pub fn getSelectedFormat() state.Format {
         };
     }
     return .pdf;
+}
+
+pub fn getSelectedProfile() bridge.RtmifyProfile {
+    if (profile_combo) |c| {
+        const sel = SendMessageW(c, CB_GETCURSEL, 0, 0);
+        return switch (sel) {
+            0 => .generic,
+            1 => .medical,
+            2 => .aerospace,
+            3 => .automotive,
+            else => .generic,
+        };
+    }
+    return .generic;
+}
+
+pub fn setSelectedProfile(profile: bridge.RtmifyProfile) void {
+    if (profile_combo) |c| {
+        const sel: usize = switch (profile) {
+            .generic => 0,
+            .medical => 1,
+            .aerospace => 2,
+            .automotive => 3,
+        };
+        _ = SendMessageW(c, CB_SETCURSEL, sel, 0);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -625,28 +676,61 @@ fn paintDropZone(hdc: HDC, client: *const RECT, app_state: *const state.AppState
         _ = SetTextColor(hdc, 0x001A1A1A);
         _ = DrawTextW(hdc, &name_w, @intCast(name_len), &name_rect, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        // Show gap count if any
-        if (summary.gap_count > 0) {
+        var profile_w: [128:0]u16 = std.mem.zeroes([128:0]u16);
+
+        var profile_msg_buf: [256]u8 = undefined;
+        const profile_msg = std.fmt.bufPrint(&profile_msg_buf, "Profile: {s}", .{std.mem.sliceTo(&summary.profile_display_name, 0)}) catch "Profile";
+        _ = std.unicode.utf8ToUtf16Le(profile_w[0..profile_w.len], profile_msg) catch 0;
+        const profile_len = std.mem.indexOfScalar(u16, &profile_w, 0) orelse profile_w.len;
+        var profile_rect = RECT{
+            .left = dz_rect.left + 24,
+            .top = name_rect.bottom + 10,
+            .right = dz_rect.right - 24,
+            .bottom = name_rect.bottom + 30,
+        };
+        _ = SetTextColor(hdc, 0x00555555);
+        _ = DrawTextW(hdc, &profile_w, @intCast(profile_len), &profile_rect, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        var standards_w: [256:0]u16 = std.mem.zeroes([256:0]u16);
+        var standards_msg_buf: [256]u8 = undefined;
+        const standards_msg = std.fmt.bufPrint(&standards_msg_buf, "Standards: {s}", .{std.mem.sliceTo(&summary.profile_standards, 0)}) catch "Standards";
+        _ = std.unicode.utf8ToUtf16Le(standards_w[0..standards_w.len], standards_msg) catch 0;
+        const standards_len = std.mem.indexOfScalar(u16, &standards_w, 0) orelse standards_w.len;
+        var standards_rect = RECT{
+            .left = dz_rect.left + 24,
+            .top = profile_rect.bottom + 6,
+            .right = dz_rect.right - 24,
+            .bottom = profile_rect.bottom + 36,
+        };
+        _ = DrawTextW(hdc, &standards_w, @intCast(standards_len), &standards_rect, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+        if (summary.total_gap_count > 0 or summary.warning_count > 0) {
             const gap_rect = RECT{
                 .left = dz_rect.left + 20,
-                .top = dz_rect.bottom - 50,
+                .top = dz_rect.bottom - 66,
                 .right = dz_rect.right - 20,
                 .bottom = dz_rect.bottom - 10,
             };
-            // Yellow gap banner
-            const gap_bg = CreateSolidBrush(0x00E1F8FF); // amber-ish
+            const gap_bg = CreateSolidBrush(0x00E1F8FF);
             defer _ = DeleteObject(gap_bg);
             _ = FillRect(hdc, &gap_rect, gap_bg);
-            // Amber border
             const gap_border = CreateSolidBrush(0x0025A8F9);
             defer _ = DeleteObject(gap_border);
             _ = FrameRect(hdc, &gap_rect, gap_border);
 
-            var gap_msg_buf: [128]u8 = undefined;
-            const gap_msg = std.fmt.bufPrint(&gap_msg_buf, "{d} traceability gap{s} detected \xe2\x80\x94 flagged in report", .{
-                summary.gap_count,
-                if (summary.gap_count == 1) "" else "s",
-            }) catch "Traceability gaps detected";
+            var gap_msg_buf: [192]u8 = undefined;
+            const gap_msg = if (summary.profile_gap_count > 0)
+                std.fmt.bufPrint(&gap_msg_buf, "{d} gaps ({d} generic, {d} profile)  |  {d} warnings", .{
+                    summary.total_gap_count,
+                    summary.generic_gap_count,
+                    summary.profile_gap_count,
+                    summary.warning_count,
+                }) catch "Traceability gaps detected"
+            else
+                std.fmt.bufPrint(&gap_msg_buf, "{d} gaps  |  {d} warnings", .{
+                    summary.total_gap_count,
+                    summary.warning_count,
+                }) catch "Traceability gaps detected";
             var gap_w: [256:0]u16 = std.mem.zeroes([256:0]u16);
             _ = std.unicode.utf8ToUtf16Le(gap_w[0..gap_w.len], gap_msg) catch 0;
             const gap_wlen = std.mem.indexOfScalar(u16, &gap_w, 0) orelse 256;
@@ -659,11 +743,30 @@ fn paintDropZone(hdc: HDC, client: *const RECT, app_state: *const state.AppState
         const hint = comptime makeW("Drop .xlsx here");
         var hint_rect = RECT{
             .left = dz_rect.left,
-            .top = dz_rect.top,
+            .top = dz_rect.top + 10,
             .right = dz_rect.right,
-            .bottom = dz_rect.bottom,
+            .bottom = dz_rect.top + 40,
         };
         _ = DrawTextW(hdc, &hint, @intCast(hint.len - 1), &hint_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        var profile_msg_buf: [128]u8 = undefined;
+        const active_profile = switch (app_state.selected_profile) {
+            .generic => "Generic",
+            .medical => "Medical",
+            .aerospace => "Aerospace",
+            .automotive => "Automotive",
+        };
+        const profile_msg = std.fmt.bufPrint(&profile_msg_buf, "Active profile: {s}", .{active_profile}) catch "Active profile";
+        var profile_w: [128:0]u16 = std.mem.zeroes([128:0]u16);
+        _ = std.unicode.utf8ToUtf16Le(profile_w[0..profile_w.len], profile_msg) catch 0;
+        const profile_len = std.mem.indexOfScalar(u16, &profile_w, 0) orelse profile_w.len;
+        var profile_rect = RECT{
+            .left = dz_rect.left,
+            .top = hint_rect.bottom + 12,
+            .right = dz_rect.right,
+            .bottom = hint_rect.bottom + 36,
+        };
+        _ = DrawTextW(hdc, &profile_w, @intCast(profile_len), &profile_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 }
 

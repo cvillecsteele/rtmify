@@ -1,6 +1,6 @@
 # RTMify Trace — Windows Shell
 
-Native Win32 GUI for RTMify Trace. Single self-contained `.exe` — no installer, no DLLs.
+Native Win32 GUI for RTMify Trace. Single self-contained `.exe` — no installer, no DLLs. The app exposes the same explicit workbook profiles as the CLI: `generic`, `medical`, `aerospace`, and `automotive`.
 
 ## Prerequisites
 
@@ -93,13 +93,13 @@ sys/trace/windows/
 |-------|---------------|
 | `main.zig` | Win32 message loop, WndProc dispatch, state transitions |
 | `ui.zig` | Control layout, DPI scaling, WM_PAINT custom drawing |
-| `bridge.zig` | C ABI extern declarations, worker thread lifecycle |
-| `state.zig` | App state machine, output path/project name derivation |
+| `bridge.zig` | C ABI extern declarations, worker thread lifecycle, worker completion payloads |
+| `state.zig` | App state machine, selected profile, output path/project name derivation |
 | `drop.zig` | WM_DROPFILES handling, file extension validation |
 | `dialogs.zig` | File open dialog, error message boxes |
-| `librtmify.a` | All XLSX parsing, graph analysis, report rendering |
+| `librtmify.a` | All XLSX parsing, profile-aware graph analysis, report rendering |
 
-## 3-State UX
+## UX Flow
 
 ```
 Launch
@@ -108,10 +108,20 @@ Launch
   │     Import signed license file → [Drop Zone]
   │
   └─ License OK → [Drop Zone]
+        Select profile + format
         Drop .xlsx or Browse → Load (worker) → [File Loaded]
+        Change profile → Reload same workbook (worker)
         Generate → render (worker) → [Done]
         Show in Explorer / Open / Generate Another
 ```
+
+The selected profile is explicit in the UI and affects:
+- ingest options
+- warning count
+- generic vs profile-specific gap counts
+- the stored render context used by PDF, DOCX, and Markdown generation
+
+Load and generate worker completions carry either a profile-aware analysis summary or a copied error string back to the UI thread. The app does not rely on `threadlocal` `rtmify_last_error()` lookups after worker completion.
 
 ## Troubleshooting
 

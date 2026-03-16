@@ -79,6 +79,7 @@ const WM_DPICHANGED: UINT = 0x02E0;
 const WM_CLOSE: UINT = 0x0010;
 const WM_ACTIVATE: UINT = 0x0006;
 const WM_CTLCOLORSTATIC: UINT = 0x0138;
+const CBN_SELCHANGE: usize = 1;
 
 const IDC_STATIC: usize = 0xFFFF;
 
@@ -149,6 +150,62 @@ fn cStringSlice(buf: []const u8) ?[]const u8 {
     const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
     if (len == 0) return null;
     return buf[0..len];
+}
+
+fn copyCString(dest: anytype, src: []const u8) void {
+    @memset(dest, 0);
+    const n = @min(src.len, dest.len - 1);
+    @memcpy(dest[0..n], src[0..n]);
+}
+
+fn profileDisplayName(profile_id: bridge.RtmifyProfile) []const u8 {
+    return switch (profile_id) {
+        .generic => "Generic",
+        .medical => "Medical",
+        .aerospace => "Aerospace",
+        .automotive => "Automotive",
+    };
+}
+
+fn summaryProfile(summary: bridge.RtmifyAnalysisSummary) bridge.RtmifyProfile {
+    return switch (summary.profile) {
+        1 => .medical,
+        2 => .aerospace,
+        3 => .automotive,
+        else => .generic,
+    };
+}
+
+fn setLoadStatus(hwnd: HWND) void {
+    var msg_buf: [160]u8 = undefined;
+    const message = std.fmt.bufPrintZ(&msg_buf, "Analyzing workbook for {s} profile...", .{
+        profileDisplayName(g_state.selected_profile),
+    }) catch "Analyzing workbook...";
+    ui.setStatusText(hwnd, message);
+}
+
+fn beginLoad(hwnd: HWND, path: []const u8) void {
+    if (g_state.graph) |g| {
+        bridge.rtmify_free(g);
+        g_state.graph = null;
+    }
+    g_state.summary = null;
+    g_state.result = null;
+    g_state.tag = .drop_zone;
+    ui.updateVisibility(.drop_zone);
+    setLoadStatus(hwnd);
+    bridge.spawnLoad(hwnd, path, g_state.selected_profile);
+    _ = InvalidateRect(hwnd, null, 1);
+}
+
+fn applyAnalysisSummary(summary: *state.FileSummary, raw: bridge.RtmifyAnalysisSummary) void {
+    summary.profile = summaryProfile(raw);
+    copyCString(&summary.profile_display_name, cStringSlice(&raw.profile_display_name) orelse profileDisplayName(summary.profile));
+    copyCString(&summary.profile_standards, cStringSlice(&raw.profile_standards) orelse "Generic");
+    summary.generic_gap_count = raw.generic_gap_count;
+    summary.profile_gap_count = raw.profile_gap_count;
+    summary.total_gap_count = raw.total_gap_count;
+    summary.warning_count = raw.warning_count;
 }
 
 fn shortFingerprint(buf: []const u8) ?[]const u8 {
@@ -248,20 +305,20 @@ fn transitionToDropZone(hwnd: HWND) void {
     _ = InvalidateRect(hwnd, null, 1);
 }
 
-fn transitionToFileLoaded(hwnd: HWND, graph: *bridge.RtmifyGraph, path_utf8: []const u8) void {
+fn transitionToFileLoaded(hwnd: HWND, load_result: *const bridge.LoadResult) void {
     var summary = state.FileSummary{};
+    const path_utf8 = std.mem.sliceTo(&load_result.path_utf8, 0);
     const n = @min(path_utf8.len, 1023);
     @memcpy(summary.path_utf8[0..n], path_utf8[0..n]);
 
     const base = std.fs.path.basename(path_utf8);
     const bn = @min(base.len, 255);
     @memcpy(summary.display_name[0..bn], base[0..bn]);
+    applyAnalysisSummary(&summary, load_result.summary);
 
-    summary.gap_count = bridge.rtmify_gap_count(graph);
-    summary.warning_count = bridge.rtmify_warning_count();
-
-    g_state.graph = graph;
+    g_state.graph = load_result.graph;
     g_state.summary = summary;
+    g_state.selected_profile = summary.profile;
     g_state.tag = .file_loaded;
     ui.updateVisibility(.file_loaded);
     _ = InvalidateRect(hwnd, null, 1);
@@ -281,10 +338,32 @@ fn transitionToDone(hwnd: HWND, result: state.GenerateResult) void {
         const p = std.mem.sliceTo(&result.output_paths[i], 0);
         out_msg = std.fmt.bufPrint(&out_msg_buf, "{s}{s}\r\n", .{ out_msg, p }) catch out_msg;
     }
-    if (result.gap_count > 0) {
-        out_msg = std.fmt.bufPrint(&out_msg_buf, "{s}\r\n{d} traceability gap{s} flagged in report.", .{
-            out_msg, result.gap_count,
-            if (result.gap_count == 1) "" else "s",
+    out_msg = std.fmt.bufPrint(&out_msg_buf, "Profile: {s}\r\nStandards: {s}\r\n\r\n{s}", .{
+        std.mem.sliceTo(&result.profile_display_name, 0),
+        std.mem.sliceTo(&result.profile_standards, 0),
+        out_msg,
+    }) catch out_msg;
+    if (result.total_gap_count > 0) {
+        if (result.profile_gap_count > 0) {
+            out_msg = std.fmt.bufPrint(&out_msg_buf, "{s}\r\n\r\n{d} gaps flagged ({d} generic, {d} profile-specific).", .{
+                out_msg,
+                result.total_gap_count,
+                result.generic_gap_count,
+                result.profile_gap_count,
+            }) catch out_msg;
+        } else {
+            out_msg = std.fmt.bufPrint(&out_msg_buf, "{s}\r\n\r\n{d} traceability gap{s} flagged in report.", .{
+                out_msg,
+                result.total_gap_count,
+                if (result.total_gap_count == 1) "" else "s",
+            }) catch out_msg;
+        }
+    }
+    if (result.warning_count > 0) {
+        out_msg = std.fmt.bufPrint(&out_msg_buf, "{s}\r\n{d} warning{s} during analysis.", .{
+            out_msg,
+            result.warning_count,
+            if (result.warning_count == 1) "" else "s",
         }) catch out_msg;
     }
 
@@ -333,7 +412,13 @@ fn handleGenerate(hwnd: HWND) void {
     }
 
     result.path_count = count;
-    result.gap_count = if (g_state.summary) |s| s.gap_count else 0;
+    result.profile = summary.profile;
+    result.profile_display_name = summary.profile_display_name;
+    result.profile_standards = summary.profile_standards;
+    result.generic_gap_count = summary.generic_gap_count;
+    result.profile_gap_count = summary.profile_gap_count;
+    result.total_gap_count = summary.total_gap_count;
+    result.warning_count = summary.warning_count;
 
     // Store result in state (worker will complete it via WM_GENERATE_COMPLETE)
     g_state.result = result;
@@ -415,9 +500,11 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
 
         WM_COMMAND => {
             const ctrl_id = wparam & 0xFFFF;
+            const notify_code = (wparam >> 16) & 0xFFFF;
             switch (ctrl_id) {
                 ui.IDC_IMPORT_LICENSE_BTN => handleImportLicense(hw),
                 ui.IDC_CLEAR_LICENSE_BTN => handleClearLicense(hw),
+                ui.IDC_PROFILE_COMBO => if (notify_code == CBN_SELCHANGE) handleProfileChange(hw),
                 ui.IDC_BROWSE_BTN => handleBrowse(hw),
                 ui.IDC_GENERATE_BTN => handleGenerate(hw),
                 ui.IDC_CLEAR_BTN => transitionToDropZone(hw),
@@ -430,13 +517,12 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         },
 
         bridge.WM_LOAD_COMPLETE => {
-            const status: i32 = @intCast(wparam);
-            if (status == bridge.RTMIFY_OK) {
-                const graph: *bridge.RtmifyGraph = @ptrFromInt(@as(usize, @bitCast(lparam)));
-                const path_utf8 = if (g_state.summary) |s| std.mem.sliceTo(&s.path_utf8, 0) else "";
-                transitionToFileLoaded(hw, graph, path_utf8);
+            const load_result: *bridge.LoadResult = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            defer std.heap.page_allocator.destroy(load_result);
+            if (load_result.status == bridge.RTMIFY_OK and load_result.graph != null) {
+                transitionToFileLoaded(hw, load_result);
             } else {
-                dialogs.showError(hw, bridge.rtmify_last_error());
+                dialogs.showError(hw, &load_result.error_message);
                 g_state.tag = .drop_zone;
                 ui.updateVisibility(.drop_zone);
                 _ = InvalidateRect(hw, null, 1);
@@ -444,16 +530,17 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         },
 
         bridge.WM_GENERATE_COMPLETE => {
-            const status: i32 = @intCast(wparam);
+            const generate_result: *bridge.GenerateResult = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            defer std.heap.page_allocator.destroy(generate_result);
             // Restore button text
             if (ui.generate_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Generate"));
-            if (status == bridge.RTMIFY_OK) {
+            if (generate_result.status == bridge.RTMIFY_OK) {
                 _ = bridge.recordSuccessfulUse();
                 if (g_state.result) |r| {
                     transitionToDone(hw, r);
                 }
             } else {
-                dialogs.showError(hw, bridge.rtmify_last_error());
+                dialogs.showError(hw, &generate_result.error_message);
                 g_state.tag = .file_loaded;
                 ui.updateVisibility(.file_loaded);
                 _ = InvalidateRect(hw, null, 1);
@@ -461,10 +548,11 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         },
 
         bridge.WM_LICENSE_COMPLETE => {
-            const status: i32 = @intCast(wparam);
+            const license_result: *bridge.LicenseInstallResult = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            defer std.heap.page_allocator.destroy(license_result);
             if (ui.import_license_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Import License File"));
             if (ui.import_license_btn) |b| _ = EnableWindow(b, 1);
-            if (status == bridge.RTMIFY_OK) {
+            if (license_result.status == bridge.RTMIFY_OK) {
                 g_state.has_activation_error = false;
                 ui.setActivationError("");
                 if (ui.activ_err) |c| _ = ShowWindow(c, SW_HIDE);
@@ -473,7 +561,7 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
                 _ = InvalidateRect(hw, null, 1);
             } else {
                 g_state.has_activation_error = true;
-                ui.setActivationError(bridge.rtmify_last_error());
+                ui.setActivationError(&license_result.error_message);
             }
         },
 
@@ -515,12 +603,22 @@ extern "user32" fn EnableWindow(hWnd: *anyopaque, bEnable: BOOL) callconv(.winap
 fn handleBrowse(hwnd: HWND) void {
     var path_buf: [1024]u8 = undefined;
     const path = dialogs.browseXlsx(hwnd, &path_buf) orelse return;
-    // Store path for later (transitionToFileLoaded uses g_state.summary.path_utf8)
-    g_state.summary = state.FileSummary{};
-    const n = @min(path.len, 1023);
-    @memcpy(g_state.summary.?.path_utf8[0..n], path[0..n]);
-    ui.setStatusText(hwnd, "Reading spreadsheet\xe2\x80\xa6");
-    bridge.spawnLoad(hwnd, path);
+    beginLoad(hwnd, path);
+}
+
+fn handleProfileChange(hwnd: HWND) void {
+    const selected = ui.getSelectedProfile();
+    if (g_state.tag == .generating) {
+        ui.setSelectedProfile(g_state.selected_profile);
+        return;
+    }
+    if (g_state.selected_profile == selected) return;
+    g_state.selected_profile = selected;
+    if (g_state.summary) |summary| {
+        beginLoad(hwnd, std.mem.sliceTo(&summary.path_utf8, 0));
+    } else {
+        _ = InvalidateRect(hwnd, null, 1);
+    }
 }
 
 fn handleShowInExplorer() void {
@@ -546,15 +644,8 @@ fn uiSetStatus(hwnd: HWND, msg: [*:0]const u8) void {
 }
 
 fn bridgeSpawnLoad(hwnd: HWND, path: []const u8) void {
-    // Store path in summary for later use in transitionToFileLoaded
-    g_state.summary = state.FileSummary{};
-    const n = @min(path.len, 1023);
-    @memcpy(g_state.summary.?.path_utf8[0..n], path[0..n]);
-    bridge.spawnLoad(hwnd, path);
+    beginLoad(hwnd, path);
 }
-
-// When WM_LOAD_COMPLETE arrives with RTMIFY_OK, we need the original path.
-// It's stored in g_state.summary.path_utf8.
 
 // ---------------------------------------------------------------------------
 // wWinMain — entry point for .windows subsystem

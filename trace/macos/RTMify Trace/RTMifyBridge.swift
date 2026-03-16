@@ -26,15 +26,44 @@ private func stringFromTupleCString<T>(_ value: inout T) -> String? {
     }
 }
 
-func rtmifyLoad(path: String) async throws -> OpaquePointer {
+private func profileFromRawValue(_ rawValue: Int32) throws -> TraceProfile {
+    guard let profile = TraceProfile(rawValue: rawValue) else {
+        throw BridgeError(message: "invalid profile from library: \(rawValue)")
+    }
+    return profile
+}
+
+private func analysisSummary(from raw: inout RtmifyAnalysisSummary) throws -> AnalysisSummary {
+    let shortName = stringFromTupleCString(&raw.profile_short_name) ?? "generic"
+    let displayName = stringFromTupleCString(&raw.profile_display_name) ?? "Generic"
+    let standards = stringFromTupleCString(&raw.profile_standards) ?? "Generic"
+    return AnalysisSummary(
+        profile: try profileFromRawValue(raw.profile),
+        shortName: shortName,
+        displayName: displayName,
+        standards: standards,
+        warningCount: Int(raw.warning_count),
+        genericGapCount: Int(raw.generic_gap_count),
+        profileGapCount: Int(raw.profile_gap_count),
+        totalGapCount: Int(raw.total_gap_count)
+    )
+}
+
+func rtmifyLoad(path: String, profile: TraceProfile) async throws -> LoadedGraph {
     try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
             var graph: OpaquePointer?
+            var summary = RtmifyAnalysisSummary()
             let rc = path.withCString { cPath in
-                rtmify_load(cPath, &graph)
+                rtmify_load_with_profile(cPath, profile.rawValue, &graph, &summary)
             }
             if rc == RTMIFY_OK, let g = graph {
-                continuation.resume(returning: g)
+                do {
+                    continuation.resume(returning: LoadedGraph(graph: g, summary: try analysisSummary(from: &summary)))
+                } catch {
+                    rtmify_free(g)
+                    continuation.resume(throwing: error)
+                }
             } else {
                 continuation.resume(throwing: BridgeError(message: lastError()))
             }
@@ -44,12 +73,17 @@ func rtmifyLoad(path: String) async throws -> OpaquePointer {
 
 func rtmifyGenerate(graph: OpaquePointer, format: String,
                     outputPath: String, projectName: String) async throws {
-    try await withCheckedThrowingContinuation { continuation in
+    let graphAddress = Int(bitPattern: graph)
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         DispatchQueue.global(qos: .userInitiated).async {
+            guard let graphPtr = OpaquePointer(bitPattern: graphAddress) else {
+                continuation.resume(throwing: BridgeError(message: "invalid graph handle"))
+                return
+            }
             let rc = format.withCString { cFormat in
                 outputPath.withCString { cOutput in
                     projectName.withCString { cProject in
-                        rtmify_generate(graph, cFormat, cOutput, cProject)
+                        rtmify_generate(graphPtr, cFormat, cOutput, cProject)
                     }
                 }
             }

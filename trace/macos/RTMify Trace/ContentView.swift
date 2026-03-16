@@ -10,9 +10,7 @@ struct ContentView: View {
                 LicenseGateView()
             case .dropZone:
                 DropZoneView(summary: nil)
-            case .fileLoaded(let summary):
-                DropZoneView(summary: summary)
-            case .generating:
+            case .loading(let message):
                 ZStack {
                     DropZoneView(summary: nil)
                         .disabled(true)
@@ -20,7 +18,23 @@ struct ContentView: View {
                     VStack(spacing: 12) {
                         ProgressView()
                             .scaleEffect(1.5)
-                        Text("Generating report...")
+                        Text(message)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(32)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            case .fileLoaded(let summary):
+                DropZoneView(summary: summary)
+            case .generating(let message):
+                ZStack {
+                    DropZoneView(summary: nil)
+                        .disabled(true)
+                        .opacity(0.4)
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text(message)
                             .foregroundStyle(.secondary)
                     }
                     .padding(32)

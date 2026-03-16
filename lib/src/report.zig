@@ -41,6 +41,34 @@ pub const ReportContext = struct {
     merged_gaps: []const TraceGap,
 };
 
+pub fn deinitReportContext(ctx: ReportContext, alloc: Allocator) void {
+    for (ctx.generic_gaps) |gap| {
+        alloc.free(gap.primary_id);
+        if (gap.related_id) |id| alloc.free(id);
+    }
+    alloc.free(ctx.generic_gaps);
+
+    for (ctx.profile_gaps) |gap| {
+        alloc.free(gap.title);
+        alloc.free(gap.gap_type);
+        alloc.free(gap.node_id);
+        alloc.free(gap.message);
+        alloc.free(gap.profile_rule);
+        if (gap.clause) |clause| alloc.free(clause);
+    }
+    alloc.free(ctx.profile_gaps);
+
+    for (ctx.merged_gaps) |gap| {
+        alloc.free(gap.kind);
+        alloc.free(gap.primary_id);
+        if (gap.related_id) |id| alloc.free(id);
+        alloc.free(gap.message);
+        if (gap.profile_rule) |rule| alloc.free(rule);
+        if (gap.clause) |clause| alloc.free(clause);
+    }
+    alloc.free(ctx.merged_gaps);
+}
+
 pub fn buildReportContext(g: *const graph.Graph, profile_id: profile_mod.ProfileId, alloc: Allocator) !ReportContext {
     const profile = profile_mod.get(profile_id);
 
@@ -51,7 +79,9 @@ pub fn buildReportContext(g: *const graph.Graph, profile_id: profile_mod.Profile
         &[_]chain_mod.Gap{}
     else blk: {
         const chain_gaps = try chain_mod.walkChain(g, profile, alloc);
+        defer alloc.free(chain_gaps);
         const special_gaps = try chain_mod.walkSpecialGaps(g, profile, alloc);
+        defer alloc.free(special_gaps);
         var merged: std.ArrayList(chain_mod.Gap) = .empty;
         try merged.appendSlice(alloc, chain_gaps);
         try merged.appendSlice(alloc, special_gaps);
