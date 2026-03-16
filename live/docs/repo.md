@@ -863,6 +863,17 @@ New modules added to the Live source tree:
 ```
 src/
 ├── ... (existing Live modules)
+├── mcp.zig              ← Stable facade for the MCP HTTP/SSE endpoint surface
+├── mcp/
+│   ├── protocol.zig     ← Static MCP protocol metadata: tools, resources, prompts, headers
+│   ├── http.zig         ← JSON-RPC transport, request dispatch, and response envelopes
+│   ├── tools.zig        ← Tool dispatch, filtering, and argument validation
+│   ├── resources.zig    ← Resource listing and URI-based resource reads
+│   ├── prompts.zig      ← Prompt listing and prompt body generation
+│   ├── markdown.zig     ← Narrative markdown rendering for nodes, reports, and gaps
+│   ├── workbooks.zig    ← Workbook context and workbook summary JSON helpers
+│   ├── internal.zig     ← Shared MCP request/runtime context and payload types
+│   └── tests/           ← MCP-specific extracted test harness
 ├── sync_live.zig         ← Stable facade for the background workbook sync and repo scan surface
 ├── sync/
 │   ├── state.zig         ← Shared sync worker state and spawn-time config
@@ -879,6 +890,8 @@ src/
 ├── chain.zig             ← Chain validation: walk industry-specific paths, flag gaps
 ├── provision.zig         ← Sheet provisioning: create tabs, write headers, apply formatting
 ```
+
+`mcp.zig` remains the import path used by the HTTP server. The implementation now lives under `src/mcp/`, with `mcp.zig` reduced to a thin facade that re-exports the stable `handleSse` and `handlePost` entrypoints.
 
 `sync_live.zig` remains the import path used by the rest of Live. The implementation now lives under `src/sync/`, with `sync_live.zig` reduced to a thin facade that re-exports the stable public worker/repo-scan surface.
 

@@ -1,0 +1,36 @@
+const std = @import("std");
+const testing = std.testing;
+const internal = @import("../internal.zig");
+const protocol = @import("../protocol.zig");
+const support = @import("support.zig");
+
+test "tools list exposes truthful schemas for structured and narrative tools" {
+    var parsed = try support.parseToolsJsonForTest(testing.allocator);
+    defer parsed.deinit();
+
+    const get_rtm = support.findToolForTest(parsed.value, "get_rtm") orelse return error.TestUnexpectedResult;
+    try testing.expect(internal.json_util.getObjectField(get_rtm, "outputSchema") != null);
+    try testing.expectEqualStrings("array", internal.json_util.getString(internal.json_util.getObjectField(get_rtm, "outputSchema").?, "type").?);
+
+    const get_node = support.findToolForTest(parsed.value, "get_node") orelse return error.TestUnexpectedResult;
+    const get_node_schema = internal.json_util.getObjectField(get_node, "inputSchema") orelse return error.TestUnexpectedResult;
+    const get_node_props = internal.json_util.getObjectField(get_node_schema, "properties") orelse return error.TestUnexpectedResult;
+    try testing.expect(internal.json_util.getObjectField(get_node_props, "include_edges") != null);
+    try testing.expect(internal.json_util.getObjectField(get_node_props, "include_properties") != null);
+    try testing.expectEqualStrings("object", internal.json_util.getString(internal.json_util.getObjectField(get_node, "outputSchema").?, "type").?);
+
+    const get_bom_item = support.findToolForTest(parsed.value, "get_bom_item") orelse return error.TestUnexpectedResult;
+    const get_bom_item_schema = internal.json_util.getObjectField(get_bom_item, "inputSchema") orelse return error.TestUnexpectedResult;
+    const one_of = internal.json_util.getObjectField(get_bom_item_schema, "oneOf") orelse return error.TestUnexpectedResult;
+    try testing.expect(one_of == .array);
+    try testing.expectEqual(@as(usize, 2), one_of.array.items.len);
+
+    const requirement_trace = support.findToolForTest(parsed.value, "requirement_trace") orelse return error.TestUnexpectedResult;
+    try testing.expect(internal.json_util.getObjectField(requirement_trace, "outputSchema") == null);
+}
+
+test "mcp headers do not advertise wildcard cors" {
+    for (protocol.json_rpc_headers) |header| {
+        try testing.expect(!std.ascii.eqlIgnoreCase(header.name, "Access-Control-Allow-Origin"));
+    }
+}
