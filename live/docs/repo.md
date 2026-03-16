@@ -863,12 +863,24 @@ New modules added to the Live source tree:
 ```
 src/
 ├── ... (existing Live modules)
+├── sync_live.zig         ← Stable facade for the background workbook sync and repo scan surface
+├── sync/
+│   ├── state.zig         ← Shared sync worker state and spawn-time config
+│   ├── worker.zig        ← Long-running workbook sync worker loop
+│   ├── cycle.zig         ← One workbook sync cycle: read, ingest, port, write back
+│   ├── port_db.zig       ← In-memory graph -> SQLite graph porting helpers
+│   ├── writeback.zig     ← Workbook status/value/color writeback helpers
+│   ├── repo_scan.zig     ← Repo scan thread and git/annotation ingestion
+│   ├── runtime_diag.zig  ← Runtime diagnostic upsert/clear helpers
+│   └── tests/            ← Sync-specific extracted test harness
 ├── repo.zig              ← Repo watcher: scan loop, file classification, modification tracking
 ├── annotations.zig       ← Annotation scanner: comment detection, requirement ID extraction
 ├── git.zig               ← Git CLI wrapper: log, blame, fork/exec, output parsing
 ├── chain.zig             ← Chain validation: walk industry-specific paths, flag gaps
 ├── provision.zig         ← Sheet provisioning: create tabs, write headers, apply formatting
 ```
+
+`sync_live.zig` remains the import path used by the rest of Live. The implementation now lives under `src/sync/`, with `sync_live.zig` reduced to a thin facade that re-exports the stable public worker/repo-scan surface.
 
 Estimated new Zig for Live+Repo: ~2,500-3,500 lines across these six modules plus extensions to existing routes, web UI, MCP tools, and renderers.
 
