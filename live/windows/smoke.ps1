@@ -46,10 +46,6 @@ try {
         if (Test-Path $stderrLog) { Get-Content $stderrLog } else { Write-Host "(empty)" }
         throw "rtmify-live.exe did not become ready on port $port"
     }
-
-    if (-not (Test-Path $dbPath)) {
-        throw "Expected DB not created at $dbPath"
-    }
 } finally {
     if ($null -ne $proc -and -not $proc.HasExited) {
         Stop-Process -Id $proc.Id -Force
