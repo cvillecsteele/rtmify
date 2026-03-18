@@ -292,6 +292,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = .ok;
             response_bytes = body.len;
             try sendJson(req, body);
+        } else if (std.mem.eql(u8, path, "/api/design-bom-sync")) {
+            const resp = try routes.handleGetDesignBomSyncResponse(ctx.registry, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/license/info")) {
             const resp = try routes.handleLicenseInfo(ctx.license_service, alloc);
             response_status = resp.status;
@@ -309,10 +314,137 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.startsWith(u8, path, "/api/v1/bom/design/") and std.mem.endsWith(u8, path, "/items")) {
+            const bom_name = try decodePathParam(path["/api/v1/bom/design/".len .. path.len - "/items".len], alloc);
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetDesignBomItemsResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.startsWith(u8, path, "/api/v1/bom/design/")) {
+            const bom_name = try decodePathParam(path["/api/v1/bom/design/".len..], alloc);
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetDesignBomTreeResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/design")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetDesignBomListResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/components")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetDesignBomComponentsResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/coverage")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetDesignBomCoverageResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/part-usage")) {
+            const part = try queryParamDecoded(target, "part", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleFindPartUsageResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                part,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/gaps")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_inactive = queryParamBool(target, "include_inactive");
+            const resp = try routes.handleBomGapsResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_inactive,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/impact-analysis")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleBomImpactAnalysisResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.startsWith(u8, path, "/api/v1/bom/")) {
             const full_product_identifier = try decodePathParam(path["/api/v1/bom/".len..], alloc);
             const bom_type = try queryParamDecoded(target, "bom_type", alloc);
             const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
             const resp = try routes.handleGetBomResponse(
                 db.?,
                 auth.?,
@@ -320,6 +452,7 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 full_product_identifier,
                 bom_type,
                 bom_name,
+                include_obsolete,
                 alloc,
             );
             response_status = resp.status;
@@ -347,6 +480,51 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = .ok;
             response_bytes = body.len;
             try sendText(req, body, "text/plain; charset=utf-8");
+        } else if (std.mem.eql(u8, path, "/report/design-bom.md")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            if (full_product_identifier == null or bom_name == null) {
+                const err_body = try alloc.dupe(u8, "{\"error\":\"missing_full_product_identifier_or_bom_name\"}");
+                response_status = .bad_request;
+                response_bytes = err_body.len;
+                try sendJsonWithStatus(req, err_body, .bad_request);
+                return;
+            }
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const body = try routes.handleReportDesignBomMd(db.?, full_product_identifier.?, bom_name.?, include_obsolete, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendText(req, body, "text/markdown");
+        } else if (std.mem.eql(u8, path, "/report/design-bom")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            if (full_product_identifier == null or bom_name == null) {
+                const err_body = try alloc.dupe(u8, "{\"error\":\"missing_full_product_identifier_or_bom_name\"}");
+                response_status = .bad_request;
+                response_bytes = err_body.len;
+                try sendJsonWithStatus(req, err_body, .bad_request);
+                return;
+            }
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const body = try routes.handleReportDesignBomPdf(db.?, full_product_identifier.?, bom_name.?, include_obsolete, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendPdfNamed(req, body, "design-bom.pdf");
+        } else if (std.mem.eql(u8, path, "/report/design-bom.docx")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            if (full_product_identifier == null or bom_name == null) {
+                const err_body = try alloc.dupe(u8, "{\"error\":\"missing_full_product_identifier_or_bom_name\"}");
+                response_status = .bad_request;
+                response_bytes = err_body.len;
+                try sendJsonWithStatus(req, err_body, .bad_request);
+                return;
+            }
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const body = try routes.handleReportDesignBomDocx(db.?, full_product_identifier.?, bom_name.?, include_obsolete, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendDocxNamed(req, body, "design-bom.docx");
         } else if (std.mem.eql(u8, path, "/report/rtm")) {
             const body = try routes.handleReportRtmPdf(db.?, alloc);
             response_status = .ok;
@@ -507,9 +685,24 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/design-bom-sync/validate")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handleDesignBomSyncValidateResponse(ctx.secure_store, body_bytes, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/connection")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleConnectionResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
+            if (resp.ok) {
+                if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
+            }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/design-bom-sync")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handleDesignBomSyncResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
             if (resp.ok) {
                 if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
             }
@@ -557,6 +750,27 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 db.?,
                 auth.?,
                 requestHeaderValue(req, "Authorization"),
+                body_bytes,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/bom/xlsx")) {
+            const body_bytes = readBodyLimited(req, alloc, bom_body_limit_bytes) catch |err| switch (err) {
+                error.StreamTooLong => {
+                    response_status = .payload_too_large;
+                    response_bytes = payload_too_large_json.len;
+                    try sendJsonWithStatus(req, payload_too_large_json, .payload_too_large);
+                    return;
+                },
+                else => return err,
+            };
+            const resp = try routes.handlePostBomXlsxResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                requestHeaderValue(req, "Content-Type"),
                 body_bytes,
                 alloc,
             );
@@ -622,6 +836,14 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             const body_bytes = try readBody(req, alloc);
             const workbook_id = try decodePathParam(path["/api/workbooks/".len..], alloc);
             const resp = try routes.handleDeleteWorkbookResponse(ctx.registry, workbook_id, body_bytes, alloc);
+            if (resp.ok) {
+                if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
+            }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/design-bom-sync")) {
+            const resp = try routes.handleDeleteDesignBomSyncResponse(ctx.registry, ctx.secure_store, alloc);
             if (resp.ok) {
                 if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
             }
@@ -822,9 +1044,15 @@ fn sendStaticText(req: *std.http.Server.Request, body: []const u8, content_type:
 }
 
 fn sendPdf(req: *std.http.Server.Request, body: []const u8) !void {
+    try sendPdfNamed(req, body, "rtm.pdf");
+}
+
+fn sendPdfNamed(req: *std.http.Server.Request, body: []const u8, filename: []const u8) !void {
+    const disposition = try std.fmt.allocPrint(std.heap.page_allocator, "attachment; filename=\"{s}\"", .{filename});
+    defer std.heap.page_allocator.free(disposition);
     const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = "application/pdf" },
-        .{ .name = "Content-Disposition", .value = "attachment; filename=\"rtm.pdf\"" },
+        .{ .name = "Content-Disposition", .value = disposition },
     };
     try req.respond(body, .{
         .status = .ok,
@@ -845,10 +1073,16 @@ fn sendText(req: *std.http.Server.Request, body: []const u8, content_type: []con
 }
 
 fn sendDocx(req: *std.http.Server.Request, body: []const u8) !void {
+    try sendDocxNamed(req, body, "rtm.docx");
+}
+
+fn sendDocxNamed(req: *std.http.Server.Request, body: []const u8, filename: []const u8) !void {
     const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    const disposition = try std.fmt.allocPrint(std.heap.page_allocator, "attachment; filename=\"{s}\"", .{filename});
+    defer std.heap.page_allocator.free(disposition);
     const headers = base_headers ++ [_]std.http.Header{
         .{ .name = "Content-Type", .value = mime },
-        .{ .name = "Content-Disposition", .value = "attachment; filename=\"rtm.docx\"" },
+        .{ .name = "Content-Disposition", .value = disposition },
     };
     try req.respond(body, .{
         .status = .ok,
@@ -922,6 +1156,11 @@ fn queryParamDecoded(target: []const u8, key: []const u8, alloc: Allocator) !?[]
     return std.Uri.percentDecodeInPlace(buf);
 }
 
+fn queryParamBool(target: []const u8, key: []const u8) bool {
+    const raw = queryParamRaw(target, key) orelse return false;
+    return std.ascii.eqlIgnoreCase(raw, "true") or std.mem.eql(u8, raw, "1");
+}
+
 fn stripQuery(target: []const u8) []const u8 {
     return if (std.mem.indexOfScalar(u8, target, '?')) |q| target[0..q] else target;
 }
@@ -960,6 +1199,13 @@ test "queryParamDecoded leaves simple values unchanged" {
 
     const decoded = (try queryParamDecoded("/api/provision-preview?profile=medical", "profile", alloc)).?;
     try testing.expectEqualStrings("medical", decoded);
+}
+
+test "queryParamBool accepts true and one only" {
+    try testing.expect(queryParamBool("/api/v1/bom/design?include_obsolete=true", "include_obsolete"));
+    try testing.expect(queryParamBool("/api/v1/bom/design?include_obsolete=1", "include_obsolete"));
+    try testing.expect(!queryParamBool("/api/v1/bom/design?include_obsolete=false", "include_obsolete"));
+    try testing.expect(!queryParamBool("/api/v1/bom/design", "include_obsolete"));
 }
 
 test "decodePathParam decodes percent-encoded route IDs" {

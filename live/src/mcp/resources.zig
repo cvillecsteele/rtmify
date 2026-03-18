@@ -73,6 +73,32 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
     var bom_items: std.ArrayList(internal.graph_live.Node) = .empty;
     defer internal.shared.freeNodeList(&bom_items, alloc);
     try db.nodesByType("BOMItem", alloc, &bom_items);
+
+    var design_boms: std.ArrayList(internal.graph_live.Node) = .empty;
+    defer internal.shared.freeNodeList(&design_boms, alloc);
+    try db.nodesByType("DesignBOM", alloc, &design_boms);
+    if (design_boms.items.len > 0) {
+        _ = buf.pop();
+        for (design_boms.items, 0..) |bom_node, idx| {
+            if (idx >= 5) break;
+            const full_product_identifier = internal.json_util.extractJsonFieldStatic(bom_node.properties, "full_product_identifier") orelse continue;
+            const bom_name = internal.json_util.extractJsonFieldStatic(bom_node.properties, "bom_name") orelse continue;
+            const uri = try std.fmt.allocPrint(alloc, "design-bom://{s}/{s}", .{ full_product_identifier, bom_name });
+            defer alloc.free(uri);
+            const display_name = try std.fmt.allocPrint(alloc, "Design BOM {s} / {s}", .{ full_product_identifier, bom_name });
+            defer alloc.free(display_name);
+            try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"uri\":");
+            try internal.json_util.appendJsonQuoted(&buf, uri, alloc);
+            try buf.appendSlice(alloc, ",\"name\":");
+            try internal.json_util.appendJsonQuoted(&buf, display_name, alloc);
+            try buf.appendSlice(alloc, ",\"description\":");
+            try internal.json_util.appendJsonQuoted(&buf, "Design BOM tree and trace-coverage summary for one product BOM.", alloc);
+            try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+        }
+        try buf.append(alloc, ']');
+    }
+
     if (bom_items.items.len > 0) {
         _ = buf.pop();
         for (bom_items.items, 0..) |item, idx| {
@@ -99,7 +125,9 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
 
 pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestContext, runtime_ctx: *const internal.RuntimeContext) ![]u8 {
     const alloc = req_ctx.alloc;
-    const text = if (std.mem.startsWith(u8, uri, "bom-item://"))
+    const text = if (std.mem.startsWith(u8, uri, "design-bom://"))
+        try designBomMarkdown(uri["design-bom://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "bom-item://"))
         try bomItemTraceMarkdown(uri, runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "requirement://"))
         try markdown.requirementTraceMarkdown(uri[14..], runtime_ctx.db, runtime_ctx.profile_name, alloc)
@@ -148,6 +176,67 @@ pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestConte
     try internal.json_util.appendJsonQuoted(&buf, contextual, alloc);
     try buf.appendSlice(alloc, "}]}");
     return alloc.dupe(u8, buf.items);
+}
+
+fn designBomMarkdown(path: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const slash = std.mem.indexOfScalar(u8, path, '/') orelse return error.InvalidArgument;
+    const full_product_identifier = path[0..slash];
+    const bom_name = path[slash + 1 ..];
+    const tree_json = try internal.bom.getDesignBomTreeJson(db, full_product_identifier, bom_name, false, alloc);
+    defer alloc.free(tree_json);
+
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, tree_json, .{});
+    defer parsed.deinit();
+
+    const design_boms = internal.json_util.getObjectField(parsed.value, "design_boms") orelse return error.InvalidJson;
+    if (design_boms != .array or design_boms.array.items.len == 0) return error.NotFound;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try std.fmt.format(buf.writer(alloc), "# Design BOM {s} / {s}\n\n", .{ full_product_identifier, bom_name });
+    for (design_boms.array.items) |design_bom| {
+        const bom_type = internal.json_util.getString(design_bom, "bom_type") orelse "unknown";
+        const source_format = internal.json_util.getString(design_bom, "source_format") orelse "unknown";
+        try std.fmt.format(buf.writer(alloc), "## {s}\n- Source Format: {s}\n", .{ bom_type, source_format });
+        const properties = internal.json_util.getObjectField(design_bom, "properties");
+        if (properties) |props| {
+            if (internal.json_util.getString(props, "ingested_at")) |value| {
+                try std.fmt.format(buf.writer(alloc), "- Ingested At: {s}\n", .{value});
+            }
+        }
+        const tree = internal.json_util.getObjectField(design_bom, "tree") orelse {
+            try buf.append(alloc, '\n');
+            continue;
+        };
+        const roots = internal.json_util.getObjectField(tree, "roots") orelse {
+            try buf.append(alloc, '\n');
+            continue;
+        };
+        try buf.appendSlice(alloc, "- Roots:\n");
+        try appendTreeChildrenMarkdown(&buf, roots, 0, alloc);
+        try buf.append(alloc, '\n');
+    }
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendTreeChildrenMarkdown(buf: *std.ArrayList(u8), value: std.json.Value, depth: usize, alloc: internal.Allocator) !void {
+    if (value != .array or value.array.items.len == 0) {
+        try buf.appendSlice(alloc, "  - None\n");
+        return;
+    }
+    for (value.array.items) |item| {
+        const properties = internal.json_util.getObjectField(item, "properties") orelse continue;
+        const part = internal.json_util.getString(properties, "part") orelse internal.json_util.getString(item, "id") orelse "unknown";
+        const revision = internal.json_util.getString(properties, "revision") orelse "?";
+        try buf.appendNTimes(alloc, ' ', depth * 2);
+        try std.fmt.format(buf.writer(alloc), "- {s}@{s}\n", .{ part, revision });
+        if (internal.json_util.getObjectField(item, "children")) |children| {
+            try appendTreeChildrenMarkdown(buf, children, depth + 1, alloc);
+        }
+    }
 }
 
 fn bomItemTraceMarkdown(item_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {

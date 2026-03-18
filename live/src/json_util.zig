@@ -38,6 +38,14 @@ pub fn getString(value: std.json.Value, key: []const u8) ?[]const u8 {
     return field.string;
 }
 
+pub fn getInt(value: std.json.Value, key: []const u8) ?i64 {
+    const field = getObjectField(value, key) orelse return null;
+    return switch (field) {
+        .integer => field.integer,
+        else => null,
+    };
+}
+
 pub fn extractJsonFieldStatic(json: []const u8, key: []const u8) ?[]const u8 {
     var needle_buf: [128]u8 = undefined;
     const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return null;
@@ -73,6 +81,12 @@ test "getString returns string field" {
     var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"x\":\"y\"}", .{});
     defer parsed.deinit();
     try testing.expectEqualStrings("y", getString(parsed.value, "x").?);
+}
+
+test "getInt returns integer field" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"x\":7}", .{});
+    defer parsed.deinit();
+    try testing.expectEqual(@as(?i64, 7), getInt(parsed.value, "x"));
 }
 
 test "extractJsonFieldStatic tolerates whitespace after colon" {

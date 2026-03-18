@@ -76,8 +76,28 @@ pub const SyncConfig = struct {
     workbook_slug: []const u8,
     profile: internal.profile_mod.ProfileId,
     active: internal.ActiveConnection,
+    design_bom_sync: ?DesignBomSyncSource = null,
     control: *WorkerControl,
     alloc: internal.Allocator,
     db: *internal.GraphDb,
     state: *SyncState,
+};
+
+pub const DesignBomSyncSource = union(enum) {
+    provider: internal.ActiveConnection,
+    local_xlsx_path: []const u8,
+
+    pub fn clone(self: DesignBomSyncSource, alloc: internal.Allocator) !DesignBomSyncSource {
+        return switch (self) {
+            .provider => |active| .{ .provider = try active.clone(alloc) },
+            .local_xlsx_path => |path| .{ .local_xlsx_path = try alloc.dupe(u8, path) },
+        };
+    }
+
+    pub fn deinit(self: *DesignBomSyncSource, alloc: internal.Allocator) void {
+        switch (self.*) {
+            .provider => |*active| active.deinit(alloc),
+            .local_xlsx_path => |path| alloc.free(path),
+        }
+    }
 };

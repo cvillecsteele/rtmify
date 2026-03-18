@@ -5,9 +5,19 @@ const db_mod = @import("db.zig");
 const graph_live = @import("graph_live.zig");
 const json_util = @import("json_util.zig");
 const shared = @import("routes/shared.zig");
+const xlsx = @import("rtmify").xlsx;
 
 pub const BomType = enum { hardware, software };
-pub const BomFormat = enum { hardware_csv, hardware_json, cyclonedx, spdx };
+pub const BomFormat = enum { hardware_csv, hardware_json, cyclonedx, spdx, xlsx, sheets };
+
+const ProductStatus = enum {
+    active,
+    in_development,
+    superseded,
+    eol,
+    obsolete,
+    unknown,
+};
 
 pub const BomOccurrenceInput = struct {
     parent_key: ?[]const u8,
@@ -87,6 +97,38 @@ pub const BomIngestResponse = struct {
     }
 };
 
+pub const GroupIngestStatus = enum { ok, failed };
+
+pub const GroupedBomResult = struct {
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    rows_ingested: usize,
+    inserted_nodes: usize,
+    inserted_edges: usize,
+    status: GroupIngestStatus,
+    error_code: ?[]const u8 = null,
+    error_detail: ?[]const u8 = null,
+    warnings: []BomWarning,
+
+    pub fn deinit(self: *GroupedBomResult, alloc: Allocator) void {
+        alloc.free(self.full_product_identifier);
+        alloc.free(self.bom_name);
+        if (self.error_code) |value| alloc.free(value);
+        if (self.error_detail) |value| alloc.free(value);
+        for (self.warnings) |*warning| warning.deinit(alloc);
+        alloc.free(self.warnings);
+    }
+};
+
+pub const GroupedBomIngestResponse = struct {
+    groups: []GroupedBomResult,
+
+    pub fn deinit(self: *GroupedBomIngestResponse, alloc: Allocator) void {
+        for (self.groups) |*group| group.deinit(alloc);
+        alloc.free(self.groups);
+    }
+};
+
 pub const BomError = error{
     UnsupportedContentType,
     UnsupportedFormat,
@@ -97,6 +139,7 @@ pub const BomError = error{
     EmptyBomItems,
     MissingRequiredField,
     NoProductMatch,
+    MissingDesignBomTab,
     SbomUnresolvableRoot,
     CircularReference,
 };
@@ -110,6 +153,49 @@ const PreparedBom = struct {
         for (self.warnings.items) |*warning| warning.deinit(alloc);
         self.warnings.deinit(alloc);
     }
+};
+
+fn classifyProductStatus(raw_value: ?[]const u8) ProductStatus {
+    const raw = raw_value orelse return .active;
+    const value = std.mem.trim(u8, raw, " \r\n\t");
+    if (value.len == 0) return .active;
+    if (std.ascii.eqlIgnoreCase(value, "Active")) return .active;
+    if (std.ascii.eqlIgnoreCase(value, "In Development") or std.ascii.eqlIgnoreCase(value, "Development")) return .in_development;
+    if (std.ascii.eqlIgnoreCase(value, "Superseded")) return .superseded;
+    if (std.ascii.eqlIgnoreCase(value, "EOL") or std.ascii.eqlIgnoreCase(value, "End of Life")) return .eol;
+    if (std.ascii.eqlIgnoreCase(value, "Obsolete")) return .obsolete;
+    return .unknown;
+}
+
+fn productStatusExcludedFromActiveGraph(status: ProductStatus) bool {
+    return status == .obsolete;
+}
+
+fn productStatusExcludedFromGapAnalysis(status: ProductStatus) bool {
+    return switch (status) {
+        .superseded, .eol, .obsolete => true,
+        else => false,
+    };
+}
+
+fn productStatusForIdentifier(db: *graph_live.GraphDb, full_product_identifier: []const u8, alloc: Allocator) !ProductStatus {
+    const product_id = try std.fmt.allocPrint(alloc, "product://{s}", .{full_product_identifier});
+    defer alloc.free(product_id);
+
+    var st = try db.db.prepare(
+        \\SELECT json_extract(properties, '$.product_status')
+        \\FROM nodes
+        \\WHERE id=? AND type='Product'
+        \\LIMIT 1
+    );
+    defer st.finalize();
+    try st.bindText(1, product_id);
+    if (!(try st.step())) return .active;
+    return classifyProductStatus(if (st.columnIsNull(0)) null else st.columnText(0));
+}
+
+const IngestOptions = struct {
+    allow_missing_product: bool = false,
 };
 
 const ItemSpec = struct {
@@ -140,7 +226,7 @@ pub fn ingestHttpBody(
 ) (BomError || db_mod.DbError || error{OutOfMemory})!BomIngestResponse {
     var prepared = try prepareHttpBody(content_type, body, alloc);
     defer prepared.deinit(alloc);
-    return ingestPrepared(db, &prepared, alloc);
+    return ingestPrepared(db, &prepared, .{}, alloc);
 }
 
 pub fn ingestInboxFile(
@@ -151,7 +237,34 @@ pub fn ingestInboxFile(
 ) (BomError || db_mod.DbError || error{OutOfMemory})!BomIngestResponse {
     var prepared = try prepareInboxFile(name, body, alloc);
     defer prepared.deinit(alloc);
-    return ingestPrepared(db, &prepared, alloc);
+    return ingestPrepared(db, &prepared, .{}, alloc);
+}
+
+pub fn ingestXlsxBody(
+    db: *graph_live.GraphDb,
+    body: []const u8,
+    alloc: Allocator,
+) anyerror!GroupedBomIngestResponse {
+    const temp_path = try writeTempXlsx(body, alloc);
+    defer {
+        std.fs.deleteFileAbsolute(temp_path) catch {};
+        alloc.free(temp_path);
+    }
+
+    return ingestXlsxPath(db, temp_path, alloc);
+}
+
+pub fn ingestXlsxPath(
+    db: *graph_live.GraphDb,
+    path: []const u8,
+    alloc: Allocator,
+) anyerror!GroupedBomIngestResponse {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const sheets = try xlsx.parse(arena, path);
+    const design_bom_rows = findSheetRows(sheets, "Design BOM") orelse return error.MissingDesignBomTab;
+    return ingestDesignBomRows(db, design_bom_rows, findSheetRows(sheets, "Product"), .xlsx, alloc);
 }
 
 pub fn ingestResponseJson(response: BomIngestResponse, alloc: Allocator) ![]const u8 {
@@ -182,6 +295,162 @@ pub fn ingestResponseJson(response: BomIngestResponse, alloc: Allocator) ![]cons
     }
     try buf.appendSlice(alloc, "]}");
     return alloc.dupe(u8, buf.items);
+}
+
+pub fn groupedIngestResponseJson(response: GroupedBomIngestResponse, alloc: Allocator) ![]const u8 {
+    var ok_count: usize = 0;
+    for (response.groups) |group| {
+        if (group.status == .ok) ok_count += 1;
+    }
+    const overall_status = if (response.groups.len == 0 or ok_count == 0)
+        "error"
+    else if (ok_count == response.groups.len)
+        "ok"
+    else
+        "partial";
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"status\":");
+    try shared.appendJsonStr(&buf, overall_status, alloc);
+    try buf.appendSlice(alloc, ",\"groups\":[");
+    for (response.groups, 0..) |group, idx| {
+        if (idx > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"status\":");
+        try shared.appendJsonStr(&buf, if (group.status == .ok) "ok" else "error", alloc);
+        try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStr(&buf, group.full_product_identifier, alloc);
+        try buf.appendSlice(alloc, ",\"bom_name\":");
+        try shared.appendJsonStr(&buf, group.bom_name, alloc);
+        try std.fmt.format(buf.writer(alloc), ",\"rows_ingested\":{d},\"inserted_nodes\":{d},\"inserted_edges\":{d}", .{
+            group.rows_ingested,
+            group.inserted_nodes,
+            group.inserted_edges,
+        });
+        try buf.appendSlice(alloc, ",\"error\":");
+        if (group.error_code) |code| {
+            try buf.appendSlice(alloc, "{\"code\":");
+            try shared.appendJsonStr(&buf, code, alloc);
+            try buf.appendSlice(alloc, ",\"detail\":");
+            try shared.appendJsonStrOpt(&buf, group.error_detail, alloc);
+            try buf.append(alloc, '}');
+        } else {
+            try buf.appendSlice(alloc, "null");
+        }
+        try buf.appendSlice(alloc, ",\"warnings\":[");
+        for (group.warnings, 0..) |warning, widx| {
+            if (widx > 0) try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"code\":");
+            try shared.appendJsonStr(&buf, warning.code, alloc);
+            try buf.appendSlice(alloc, ",\"message\":");
+            try shared.appendJsonStr(&buf, warning.message, alloc);
+            try buf.appendSlice(alloc, ",\"subject\":");
+            try shared.appendJsonStrOpt(&buf, warning.subject, alloc);
+            try buf.append(alloc, '}');
+        }
+        try buf.appendSlice(alloc, "]}");
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn ingestDesignBomRows(
+    db: *graph_live.GraphDb,
+    design_bom_rows: []const []const []const u8,
+    product_rows: ?[]const []const []const u8,
+    source_format: BomFormat,
+    alloc: Allocator,
+) (BomError || db_mod.DbError || error{OutOfMemory})!GroupedBomIngestResponse {
+    if (product_rows) |rows| try upsertProductRows(db, rows, alloc);
+    if (design_bom_rows.len < 2) return .{ .groups = try alloc.alloc(GroupedBomResult, 0) };
+
+    const header = design_bom_rows[0];
+    const bom_name_col = resolveCol(header, "bom_name") orelse return error.MissingRequiredField;
+    const full_identifier_col = resolveCol(header, "full_product_identifier") orelse resolveCol(header, "full_identifier") orelse return error.MissingRequiredField;
+
+    const GroupBuilder = struct {
+        full_product_identifier: []const u8,
+        bom_name: []const u8,
+        rows: std.ArrayList([]const []const u8),
+
+        fn deinit(self: *@This(), allocator: Allocator) void {
+            allocator.free(self.full_product_identifier);
+            allocator.free(self.bom_name);
+            self.rows.deinit(allocator);
+        }
+    };
+
+    var groups = std.StringHashMap(GroupBuilder).init(alloc);
+    defer {
+        var it = groups.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(alloc);
+        }
+        groups.deinit();
+    }
+
+    for (design_bom_rows[1..]) |row| {
+        const bom_name = std.mem.trim(u8, if (bom_name_col < row.len) row[bom_name_col] else "", " \r\n\t");
+        const full_identifier = std.mem.trim(u8, if (full_identifier_col < row.len) row[full_identifier_col] else "", " \r\n\t");
+        const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ full_identifier, bom_name });
+        errdefer alloc.free(key);
+        const gop = try groups.getOrPut(key);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = key;
+            gop.value_ptr.* = .{
+                .full_product_identifier = try alloc.dupe(u8, full_identifier),
+                .bom_name = try alloc.dupe(u8, bom_name),
+                .rows = .empty,
+            };
+        } else {
+            alloc.free(key);
+        }
+        try gop.value_ptr.rows.append(alloc, row);
+    }
+
+    var results: std.ArrayList(GroupedBomResult) = .empty;
+    errdefer {
+        for (results.items) |*result| result.deinit(alloc);
+        results.deinit(alloc);
+    }
+
+    var it = groups.iterator();
+    while (it.next()) |entry| {
+        const csv_body = try groupedRowsToCsv(header, entry.value_ptr.rows.items, alloc);
+        defer alloc.free(csv_body);
+
+        var prepared = prepareHardwareCsv(csv_body, alloc) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {
+                try results.append(alloc, try groupErrorResult(entry.value_ptr.*, entry.value_ptr.rows.items.len, groupedBomErrorCode(err), groupedBomErrorDetail(err), alloc));
+                continue;
+            },
+        };
+        defer prepared.deinit(alloc);
+        prepared.submission.source_format = source_format;
+
+        var ingest = ingestPrepared(db, &prepared, .{ .allow_missing_product = true }, alloc) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {
+                try results.append(alloc, try groupErrorResult(entry.value_ptr.*, entry.value_ptr.rows.items.len, groupedBomErrorCode(err), groupedBomErrorDetail(err), alloc));
+                continue;
+            },
+        };
+        defer ingest.deinit(alloc);
+
+        try results.append(alloc, .{
+            .full_product_identifier = try alloc.dupe(u8, ingest.full_product_identifier),
+            .bom_name = try alloc.dupe(u8, ingest.bom_name),
+            .rows_ingested = entry.value_ptr.rows.items.len,
+            .inserted_nodes = ingest.inserted_nodes,
+            .inserted_edges = ingest.inserted_edges,
+            .status = .ok,
+            .warnings = try dupWarnings(ingest.warnings, alloc),
+        });
+    }
+
+    return .{ .groups = try results.toOwnedSlice(alloc) };
 }
 
 fn freeStringSlice(items: []const []const u8, alloc: Allocator) void {
@@ -294,13 +563,172 @@ fn parseTraceRefJsonField(item: std.json.Value, field_name: []const u8, alloc: A
     return refs;
 }
 
+fn dupWarnings(warnings: []const BomWarning, alloc: Allocator) ![]BomWarning {
+    const duped = try alloc.alloc(BomWarning, warnings.len);
+    errdefer alloc.free(duped);
+    for (warnings, 0..) |warning, idx| {
+        duped[idx] = .{
+            .code = try alloc.dupe(u8, warning.code),
+            .message = try alloc.dupe(u8, warning.message),
+            .subject = if (warning.subject) |value| try alloc.dupe(u8, value) else null,
+        };
+    }
+    return duped;
+}
+
+fn groupedRowsToCsv(header: []const []const u8, rows: []const []const []const u8, alloc: Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    try appendCsvRow(&buf, header, true, alloc);
+    for (rows) |row| {
+        try buf.append(alloc, '\n');
+        try appendCsvRow(&buf, row, false, alloc);
+    }
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendCsvRow(buf: *std.ArrayList(u8), row: []const []const u8, normalize_header: bool, alloc: Allocator) !void {
+    for (row, 0..) |cell, idx| {
+        if (idx > 0) try buf.append(alloc, ',');
+        const value = if (normalize_header and std.ascii.eqlIgnoreCase(cell, "full_product_identifier"))
+            "full_identifier"
+        else
+            cell;
+        try appendCsvCell(buf, value, alloc);
+    }
+}
+
+fn appendCsvCell(buf: *std.ArrayList(u8), value: []const u8, alloc: Allocator) !void {
+    const needs_quotes = std.mem.indexOfAny(u8, value, ",\"\n\r") != null;
+    if (!needs_quotes) {
+        try buf.appendSlice(alloc, value);
+        return;
+    }
+    try buf.append(alloc, '"');
+    for (value) |c| {
+        if (c == '"') try buf.append(alloc, '"');
+        try buf.append(alloc, c);
+    }
+    try buf.append(alloc, '"');
+}
+
+fn groupedBomErrorCode(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidCsv => "invalid_csv",
+        error.InvalidJson => "invalid_json",
+        error.MissingBomName => "missing_bom_name",
+        error.MissingFullProductIdentifier => "missing_full_product_identifier",
+        error.EmptyBomItems => "empty_bom_items",
+        error.MissingRequiredField => "BOM_MISSING_REQUIRED_FIELD",
+        error.NoProductMatch => "BOM_NO_PRODUCT_MATCH",
+        error.CircularReference => "BOM_CIRCULAR_REFERENCE",
+        else => @errorName(err),
+    };
+}
+
+fn groupedBomErrorDetail(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidCsv => "CSV body is malformed or internally inconsistent.",
+        error.InvalidJson => "Request body must be valid JSON.",
+        error.MissingBomName => "bom_name is required.",
+        error.MissingFullProductIdentifier => "full_product_identifier is required.",
+        error.EmptyBomItems => "BOM payload must contain at least one component relation.",
+        error.MissingRequiredField => "A required BOM field is missing.",
+        error.NoProductMatch => "No Product node matches full_product_identifier.",
+        error.CircularReference => "BOM contains a circular parent/child reference.",
+        else => @errorName(err),
+    };
+}
+
+fn groupErrorResult(
+    group: anytype,
+    rows_ingested: usize,
+    code: []const u8,
+    detail: []const u8,
+    alloc: Allocator,
+) !GroupedBomResult {
+    return .{
+        .full_product_identifier = try alloc.dupe(u8, group.full_product_identifier),
+        .bom_name = try alloc.dupe(u8, group.bom_name),
+        .rows_ingested = rows_ingested,
+        .inserted_nodes = 0,
+        .inserted_edges = 0,
+            .status = .failed,
+        .error_code = try alloc.dupe(u8, code),
+        .error_detail = try alloc.dupe(u8, detail),
+        .warnings = try alloc.alloc(BomWarning, 0),
+    };
+}
+
+fn writeTempXlsx(body: []const u8, alloc: Allocator) ![]const u8 {
+    const path = try std.fmt.allocPrint(alloc, "/tmp/rtmify-design-bom-{d}.xlsx", .{std.time.nanoTimestamp()});
+    errdefer alloc.free(path);
+    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(body);
+    return path;
+}
+
+fn findSheetRows(sheets: []const xlsx.SheetData, name: []const u8) ?[]const []const []const u8 {
+    for (sheets) |sheet| {
+        if (std.ascii.eqlIgnoreCase(sheet.name, name)) return sheet.rows;
+    }
+    return null;
+}
+
+fn upsertProductRows(db: *graph_live.GraphDb, rows: []const []const []const u8, alloc: Allocator) !void {
+    if (rows.len < 2) return;
+    const header = rows[0];
+    const assembly_col = resolveCol(header, "assembly");
+    const revision_col = resolveCol(header, "revision");
+    const identifier_col = resolveCol(header, "full_identifier") orelse return;
+    const description_col = resolveCol(header, "description");
+    const status_col = resolveCol(header, "Product Status");
+
+    for (rows[1..]) |row| {
+        const full_identifier = std.mem.trim(u8, if (identifier_col < row.len) row[identifier_col] else "", " \r\n\t");
+        if (full_identifier.len == 0) continue;
+        const assembly = std.mem.trim(u8, if (assembly_col) |idx| if (idx < row.len) row[idx] else "" else "", " \r\n\t");
+        const revision = std.mem.trim(u8, if (revision_col) |idx| if (idx < row.len) row[idx] else "" else "", " \r\n\t");
+        const description = std.mem.trim(u8, if (description_col) |idx| if (idx < row.len) row[idx] else "" else "", " \r\n\t");
+        const product_status = std.mem.trim(u8, if (status_col) |idx| if (idx < row.len) row[idx] else "" else "", " \r\n\t");
+
+        const product_id = try std.fmt.allocPrint(alloc, "product://{s}", .{full_identifier});
+        defer alloc.free(product_id);
+        var props: std.ArrayList(u8) = .empty;
+        defer props.deinit(alloc);
+        try props.appendSlice(alloc, "{\"assembly\":");
+        try shared.appendJsonStr(&props, assembly, alloc);
+        try props.appendSlice(alloc, ",\"revision\":");
+        try shared.appendJsonStr(&props, revision, alloc);
+        try props.appendSlice(alloc, ",\"full_identifier\":");
+        try shared.appendJsonStr(&props, full_identifier, alloc);
+        try props.appendSlice(alloc, ",\"description\":");
+        try shared.appendJsonStr(&props, description, alloc);
+        try props.appendSlice(alloc, ",\"product_status\":");
+        try shared.appendJsonStr(&props, product_status, alloc);
+        try props.append(alloc, '}');
+        try db.upsertNode(product_id, "Product", props.items, null);
+    }
+}
+
 pub fn getBomJson(
     db: *graph_live.GraphDb,
     full_product_identifier: []const u8,
     bom_type_filter: ?[]const u8,
     bom_name_filter: ?[]const u8,
+    include_obsolete: bool,
     alloc: Allocator,
 ) ![]const u8 {
+    if (!include_obsolete and productStatusExcludedFromActiveGraph(try productStatusForIdentifier(db, full_product_identifier, alloc))) {
+        var hidden_buf: std.ArrayList(u8) = .empty;
+        defer hidden_buf.deinit(alloc);
+        try hidden_buf.appendSlice(alloc, "{\"full_product_identifier\":");
+        try shared.appendJsonStr(&hidden_buf, full_product_identifier, alloc);
+        try hidden_buf.appendSlice(alloc, ",\"boms\":[]}");
+        return hidden_buf.toOwnedSlice(alloc);
+    }
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
 
@@ -316,7 +744,7 @@ pub fn getBomJson(
         \\  json_extract(properties, '$.bom_type'),
         \\  json_extract(properties, '$.source_format')
         \\FROM nodes
-        \\WHERE type='BOM'
+        \\WHERE type='DesignBOM'
         \\  AND json_extract(properties, '$.full_product_identifier')=?
         \\  AND (? IS NULL OR json_extract(properties, '$.bom_type')=?)
         \\  AND (? IS NULL OR json_extract(properties, '$.bom_name')=?)
@@ -386,6 +814,7 @@ pub fn getBomItemJson(
     var linked_tests: std.ArrayList(graph_live.Node) = .empty;
     defer shared.freeNodeList(&linked_tests, alloc);
     try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "Test", alloc, &linked_tests);
+    try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "TestGroup", alloc, &linked_tests);
 
     try buf.appendSlice(alloc, ",\"linked_requirements\":");
     try appendNodeJsonArray(&buf, linked_requirements.items, alloc);
@@ -404,6 +833,623 @@ pub fn getBomItemJson(
     return alloc.dupe(u8, buf.items);
 }
 
+pub fn getDesignBomTreeJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    if (!include_obsolete and productStatusExcludedFromActiveGraph(try productStatusForIdentifier(db, full_product_identifier, alloc))) {
+        return error.NotFound;
+    }
+    var st = try db.db.prepare(
+        \\SELECT
+        \\  id,
+        \\  json_extract(properties, '$.bom_type'),
+        \\  json_extract(properties, '$.source_format'),
+        \\  properties
+        \\FROM nodes
+        \\WHERE type='DesignBOM'
+        \\  AND json_extract(properties, '$.full_product_identifier')=?
+        \\  AND json_extract(properties, '$.bom_name')=?
+        \\ORDER BY json_extract(properties, '$.bom_type')
+    );
+    defer st.finalize();
+    try st.bindText(1, full_product_identifier);
+    try st.bindText(2, bom_name);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"full_product_identifier\":");
+    try shared.appendJsonStr(&buf, full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"bom_name\":");
+    try shared.appendJsonStr(&buf, bom_name, alloc);
+    try buf.appendSlice(alloc, ",\"design_boms\":[");
+    var first = true;
+    while (try st.step()) {
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        const bom_id = st.columnText(0);
+        try buf.appendSlice(alloc, "{\"id\":");
+        try shared.appendJsonStr(&buf, bom_id, alloc);
+        try buf.appendSlice(alloc, ",\"bom_type\":");
+        try shared.appendJsonStr(&buf, st.columnText(1), alloc);
+        try buf.appendSlice(alloc, ",\"source_format\":");
+        try shared.appendJsonStr(&buf, st.columnText(2), alloc);
+        try buf.appendSlice(alloc, ",\"properties\":");
+        try buf.appendSlice(alloc, st.columnText(3));
+        try buf.appendSlice(alloc, ",\"tree\":");
+        try appendBomTreeJson(&buf, db, bom_id, alloc);
+        try buf.append(alloc, '}');
+    }
+    if (first) return error.NotFound;
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn listDesignBomsJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier_filter: ?[]const u8,
+    bom_name_filter: ?[]const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    var st = try db.db.prepare(
+        \\SELECT
+        \\  bom.id,
+        \\  json_extract(bom.properties, '$.full_product_identifier'),
+        \\  json_extract(bom.properties, '$.bom_name'),
+        \\  json_extract(bom.properties, '$.bom_type'),
+        \\  json_extract(bom.properties, '$.source_format'),
+        \\  json_extract(bom.properties, '$.ingested_at'),
+        \\  json_extract(product.properties, '$.product_status')
+        \\FROM nodes bom
+        \\LEFT JOIN nodes product
+        \\  ON product.type='Product'
+        \\  AND product.id='product://' || json_extract(bom.properties, '$.full_product_identifier')
+        \\WHERE bom.type='DesignBOM'
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.full_product_identifier')=?)
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.bom_name')=?)
+        \\ORDER BY json_extract(bom.properties, '$.full_product_identifier'), json_extract(bom.properties, '$.bom_name'), json_extract(bom.properties, '$.bom_type')
+    );
+    defer st.finalize();
+    if (full_product_identifier_filter) |value| {
+        try st.bindText(1, value);
+        try st.bindText(2, value);
+    } else {
+        try st.bindNull(1);
+        try st.bindNull(2);
+    }
+    if (bom_name_filter) |value| {
+        try st.bindText(3, value);
+        try st.bindText(4, value);
+    } else {
+        try st.bindNull(3);
+        try st.bindNull(4);
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"design_boms\":[");
+    var first = true;
+    while (try st.step()) {
+        const product_status = classifyProductStatus(if (st.columnIsNull(6)) null else st.columnText(6));
+        if (!include_obsolete and productStatusExcludedFromActiveGraph(product_status)) continue;
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        const bom_id = st.columnText(0);
+        const item_count = try countBomItems(db, bom_id, alloc);
+        const warning_count = try countBomWarnings(db, bom_id, alloc);
+        try buf.appendSlice(alloc, "{\"id\":");
+        try shared.appendJsonStr(&buf, bom_id, alloc);
+        try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStr(&buf, st.columnText(1), alloc);
+        try buf.appendSlice(alloc, ",\"bom_name\":");
+        try shared.appendJsonStr(&buf, st.columnText(2), alloc);
+        try buf.appendSlice(alloc, ",\"bom_type\":");
+        try shared.appendJsonStr(&buf, st.columnText(3), alloc);
+        try buf.appendSlice(alloc, ",\"source_format\":");
+        try shared.appendJsonStr(&buf, st.columnText(4), alloc);
+        try buf.appendSlice(alloc, ",\"ingested_at\":");
+        try buf.appendSlice(alloc, if (st.columnIsNull(5)) "null" else st.columnText(5));
+        try buf.appendSlice(alloc, ",\"product_status\":");
+        try shared.appendJsonStr(&buf, if (st.columnIsNull(6)) "" else st.columnText(6), alloc);
+        try std.fmt.format(buf.writer(alloc), ",\"item_count\":{d},\"warning_count\":{d}}}", .{ item_count, warning_count });
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn getDesignBomItemsJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    if (!include_obsolete and productStatusExcludedFromActiveGraph(try productStatusForIdentifier(db, full_product_identifier, alloc))) {
+        return error.NotFound;
+    }
+    const prefixes = try designBomPrefixes(db, full_product_identifier, bom_name, alloc);
+    defer freeStringSlice(prefixes, alloc);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"full_product_identifier\":");
+    try shared.appendJsonStr(&buf, full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"bom_name\":");
+    try shared.appendJsonStr(&buf, bom_name, alloc);
+    try buf.appendSlice(alloc, ",\"items\":[");
+    var first = true;
+    for (prefixes) |prefix| {
+        var st = try db.db.prepare(
+            \\SELECT id
+            \\FROM nodes
+            \\WHERE type='BOMItem' AND id LIKE ?
+            \\ORDER BY id
+        );
+        defer st.finalize();
+        const pattern = try std.fmt.allocPrint(alloc, "{s}%", .{prefix});
+        defer alloc.free(pattern);
+        try st.bindText(1, pattern);
+        while (try st.step()) {
+            const item_json = try getBomItemJson(db, st.columnText(0), alloc);
+            defer alloc.free(item_json);
+            if (!first) try buf.append(alloc, ',');
+            first = false;
+            try buf.appendSlice(alloc, item_json);
+        }
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn findPartUsageJson(db: *graph_live.GraphDb, part: []const u8, include_obsolete: bool, alloc: Allocator) ![]const u8 {
+    var st = try db.db.prepare(
+        \\SELECT
+        \\  child.id,
+        \\  json_extract(child.properties, '$.revision'),
+        \\  bom.id,
+        \\  bom.properties,
+        \\  parent.id,
+        \\  parent.properties,
+        \\  e.properties,
+        \\  json_extract(product.properties, '$.product_status')
+        \\FROM nodes child
+        \\JOIN edges e ON e.to_id = child.id AND e.label='CONTAINS'
+        \\LEFT JOIN nodes parent ON parent.id = e.from_id
+        \\JOIN nodes bom ON bom.id = CASE
+        \\  WHEN e.from_id LIKE 'bom://%' THEN e.from_id
+        \\  ELSE substr(e.from_id, 1, instr(substr(e.from_id, length('bom-item://') + 1), '/') + length('bom-item://') - 1)
+        \\END
+        \\LEFT JOIN nodes product
+        \\  ON product.type='Product'
+        \\  AND product.id='product://' || json_extract(bom.properties, '$.full_product_identifier')
+        \\WHERE child.type='BOMItem'
+        \\  AND json_extract(child.properties, '$.part')=?
+        \\ORDER BY json_extract(bom.properties, '$.full_product_identifier'), json_extract(bom.properties, '$.bom_name'), parent.id, child.id
+    );
+    defer st.finalize();
+    try st.bindText(1, part);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"part\":");
+    try shared.appendJsonStr(&buf, part, alloc);
+    try buf.appendSlice(alloc, ",\"usages\":[");
+    var first = true;
+    while (try st.step()) {
+        const product_status = classifyProductStatus(if (st.columnIsNull(7)) null else st.columnText(7));
+        if (!include_obsolete and productStatusExcludedFromActiveGraph(product_status)) continue;
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try buf.appendSlice(alloc, "{\"item_id\":");
+        try shared.appendJsonStr(&buf, st.columnText(0), alloc);
+        try buf.appendSlice(alloc, ",\"revision\":");
+        try shared.appendJsonStrOpt(&buf, if (st.columnIsNull(1)) null else st.columnText(1), alloc);
+        try buf.appendSlice(alloc, ",\"design_bom_id\":");
+        try shared.appendJsonStr(&buf, st.columnText(2), alloc);
+        try buf.appendSlice(alloc, ",\"design_bom\":");
+        try buf.appendSlice(alloc, st.columnText(3));
+        try buf.appendSlice(alloc, ",\"parent_id\":");
+        try shared.appendJsonStrOpt(&buf, if (st.columnIsNull(4)) null else st.columnText(4), alloc);
+        try buf.appendSlice(alloc, ",\"parent_properties\":");
+        try buf.appendSlice(alloc, if (st.columnIsNull(5)) "null" else st.columnText(5));
+        try buf.appendSlice(alloc, ",\"edge_properties\":");
+        try buf.appendSlice(alloc, if (st.columnIsNull(6)) "null" else st.columnText(6));
+        try buf.appendSlice(alloc, ",\"product_status\":");
+        try shared.appendJsonStr(&buf, if (st.columnIsNull(7)) "" else st.columnText(7), alloc);
+        try buf.append(alloc, '}');
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn bomGapsJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier_filter: ?[]const u8,
+    bom_name_filter: ?[]const u8,
+    include_inactive: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    var st = try db.db.prepare(
+        \\SELECT
+        \\  child.id,
+        \\  child.properties,
+        \\  json_extract(bom.properties, '$.full_product_identifier'),
+        \\  json_extract(bom.properties, '$.bom_name'),
+        \\  json_extract(bom.properties, '$.bom_type'),
+        \\  json_extract(product.properties, '$.product_status')
+        \\FROM nodes child
+        \\JOIN nodes bom
+        \\  ON child.id LIKE replace(bom.id, 'bom://', 'bom-item://') || '/%'
+        \\LEFT JOIN nodes product
+        \\  ON product.type='Product'
+        \\  AND product.id='product://' || json_extract(bom.properties, '$.full_product_identifier')
+        \\WHERE child.type='BOMItem'
+        \\  AND bom.type='DesignBOM'
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.full_product_identifier')=?)
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.bom_name')=?)
+        \\ORDER BY json_extract(bom.properties, '$.full_product_identifier'), json_extract(bom.properties, '$.bom_name'), child.id
+    );
+    defer st.finalize();
+    if (full_product_identifier_filter) |value| {
+        try st.bindText(1, value);
+        try st.bindText(2, value);
+    } else {
+        try st.bindNull(1);
+        try st.bindNull(2);
+    }
+    if (bom_name_filter) |value| {
+        try st.bindText(3, value);
+        try st.bindText(4, value);
+    } else {
+        try st.bindNull(3);
+        try st.bindNull(4);
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"gaps\":[");
+    var first = true;
+    while (try st.step()) {
+        const product_status = classifyProductStatus(if (st.columnIsNull(5)) null else st.columnText(5));
+        if (!include_inactive and productStatusExcludedFromGapAnalysis(product_status)) continue;
+        const item_id = st.columnText(0);
+        const props = st.columnText(1);
+        const req_ids = try parseStringArrayProperty(props, "requirement_ids", alloc);
+        defer freeStringSlice(req_ids, alloc);
+        const test_ids = try parseStringArrayProperty(props, "test_ids", alloc);
+        defer freeStringSlice(test_ids, alloc);
+
+        var linked_requirements: std.ArrayList(graph_live.Node) = .empty;
+        defer shared.freeNodeList(&linked_requirements, alloc);
+        try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_REQUIREMENT", "Requirement", alloc, &linked_requirements);
+
+        var linked_tests: std.ArrayList(graph_live.Node) = .empty;
+        defer shared.freeNodeList(&linked_tests, alloc);
+        try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "Test", alloc, &linked_tests);
+        try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "TestGroup", alloc, &linked_tests);
+
+        const unresolved_requirement_ids = try unresolvedTraceRefs(props, "requirement_ids", linked_requirements.items, alloc);
+        defer freeStringSlice(unresolved_requirement_ids, alloc);
+        const unresolved_test_ids = try unresolvedTraceRefs(props, "test_ids", linked_tests.items, alloc);
+        defer freeStringSlice(unresolved_test_ids, alloc);
+
+        const has_trace_gap = (req_ids.len > 0 and linked_requirements.items.len == 0) or
+            (test_ids.len > 0 and linked_tests.items.len == 0) or
+            unresolved_requirement_ids.len > 0 or
+            unresolved_test_ids.len > 0;
+        if (!has_trace_gap) continue;
+
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try buf.appendSlice(alloc, "{\"item_id\":");
+        try shared.appendJsonStr(&buf, item_id, alloc);
+        try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStr(&buf, st.columnText(2), alloc);
+        try buf.appendSlice(alloc, ",\"bom_name\":");
+        try shared.appendJsonStr(&buf, st.columnText(3), alloc);
+        try buf.appendSlice(alloc, ",\"bom_type\":");
+        try shared.appendJsonStr(&buf, st.columnText(4), alloc);
+        try buf.appendSlice(alloc, ",\"product_status\":");
+        try shared.appendJsonStr(&buf, if (st.columnIsNull(5)) "" else st.columnText(5), alloc);
+        try buf.appendSlice(alloc, ",\"properties\":");
+        try buf.appendSlice(alloc, props);
+        try buf.appendSlice(alloc, ",\"linked_requirement_count\":");
+        try std.fmt.format(buf.writer(alloc), "{d}", .{linked_requirements.items.len});
+        try buf.appendSlice(alloc, ",\"linked_test_count\":");
+        try std.fmt.format(buf.writer(alloc), "{d}", .{linked_tests.items.len});
+        try buf.appendSlice(alloc, ",\"unresolved_requirement_ids\":");
+        try appendJsonStringArray(&buf, unresolved_requirement_ids, alloc);
+        try buf.appendSlice(alloc, ",\"unresolved_test_ids\":");
+        try appendJsonStringArray(&buf, unresolved_test_ids, alloc);
+        try buf.append(alloc, '}');
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn bomImpactAnalysisJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    if (!include_obsolete and productStatusExcludedFromActiveGraph(try productStatusForIdentifier(db, full_product_identifier, alloc))) {
+        return error.NotFound;
+    }
+    const prefixes = try designBomPrefixes(db, full_product_identifier, bom_name, alloc);
+    defer freeStringSlice(prefixes, alloc);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"full_product_identifier\":");
+    try shared.appendJsonStr(&buf, full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"bom_name\":");
+    try shared.appendJsonStr(&buf, bom_name, alloc);
+    try buf.appendSlice(alloc, ",\"items\":[");
+
+    var first = true;
+    for (prefixes) |prefix| {
+        var st = try db.db.prepare(
+            \\SELECT id, properties
+            \\FROM nodes
+            \\WHERE type='BOMItem' AND id LIKE ?
+            \\ORDER BY id
+        );
+        defer st.finalize();
+        const pattern = try std.fmt.allocPrint(alloc, "{s}%", .{prefix});
+        defer alloc.free(pattern);
+        try st.bindText(1, pattern);
+        while (try st.step()) {
+            if (!first) try buf.append(alloc, ',');
+            first = false;
+            const item_id = st.columnText(0);
+            try buf.appendSlice(alloc, "{\"item_id\":");
+            try shared.appendJsonStr(&buf, item_id, alloc);
+            try buf.appendSlice(alloc, ",\"properties\":");
+            try buf.appendSlice(alloc, st.columnText(1));
+
+            var linked_requirements: std.ArrayList(graph_live.Node) = .empty;
+            defer shared.freeNodeList(&linked_requirements, alloc);
+            try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_REQUIREMENT", "Requirement", alloc, &linked_requirements);
+            try buf.appendSlice(alloc, ",\"linked_requirements\":");
+            try appendNodeJsonArray(&buf, linked_requirements.items, alloc);
+
+            var linked_tests: std.ArrayList(graph_live.Node) = .empty;
+            defer shared.freeNodeList(&linked_tests, alloc);
+            try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "Test", alloc, &linked_tests);
+            try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "TestGroup", alloc, &linked_tests);
+            try buf.appendSlice(alloc, ",\"linked_tests\":");
+            try appendNodeJsonArray(&buf, linked_tests.items, alloc);
+            try buf.append(alloc, '}');
+        }
+    }
+
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn getDesignBomComponentsJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier_filter: ?[]const u8,
+    bom_name_filter: ?[]const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    var st = try db.db.prepare(
+        \\SELECT
+        \\  child.id,
+        \\  child.properties,
+        \\  json_extract(bom.properties, '$.full_product_identifier'),
+        \\  json_extract(bom.properties, '$.bom_name'),
+        \\  json_extract(bom.properties, '$.bom_type'),
+        \\  json_extract(product.properties, '$.product_status')
+        \\FROM nodes child
+        \\JOIN nodes bom
+        \\  ON child.id LIKE replace(bom.id, 'bom://', 'bom-item://') || '/%'
+        \\LEFT JOIN nodes product
+        \\  ON product.type='Product'
+        \\  AND product.id='product://' || json_extract(bom.properties, '$.full_product_identifier')
+        \\WHERE child.type='BOMItem'
+        \\  AND bom.type='DesignBOM'
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.full_product_identifier')=?)
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.bom_name')=?)
+        \\ORDER BY json_extract(bom.properties, '$.full_product_identifier'), json_extract(bom.properties, '$.bom_name'), child.id
+    );
+    defer st.finalize();
+    if (full_product_identifier_filter) |value| {
+        try st.bindText(1, value);
+        try st.bindText(2, value);
+    } else {
+        try st.bindNull(1);
+        try st.bindNull(2);
+    }
+    if (bom_name_filter) |value| {
+        try st.bindText(3, value);
+        try st.bindText(4, value);
+    } else {
+        try st.bindNull(3);
+        try st.bindNull(4);
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"components\":[");
+    var first = true;
+    while (try st.step()) {
+        const product_status = classifyProductStatus(if (st.columnIsNull(5)) null else st.columnText(5));
+        if (!include_obsolete and productStatusExcludedFromActiveGraph(product_status)) continue;
+
+        const item_id = st.columnText(0);
+        const properties_json = st.columnText(1);
+        const counts = try traceLinkCountsForItem(db, item_id, properties_json, alloc);
+
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try buf.appendSlice(alloc, "{\"item_id\":");
+        try shared.appendJsonStr(&buf, item_id, alloc);
+        try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStr(&buf, st.columnText(2), alloc);
+        try buf.appendSlice(alloc, ",\"bom_name\":");
+        try shared.appendJsonStr(&buf, st.columnText(3), alloc);
+        try buf.appendSlice(alloc, ",\"bom_type\":");
+        try shared.appendJsonStr(&buf, st.columnText(4), alloc);
+        try buf.appendSlice(alloc, ",\"product_status\":");
+        try shared.appendJsonStr(&buf, if (st.columnIsNull(5)) "" else st.columnText(5), alloc);
+        try buf.appendSlice(alloc, ",\"properties\":");
+        try buf.appendSlice(alloc, properties_json);
+        try std.fmt.format(
+            buf.writer(alloc),
+            ",\"declared_requirement_count\":{d},\"declared_test_count\":{d},\"linked_requirement_count\":{d},\"linked_test_count\":{d},\"unresolved_requirement_count\":{d},\"unresolved_test_count\":{d}}}",
+            .{
+                counts.declared_requirement_count,
+                counts.declared_test_count,
+                counts.linked_requirement_count,
+                counts.linked_test_count,
+                counts.unresolved_requirement_count,
+                counts.unresolved_test_count,
+            },
+        );
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn getDesignBomCoverageJson(
+    db: *graph_live.GraphDb,
+    full_product_identifier_filter: ?[]const u8,
+    bom_name_filter: ?[]const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    var st = try db.db.prepare(
+        \\SELECT
+        \\  bom.id,
+        \\  json_extract(bom.properties, '$.full_product_identifier'),
+        \\  json_extract(bom.properties, '$.bom_name'),
+        \\  json_extract(bom.properties, '$.bom_type'),
+        \\  json_extract(product.properties, '$.product_status')
+        \\FROM nodes bom
+        \\LEFT JOIN nodes product
+        \\  ON product.type='Product'
+        \\  AND product.id='product://' || json_extract(bom.properties, '$.full_product_identifier')
+        \\WHERE bom.type='DesignBOM'
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.full_product_identifier')=?)
+        \\  AND (? IS NULL OR json_extract(bom.properties, '$.bom_name')=?)
+        \\ORDER BY json_extract(bom.properties, '$.full_product_identifier'), json_extract(bom.properties, '$.bom_name'), json_extract(bom.properties, '$.bom_type')
+    );
+    defer st.finalize();
+    if (full_product_identifier_filter) |value| {
+        try st.bindText(1, value);
+        try st.bindText(2, value);
+    } else {
+        try st.bindNull(1);
+        try st.bindNull(2);
+    }
+    if (bom_name_filter) |value| {
+        try st.bindText(3, value);
+        try st.bindText(4, value);
+    } else {
+        try st.bindNull(3);
+        try st.bindNull(4);
+    }
+
+    var overall_total_items: usize = 0;
+    var overall_requirement_covered: usize = 0;
+    var overall_test_covered: usize = 0;
+    var overall_fully_covered: usize = 0;
+    var overall_no_trace: usize = 0;
+    var overall_warning_count: usize = 0;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"design_boms\":[");
+    var first = true;
+    while (try st.step()) {
+        const product_status = classifyProductStatus(if (st.columnIsNull(4)) null else st.columnText(4));
+        if (!include_obsolete and productStatusExcludedFromActiveGraph(product_status)) continue;
+
+        const bom_id = st.columnText(0);
+        if (!std.mem.startsWith(u8, bom_id, "bom://")) continue;
+        const suffix = bom_id["bom://".len..];
+        const prefix = try std.fmt.allocPrint(alloc, "bom-item://{s}/%", .{suffix});
+        defer alloc.free(prefix);
+
+        var items_st = try db.db.prepare(
+            \\SELECT id, properties
+            \\FROM nodes
+            \\WHERE type='BOMItem' AND id LIKE ?
+            \\ORDER BY id
+        );
+        defer items_st.finalize();
+        try items_st.bindText(1, prefix);
+
+        var total_items: usize = 0;
+        var requirement_covered: usize = 0;
+        var test_covered: usize = 0;
+        var fully_covered: usize = 0;
+        var no_trace: usize = 0;
+        var warning_count: usize = 0;
+
+        while (try items_st.step()) {
+            total_items += 1;
+            const counts = try traceLinkCountsForItem(db, items_st.columnText(0), items_st.columnText(1), alloc);
+            const has_requirement_coverage = counts.linked_requirement_count > 0;
+            const has_test_coverage = counts.linked_test_count > 0;
+            if (has_requirement_coverage) requirement_covered += 1;
+            if (has_test_coverage) test_covered += 1;
+            if (has_requirement_coverage and has_test_coverage) fully_covered += 1;
+            if (counts.declared_requirement_count == 0 and counts.declared_test_count == 0 and !has_requirement_coverage and !has_test_coverage) {
+                no_trace += 1;
+            }
+            warning_count += counts.unresolved_requirement_count + counts.unresolved_test_count;
+        }
+
+        overall_total_items += total_items;
+        overall_requirement_covered += requirement_covered;
+        overall_test_covered += test_covered;
+        overall_fully_covered += fully_covered;
+        overall_no_trace += no_trace;
+        overall_warning_count += warning_count;
+
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try buf.appendSlice(alloc, "{\"id\":");
+        try shared.appendJsonStr(&buf, bom_id, alloc);
+        try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStr(&buf, st.columnText(1), alloc);
+        try buf.appendSlice(alloc, ",\"bom_name\":");
+        try shared.appendJsonStr(&buf, st.columnText(2), alloc);
+        try buf.appendSlice(alloc, ",\"bom_type\":");
+        try shared.appendJsonStr(&buf, st.columnText(3), alloc);
+        try buf.appendSlice(alloc, ",\"product_status\":");
+        try shared.appendJsonStr(&buf, if (st.columnIsNull(4)) "" else st.columnText(4), alloc);
+        try std.fmt.format(
+            buf.writer(alloc),
+            ",\"item_count\":{d},\"requirement_covered_count\":{d},\"test_covered_count\":{d},\"fully_covered_count\":{d},\"no_trace_count\":{d},\"warning_count\":{d}}}",
+            .{ total_items, requirement_covered, test_covered, fully_covered, no_trace, warning_count },
+        );
+    }
+    try buf.appendSlice(alloc, "],\"summary\":{");
+    try std.fmt.format(
+        buf.writer(alloc),
+        "\"item_count\":{d},\"requirement_covered_count\":{d},\"test_covered_count\":{d},\"fully_covered_count\":{d},\"no_trace_count\":{d},\"warning_count\":{d}}}",
+        .{
+            overall_total_items,
+            overall_requirement_covered,
+            overall_test_covered,
+            overall_fully_covered,
+            overall_no_trace,
+            overall_warning_count,
+        },
+    );
+    return alloc.dupe(u8, buf.items);
+}
+
 fn appendNodeJsonArray(buf: *std.ArrayList(u8), nodes: []const graph_live.Node, alloc: Allocator) !void {
     try buf.append(alloc, '[');
     for (nodes, 0..) |node, idx| {
@@ -411,6 +1457,121 @@ fn appendNodeJsonArray(buf: *std.ArrayList(u8), nodes: []const graph_live.Node, 
         try shared.appendNodeObject(buf, node, alloc);
     }
     try buf.append(alloc, ']');
+}
+
+fn countBomItems(db: *graph_live.GraphDb, bom_id: []const u8, alloc: Allocator) !usize {
+    if (!std.mem.startsWith(u8, bom_id, "bom://")) return 0;
+    const suffix = bom_id["bom://".len..];
+    const prefix = try std.fmt.allocPrint(alloc, "bom-item://{s}/%", .{suffix});
+    defer alloc.free(prefix);
+
+    var st = try db.db.prepare(
+        \\SELECT COUNT(*)
+        \\FROM nodes
+        \\WHERE type='BOMItem' AND id LIKE ?
+    );
+    defer st.finalize();
+    try st.bindText(1, prefix);
+    if (!(try st.step())) return 0;
+    return @intCast(st.columnInt(0));
+}
+
+const TraceLinkCounts = struct {
+    declared_requirement_count: usize = 0,
+    declared_test_count: usize = 0,
+    linked_requirement_count: usize = 0,
+    linked_test_count: usize = 0,
+    unresolved_requirement_count: usize = 0,
+    unresolved_test_count: usize = 0,
+};
+
+fn traceLinkCountsForItem(
+    db: *graph_live.GraphDb,
+    item_id: []const u8,
+    properties_json: []const u8,
+    alloc: Allocator,
+) !TraceLinkCounts {
+    const declared_requirement_ids = try parseStringArrayProperty(properties_json, "requirement_ids", alloc);
+    defer freeStringSlice(declared_requirement_ids, alloc);
+    const declared_test_ids = try parseStringArrayProperty(properties_json, "test_ids", alloc);
+    defer freeStringSlice(declared_test_ids, alloc);
+
+    var linked_requirements: std.ArrayList(graph_live.Node) = .empty;
+    defer shared.freeNodeList(&linked_requirements, alloc);
+    try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_REQUIREMENT", "Requirement", alloc, &linked_requirements);
+
+    var linked_tests: std.ArrayList(graph_live.Node) = .empty;
+    defer shared.freeNodeList(&linked_tests, alloc);
+    try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "Test", alloc, &linked_tests);
+    try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "TestGroup", alloc, &linked_tests);
+
+    const unresolved_requirement_ids = try unresolvedTraceRefs(properties_json, "requirement_ids", linked_requirements.items, alloc);
+    defer freeStringSlice(unresolved_requirement_ids, alloc);
+    const unresolved_test_ids = try unresolvedTraceRefs(properties_json, "test_ids", linked_tests.items, alloc);
+    defer freeStringSlice(unresolved_test_ids, alloc);
+
+    return .{
+        .declared_requirement_count = declared_requirement_ids.len,
+        .declared_test_count = declared_test_ids.len,
+        .linked_requirement_count = linked_requirements.items.len,
+        .linked_test_count = linked_tests.items.len,
+        .unresolved_requirement_count = unresolved_requirement_ids.len,
+        .unresolved_test_count = unresolved_test_ids.len,
+    };
+}
+
+fn countBomWarnings(db: *graph_live.GraphDb, bom_id: []const u8, alloc: Allocator) !usize {
+    if (!std.mem.startsWith(u8, bom_id, "bom://")) return 0;
+    const suffix = bom_id["bom://".len..];
+    const prefix = try std.fmt.allocPrint(alloc, "bom-item://{s}/%", .{suffix});
+    defer alloc.free(prefix);
+
+    var st = try db.db.prepare(
+        \\SELECT id, properties
+        \\FROM nodes
+        \\WHERE type='BOMItem' AND id LIKE ?
+    );
+    defer st.finalize();
+    try st.bindText(1, prefix);
+
+    var warning_count: usize = 0;
+    while (try st.step()) {
+        const counts = try traceLinkCountsForItem(db, st.columnText(0), st.columnText(1), alloc);
+        warning_count += counts.unresolved_requirement_count + counts.unresolved_test_count;
+    }
+    return warning_count;
+}
+
+fn designBomPrefixes(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    alloc: Allocator,
+) ![]const []const u8 {
+    var st = try db.db.prepare(
+        \\SELECT json_extract(properties, '$.bom_type')
+        \\FROM nodes
+        \\WHERE type='DesignBOM'
+        \\  AND json_extract(properties, '$.full_product_identifier')=?
+        \\  AND json_extract(properties, '$.bom_name')=?
+        \\ORDER BY json_extract(properties, '$.bom_type')
+    );
+    defer st.finalize();
+    try st.bindText(1, full_product_identifier);
+    try st.bindText(2, bom_name);
+
+    var prefixes: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (prefixes.items) |item| alloc.free(item);
+        prefixes.deinit(alloc);
+    }
+    while (try st.step()) {
+        const bom_type_raw = st.columnText(0);
+        const bom_type: BomType = if (std.mem.eql(u8, bom_type_raw, "software")) .software else .hardware;
+        try prefixes.append(alloc, try bomItemPrefix(full_product_identifier, bom_type, bom_name, alloc));
+    }
+    if (prefixes.items.len == 0) return error.NotFound;
+    return prefixes.toOwnedSlice(alloc);
 }
 
 fn unresolvedTraceRefs(
@@ -594,6 +1755,7 @@ pub fn getSoftwareComponentsJson(db: *graph_live.GraphDb, purl_prefix: ?[]const 
 fn ingestPrepared(
     db: *graph_live.GraphDb,
     prepared: *PreparedBom,
+    options: IngestOptions,
     alloc: Allocator,
 ) (BomError || db_mod.DbError || error{OutOfMemory})!BomIngestResponse {
     try validateNoCycles(prepared.submission.occurrences);
@@ -602,8 +1764,15 @@ fn ingestPrepared(
     defer alloc.free(product_id);
     const product_node = try db.getNode(product_id, alloc);
     defer if (product_node) |node| shared.freeNode(node, alloc);
-    if (product_node == null) {
+    if (product_node == null and !options.allow_missing_product) {
         return if (prepared.submission.bom_type == .hardware) error.NoProductMatch else error.SbomUnresolvableRoot;
+    }
+    if (product_node == null) {
+        const subject = try alloc.dupe(u8, prepared.submission.full_product_identifier);
+        defer alloc.free(subject);
+        const message = try std.fmt.allocPrint(alloc, "No Product node matches full_product_identifier '{s}'", .{prepared.submission.full_product_identifier});
+        defer alloc.free(message);
+        try appendWarning(&prepared.warnings, "BOM_NO_PRODUCT_MATCH", message, subject, alloc);
     }
 
     const bom_id = try bomNodeId(prepared.submission.full_product_identifier, prepared.submission.bom_type, prepared.submission.bom_name, alloc);
@@ -623,11 +1792,13 @@ fn ingestPrepared(
 
     const bom_props = try bomPropertiesJson(prepared.submission, alloc);
     defer alloc.free(bom_props);
-    try db.addNode(bom_id, "BOM", bom_props, null);
+    try db.addNode(bom_id, "DesignBOM", bom_props, null);
 
-    const has_bom_props = try alloc.dupe(u8, "{}");
-    defer alloc.free(has_bom_props);
-    try db.addEdgeWithProperties(product_id, bom_id, "HAS_BOM", has_bom_props);
+    if (product_node != null) {
+        const has_bom_props = try alloc.dupe(u8, "{}");
+        defer alloc.free(has_bom_props);
+        try db.addEdgeWithProperties(product_id, bom_id, "HAS_DESIGN_BOM", has_bom_props);
+    }
 
     var item_it = item_specs.iterator();
     while (item_it.next()) |entry| {
@@ -711,7 +1882,7 @@ fn ingestPrepared(
         .bom_type = prepared.submission.bom_type,
         .source_format = prepared.submission.source_format,
         .inserted_nodes = 1 + item_specs.count(),
-        .inserted_edges = 1 + prepared.submission.occurrences.len + trace_edges_inserted,
+        .inserted_edges = (if (product_node != null) @as(usize, 1) else 0) + prepared.submission.occurrences.len + trace_edges_inserted,
         .warnings = try prepared.warnings.toOwnedSlice(alloc),
     };
 }
@@ -752,7 +1923,7 @@ fn appendBomTraceEdges(
 
     if (item.test_ids) |refs| {
         for (refs) |test_id| {
-            if (try nodeExistsOfType(db, test_id, "Test")) {
+            if (try nodeExistsOfType(db, test_id, "Test") or try nodeExistsOfType(db, test_id, "TestGroup")) {
                 const edge_props = try referenceEdgePropertiesJson(source_format, "test_ids", alloc);
                 defer alloc.free(edge_props);
                 try db.addEdgeWithProperties(item_id, test_id, "REFERENCES_TEST", edge_props);
@@ -763,7 +1934,7 @@ fn appendBomTraceEdges(
                     warning_seen,
                     "BOM_UNRESOLVED_TEST_REF",
                     item_subject,
-                    "Test",
+                    "Test/TestGroup",
                     test_id,
                     alloc,
                 );
@@ -830,6 +2001,7 @@ fn prepareHttpBody(content_type: ?[]const u8, body: []const u8, alloc: Allocator
 fn prepareInboxFile(name: []const u8, body: []const u8, alloc: Allocator) (BomError || error{OutOfMemory})!PreparedBom {
     if (std.mem.endsWith(u8, name, ".csv")) return prepareHardwareCsv(body, alloc);
     if (std.mem.endsWith(u8, name, ".json")) return prepareJsonBody(body, alloc);
+    if (std.mem.endsWith(u8, name, ".xlsx")) return error.UnsupportedFormat;
     return error.UnsupportedFormat;
 }
 
@@ -872,11 +2044,11 @@ fn prepareHardwareCsv(body: []const u8, alloc: Allocator) (BomError || error{Out
 
     const header = rows.items[0];
     const bom_name_col = resolveCol(header, "bom_name") orelse return error.MissingRequiredField;
-    const full_identifier_col = resolveCol(header, "full_identifier") orelse return error.MissingRequiredField;
+    const full_identifier_col = resolveCol(header, "full_identifier") orelse resolveCol(header, "full_product_identifier") orelse return error.MissingRequiredField;
     const parent_part_col = resolveCol(header, "parent_part") orelse return error.MissingRequiredField;
-    const parent_revision_col = resolveCol(header, "parent_revision") orelse return error.MissingRequiredField;
+    const parent_revision_col = resolveCol(header, "parent_revision");
     const child_part_col = resolveCol(header, "child_part") orelse return error.MissingRequiredField;
-    const child_revision_col = resolveCol(header, "child_revision") orelse return error.MissingRequiredField;
+    const child_revision_col = resolveCol(header, "child_revision");
     const quantity_col = resolveCol(header, "quantity") orelse return error.MissingRequiredField;
     const ref_designator_col = resolveCol(header, "ref_designator");
     const description_col = resolveCol(header, "description");
@@ -921,17 +2093,17 @@ fn prepareHardwareCsv(body: []const u8, alloc: Allocator) (BomError || error{Out
         defer alloc.free(full_identifier);
         const parent_part = try cellAt(row, parent_part_col, alloc);
         defer alloc.free(parent_part);
-        const parent_revision = try cellAt(row, parent_revision_col, alloc);
+        const parent_revision = try defaultCellAt(row, parent_revision_col, "-", alloc);
         defer alloc.free(parent_revision);
         const child_part = try cellAt(row, child_part_col, alloc);
         defer alloc.free(child_part);
-        const child_revision = try cellAt(row, child_revision_col, alloc);
+        const child_revision = try defaultCellAt(row, child_revision_col, "-", alloc);
         defer alloc.free(child_revision);
         const quantity = try cellAt(row, quantity_col, alloc);
         defer alloc.free(quantity);
         if (bom_name.len == 0) return error.MissingBomName;
         if (full_identifier.len == 0) return error.MissingFullProductIdentifier;
-        if (parent_part.len == 0 or parent_revision.len == 0 or child_part.len == 0 or child_revision.len == 0 or quantity.len == 0) {
+        if (parent_part.len == 0 or child_part.len == 0 or quantity.len == 0) {
             return error.MissingRequiredField;
         }
 
@@ -1052,9 +2224,9 @@ fn prepareHardwareJson(root: std.json.Value, alloc: Allocator) (BomError || erro
     for (items_value.array.items) |item| {
         if (item != .object) return error.InvalidJson;
         const parent_part = json_util.getString(item, "parent_part") orelse return error.MissingRequiredField;
-        const parent_revision = json_util.getString(item, "parent_revision") orelse return error.MissingRequiredField;
+        const parent_revision = defaultJsonString(json_util.getString(item, "parent_revision"), "-");
         const child_part = json_util.getString(item, "child_part") orelse return error.MissingRequiredField;
-        const child_revision = json_util.getString(item, "child_revision") orelse return error.MissingRequiredField;
+        const child_revision = defaultJsonString(json_util.getString(item, "child_revision"), "-");
         const quantity = json_util.getString(item, "quantity") orelse return error.MissingRequiredField;
 
         const parent_key = try partRevisionKey(parent_part, parent_revision, alloc);
@@ -1573,7 +2745,7 @@ fn appendParentChainsJson(
 
         if (!first) try buf.append(alloc, ',');
         first = false;
-        if (std.mem.eql(u8, parent.?.type, "BOM")) {
+        if (std.mem.eql(u8, parent.?.type, "DesignBOM")) {
             try buf.append(alloc, '[');
             try buf.appendSlice(alloc, "{\"id\":");
             try shared.appendJsonStr(buf, parent.?.id, alloc);
@@ -1692,6 +2864,8 @@ fn bomPropertiesJson(submission: BomSubmission, alloc: Allocator) ![]const u8 {
     try shared.appendJsonStr(&buf, submission.bom_name, alloc);
     try buf.appendSlice(alloc, ",\"bom_type\":");
     try shared.appendJsonStr(&buf, bomTypeString(submission.bom_type), alloc);
+    try buf.appendSlice(alloc, ",\"bom_class\":");
+    try shared.appendJsonStr(&buf, "design", alloc);
     try buf.appendSlice(alloc, ",\"source_format\":");
     try shared.appendJsonStr(&buf, bomFormatString(submission.source_format), alloc);
     try std.fmt.format(buf.writer(alloc), ",\"ingested_at\":{d}}}", .{std.time.timestamp()});
@@ -2008,12 +3182,27 @@ fn cellAt(row: []const []const u8, idx: usize, alloc: Allocator) ![]u8 {
     return alloc.dupe(u8, std.mem.trim(u8, row[idx], " "));
 }
 
+fn defaultCellAt(row: []const []const u8, idx: ?usize, default_value: []const u8, alloc: Allocator) ![]u8 {
+    if (idx == null or idx.? >= row.len) return alloc.dupe(u8, default_value);
+    const value = std.mem.trim(u8, row[idx.?], " ");
+    if (value.len == 0) return alloc.dupe(u8, default_value);
+    return alloc.dupe(u8, value);
+}
+
 fn optionalCellAt(row: []const []const u8, idx: ?usize, alloc: Allocator) !?[]const u8 {
     if (idx == null or idx.? >= row.len) return null;
     const value = std.mem.trim(u8, row[idx.?], " ");
     if (value.len == 0) return null;
     const dup = try alloc.dupe(u8, value);
     return dup;
+}
+
+fn defaultJsonString(value: ?[]const u8, default_value: []const u8) []const u8 {
+    if (value) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \r\n\t");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return default_value;
 }
 
 fn looksLikeJson(body: []const u8) bool {
@@ -2038,6 +3227,8 @@ fn bomFormatString(value: BomFormat) []const u8 {
         .hardware_json => "hardware_json",
         .cyclonedx => "cyclonedx",
         .spdx => "spdx",
+        .xlsx => "xlsx",
+        .sheets => "sheets",
     };
 }
 
@@ -2234,7 +3425,7 @@ test "re-ingesting same bom key replaces only that bom subtree" {
     );
     defer replacement.deinit(testing.allocator);
 
-    const bom_json = try getBomJson(&db, "ASM-1000-REV-C", null, null, testing.allocator);
+    const bom_json = try getBomJson(&db, "ASM-1000-REV-C", null, null, false, testing.allocator);
     defer testing.allocator.free(bom_json);
     try testing.expect(std.mem.indexOf(u8, bom_json, "R0402-1K") != null);
     try testing.expect(std.mem.indexOf(u8, bom_json, "C0805-10UF") == null);
@@ -2332,6 +3523,89 @@ test "software component query filters by purl prefix" {
     const components = try getSoftwareComponentsJson(&db, "pkg:generic/zlib", "Zlib", testing.allocator);
     defer testing.allocator.free(components);
     try testing.expect(std.mem.indexOf(u8, components, "pkg:generic/zlib@1.2.13") != null);
+}
+
+test "listDesignBomsJson excludes obsolete products by default" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\",\"product_status\":\"Active\"}", null);
+    try db.addNode("product://ASM-2000-REV-A", "Product", "{\"full_identifier\":\"ASM-2000-REV-A\",\"product_status\":\"Obsolete\"}", null);
+
+    var active_ingest = try ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {"parent_part":"ASM-1000","child_part":"R1","quantity":"1"}
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer active_ingest.deinit(testing.allocator);
+    var obsolete_ingest = try ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-2000-REV-A",
+        \\  "bom_items": [
+        \\    {"parent_part":"ASM-2000","child_part":"R2","quantity":"1"}
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer obsolete_ingest.deinit(testing.allocator);
+
+    const filtered = try listDesignBomsJson(&db, null, null, false, testing.allocator);
+    defer testing.allocator.free(filtered);
+    try testing.expect(std.mem.indexOf(u8, filtered, "\"ASM-1000-REV-C\"") != null);
+    try testing.expect(std.mem.indexOf(u8, filtered, "\"ASM-2000-REV-A\"") == null);
+
+    const all = try listDesignBomsJson(&db, null, null, true, testing.allocator);
+    defer testing.allocator.free(all);
+    try testing.expect(std.mem.indexOf(u8, all, "\"ASM-2000-REV-A\"") != null);
+    try testing.expect(std.mem.indexOf(u8, all, "\"product_status\":\"Obsolete\"") != null);
+}
+
+test "bomGapsJson excludes superseded and obsolete products by default" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\",\"product_status\":\"Active\"}", null);
+    try db.addNode("product://ASM-2000-REV-A", "Product", "{\"full_identifier\":\"ASM-2000-REV-A\",\"product_status\":\"Superseded\"}", null);
+    try db.addNode("product://ASM-3000-REV-A", "Product", "{\"full_identifier\":\"ASM-3000-REV-A\",\"product_status\":\"Obsolete\"}", null);
+
+    inline for ([_][]const u8{ "ASM-1000-REV-C", "ASM-2000-REV-A", "ASM-3000-REV-A" }) |product_id| {
+        const body = try std.fmt.allocPrint(
+            testing.allocator,
+            \\{{
+            \\  "bom_name": "pcba",
+            \\  "full_product_identifier": "{s}",
+            \\  "bom_items": [
+            \\    {{"parent_part":"ASSY","child_part":"FBRFET-3300","quantity":"1","requirement_id":"REQ-404"}}
+            \\  ]
+            \\}}
+        ,
+            .{product_id},
+        );
+        defer testing.allocator.free(body);
+        var ingest = try ingestHttpBody(&db, "application/json", body, testing.allocator);
+        defer ingest.deinit(testing.allocator);
+    }
+
+    const filtered = try bomGapsJson(&db, null, null, false, testing.allocator);
+    defer testing.allocator.free(filtered);
+    try testing.expect(std.mem.indexOf(u8, filtered, "\"ASM-1000-REV-C\"") != null);
+    try testing.expect(std.mem.indexOf(u8, filtered, "\"ASM-2000-REV-A\"") == null);
+    try testing.expect(std.mem.indexOf(u8, filtered, "\"ASM-3000-REV-A\"") == null);
+
+    const all = try bomGapsJson(&db, null, null, true, testing.allocator);
+    defer testing.allocator.free(all);
+    try testing.expect(std.mem.indexOf(u8, all, "\"ASM-2000-REV-A\"") != null);
+    try testing.expect(std.mem.indexOf(u8, all, "\"ASM-3000-REV-A\"") != null);
 }
 
 const testing = std.testing;

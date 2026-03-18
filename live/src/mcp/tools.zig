@@ -171,7 +171,8 @@ pub fn buildToolPayload(
         const full_product_identifier = try requireStringArg(args, "full_product_identifier");
         const bom_type = if (args) |a| internal.json_util.getString(a, "bom_type") else null;
         const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
-        return .{ .payload = jsonPayloadOwned(try internal.bom.getBomJson(db, full_product_identifier, bom_type, bom_name, alloc)) };
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.bom.getBomJson(db, full_product_identifier, bom_type, bom_name, include_obsolete, alloc)) };
     } else if (std.mem.eql(u8, name, "get_bom_item")) {
         const item_id = if (args) |a| blk: {
             if (internal.json_util.getString(a, "id")) |value| break :blk try alloc.dupe(u8, value);
@@ -190,6 +191,25 @@ pub fn buildToolPayload(
         } else return invalidArgumentsDispatch("get_bom_item requires either 'id' or the full selector: full_product_identifier, bom_type, bom_name, part, revision", alloc);
         defer alloc.free(item_id);
         return .{ .payload = jsonPayloadOwned(try internal.bom.getBomItemJson(db, item_id, alloc)) };
+    } else if (std.mem.eql(u8, name, "list_design_boms")) {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.bom.listDesignBomsJson(db, full_product_identifier, bom_name, include_obsolete, alloc)) };
+    } else if (std.mem.eql(u8, name, "find_part_usage")) {
+        const part = try requireStringArg(args, "part");
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.bom.findPartUsageJson(db, part, include_obsolete, alloc)) };
+    } else if (std.mem.eql(u8, name, "bom_gaps")) {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        const include_inactive = getBoolArg(args, "include_inactive") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.bom.bomGapsJson(db, full_product_identifier, bom_name, include_inactive, alloc)) };
+    } else if (std.mem.eql(u8, name, "bom_impact_analysis")) {
+        const full_product_identifier = try requireStringArg(args, "full_product_identifier");
+        const bom_name = try requireStringArg(args, "bom_name");
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.bom.bomImpactAnalysisJson(db, full_product_identifier, bom_name, include_obsolete, alloc)) };
     } else if (std.mem.eql(u8, name, "get_product_serials")) {
         const full_product_identifier = try requireStringArg(args, "full_product_identifier");
         return .{ .payload = jsonPayloadOwned(try internal.bom.getProductSerialsJson(db, full_product_identifier, alloc)) };

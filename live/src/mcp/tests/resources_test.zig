@@ -132,3 +132,44 @@ test "resources read returns bom item trace markdown" {
     try testing.expect(std.mem.indexOf(u8, resp, "Linked Tests") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "TEST-001") != null);
 }
+
+test "resources read returns design bom markdown" {
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
+    var ingest = try internal.bom.ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer ingest.deinit(testing.allocator);
+
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    var license_service = try internal.license.initDefaultStub(testing.allocator, .{});
+    defer license_service.deinit(testing.allocator);
+    const req_ctx = internal.RequestContext{ .registry = &registry, .secure_store_ref = &store, .state = &state, .license_service = &license_service, .refresh_active_runtime_fn = null, .alloc = testing.allocator };
+    const runtime_ctx = internal.RuntimeContext{ .db = &db, .profile_name = "generic" };
+    const resp = try resources.resourceReadResult("design-bom://ASM-1000-REV-C/pcba", &req_ctx, &runtime_ctx);
+    defer testing.allocator.free(resp);
+    try testing.expect(std.mem.indexOf(u8, resp, "# Design BOM ASM-1000-REV-C / pcba") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Roots") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "C0805-10UF@A") != null);
+}

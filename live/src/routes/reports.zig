@@ -8,6 +8,8 @@ const render_pdf = rtmify.render_pdf;
 
 const graph_live = @import("../graph_live.zig");
 const adapter = @import("../adapter.zig");
+const bom = @import("../bom.zig");
+const json_util = @import("../json_util.zig");
 const design_history_core = @import("../design_history.zig");
 const design_history_md = @import("../design_history_md.zig");
 const design_history_pdf = @import("../design_history_pdf.zig");
@@ -56,6 +58,203 @@ pub fn handleReportRtmDocx(db: *graph_live.GraphDb, alloc: Allocator) ![]const u
     defer buf.deinit(alloc);
     try render_docx.renderDocx(&g, "live.db", "live", buf.writer(alloc));
     return alloc.dupe(u8, buf.items);
+}
+
+pub fn handleReportDesignBomMd(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    return buildDesignBomMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
+}
+
+pub fn handleReportDesignBomPdf(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    const markdown = try buildDesignBomMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(markdown);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try render_pdf.renderPdfFromMarkdown(markdown, buf.writer(alloc));
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn handleReportDesignBomDocx(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    const markdown = try buildDesignBomMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(markdown);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try render_docx.renderDocxFromMarkdown(markdown, buf.writer(alloc));
+    return alloc.dupe(u8, buf.items);
+}
+
+fn buildDesignBomMarkdown(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    const tree_json = try bom.getDesignBomTreeJson(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(tree_json);
+    const items_json = try bom.getDesignBomItemsJson(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(items_json);
+    const coverage_json = try bom.getDesignBomCoverageJson(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(coverage_json);
+
+    var tree_parsed = try std.json.parseFromSlice(std.json.Value, alloc, tree_json, .{});
+    defer tree_parsed.deinit();
+    var items_parsed = try std.json.parseFromSlice(std.json.Value, alloc, items_json, .{});
+    defer items_parsed.deinit();
+    var coverage_parsed = try std.json.parseFromSlice(std.json.Value, alloc, coverage_json, .{});
+    defer coverage_parsed.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try std.fmt.format(buf.writer(alloc), "# Design BOM Report\n\n- Product: `{s}`\n- BOM: `{s}`\n\n", .{ full_product_identifier, bom_name });
+
+    if (json_util.getObjectField(coverage_parsed.value, "summary")) |summary| {
+        try buf.appendSlice(alloc, "## Summary\n\n");
+        try std.fmt.format(
+            buf.writer(alloc),
+            "- Items: {d}\n- Requirement-covered items: {d}\n- Test-covered items: {d}\n- Fully covered items: {d}\n- Items with no trace links: {d}\n- Unresolved trace refs: {d}\n\n",
+            .{
+                json_util.getInt(summary, "item_count") orelse 0,
+                json_util.getInt(summary, "requirement_covered_count") orelse 0,
+                json_util.getInt(summary, "test_covered_count") orelse 0,
+                json_util.getInt(summary, "fully_covered_count") orelse 0,
+                json_util.getInt(summary, "no_trace_count") orelse 0,
+                json_util.getInt(summary, "warning_count") orelse 0,
+            },
+        );
+    }
+
+    try buf.appendSlice(alloc, "## Hierarchy\n\n");
+    if (json_util.getObjectField(tree_parsed.value, "design_boms")) |design_boms| {
+        if (design_boms == .array and design_boms.array.items.len > 0) {
+            for (design_boms.array.items) |design_bom| {
+                try std.fmt.format(
+                    buf.writer(alloc),
+                    "### {s} ({s})\n\n",
+                    .{
+                        json_util.getString(design_bom, "bom_type") orelse "unknown",
+                        json_util.getString(design_bom, "source_format") orelse "unknown",
+                    },
+                );
+                if (json_util.getObjectField(design_bom, "tree")) |tree| {
+                    if (json_util.getObjectField(tree, "roots")) |roots| {
+                        try appendBomTreeMarkdown(&buf, roots, 0, alloc);
+                    }
+                }
+                try buf.append(alloc, '\n');
+            }
+        } else {
+            try buf.appendSlice(alloc, "_No Design BOM tree available._\n\n");
+        }
+    } else {
+        try buf.appendSlice(alloc, "_No Design BOM tree available._\n\n");
+    }
+
+    try buf.appendSlice(alloc, "## Item Traceability\n\n| Part | Rev | Requirements | Tests | Unresolved |\n|---|---|---|---|---|\n");
+    if (json_util.getObjectField(items_parsed.value, "items")) |items| {
+        if (items == .array and items.array.items.len > 0) {
+            for (items.array.items) |item| {
+                const node = json_util.getObjectField(item, "node") orelse continue;
+                const props = json_util.getObjectField(node, "properties") orelse continue;
+                const reqs = try markdownJoinStringArray(json_util.getObjectField(props, "requirement_ids"), alloc);
+                defer alloc.free(reqs);
+                const tests = try markdownJoinStringArray(json_util.getObjectField(props, "test_ids"), alloc);
+                defer alloc.free(tests);
+                const unresolved = try markdownJoinCombinedStringArrays(
+                    json_util.getObjectField(item, "unresolved_requirement_ids"),
+                    json_util.getObjectField(item, "unresolved_test_ids"),
+                    alloc,
+                );
+                defer alloc.free(unresolved);
+                try std.fmt.format(
+                    buf.writer(alloc),
+                    "| {s} | {s} | {s} | {s} | {s} |\n",
+                    .{
+                        json_util.getString(props, "part") orelse "—",
+                        json_util.getString(props, "revision") orelse "—",
+                        reqs,
+                        tests,
+                        unresolved,
+                    },
+                );
+            }
+        } else {
+            try buf.appendSlice(alloc, "| — | — | — | — | — |\n");
+        }
+    }
+
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendBomTreeMarkdown(buf: *std.ArrayList(u8), nodes: std.json.Value, depth: usize, alloc: Allocator) !void {
+    if (nodes != .array) return;
+    for (nodes.array.items) |node| {
+        const props = json_util.getObjectField(node, "properties") orelse continue;
+        const edge_props = json_util.getObjectField(node, "edge_properties");
+        try buf.appendNTimes(alloc, ' ', depth * 2);
+        try buf.appendSlice(alloc, "- ");
+        try buf.appendSlice(alloc, json_util.getString(props, "part") orelse json_util.getString(node, "id") orelse "item");
+        try std.fmt.format(buf.writer(alloc), " @ {s}", .{json_util.getString(props, "revision") orelse "-"});
+        if (edge_props) |edge| {
+            if (json_util.getString(edge, "quantity")) |qty| {
+                try std.fmt.format(buf.writer(alloc), " (qty {s})", .{qty});
+            }
+        }
+        try buf.append(alloc, '\n');
+        if (json_util.getObjectField(node, "children")) |children| {
+            try appendBomTreeMarkdown(buf, children, depth + 1, alloc);
+        }
+    }
+}
+
+fn markdownJoinStringArray(value: ?std.json.Value, alloc: Allocator) ![]const u8 {
+    const field = value orelse return alloc.dupe(u8, "—");
+    if (field != .array or field.array.items.len == 0) return alloc.dupe(u8, "—");
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    for (field.array.items, 0..) |entry, idx| {
+        if (entry != .string) continue;
+        if (idx > 0) try buf.appendSlice(alloc, ", ");
+        try buf.appendSlice(alloc, entry.string);
+    }
+    if (buf.items.len == 0) return alloc.dupe(u8, "—");
+    return alloc.dupe(u8, buf.items);
+}
+
+fn markdownJoinCombinedStringArrays(a: ?std.json.Value, b: ?std.json.Value, alloc: Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try appendMarkdownStringArray(&buf, a, alloc);
+    try appendMarkdownStringArray(&buf, b, alloc);
+    if (buf.items.len == 0) return alloc.dupe(u8, "—");
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendMarkdownStringArray(buf: *std.ArrayList(u8), value: ?std.json.Value, alloc: Allocator) !void {
+    const field = value orelse return;
+    if (field != .array) return;
+    for (field.array.items) |entry| {
+        if (entry != .string) continue;
+        if (buf.items.len > 0) try buf.appendSlice(alloc, ", ");
+        try buf.appendSlice(alloc, entry.string);
+    }
 }
 
 const testing = std.testing;

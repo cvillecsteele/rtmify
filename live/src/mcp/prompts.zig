@@ -37,6 +37,24 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
         const item_id = try bomItemSelectorArg(args, alloc);
         defer alloc.free(item_id);
         break :blk try std.fmt.allocPrint(alloc, "Inspect BOM item traceability for {s}. First call get_bom_item with id={s}. Then read bom-item://{s}. Distinguish declared requirement_ids/test_ids from resolved links. Return sections: Item, Parent Chain, Linked Requirements, Linked Tests, Unresolved Declared Refs, and Recommended Fixes. If unresolved IDs exist, say whether the issue is more likely a bad BOM export value or a missing synced Requirement/Test node.", .{ item_id, item_id, item_id });
+    } else if (std.mem.eql(u8, name, "eol_impact")) blk: {
+        const part = try tools.requireStringArg(args, "part");
+        break :blk try std.fmt.allocPrint(alloc, "Assess end-of-life impact for part {s}. First call find_part_usage with part={s}. For each important BOM, read the corresponding design-bom resource if one is returned or call get_bom/get_bom_item as needed. Return sections: Where Used, Product Impact, Requirement/Test Coverage at Risk, and Recommended Next Checks. Separate actual usage evidence from assumptions about substitutes.", .{ part, part });
+    } else if (std.mem.eql(u8, name, "bom_coverage")) blk: {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        if (full_product_identifier != null or bom_name != null) {
+            break :blk try std.fmt.allocPrint(alloc, "Summarize Design BOM coverage for product={s} bom_name={s}. Call list_design_boms, bom_gaps, and bom_impact_analysis using the same filters. If a matching resource exists, read design-bom://{s}/{s}. Return: BOM Scope, Linked Requirements, Linked Tests, Unresolved Refs, and Highest-Risk Gaps.", .{
+                full_product_identifier orelse "*",
+                bom_name orelse "*",
+                full_product_identifier orelse "*",
+                bom_name orelse "*",
+            });
+        }
+        break :blk try alloc.dupe(u8, "Summarize overall Design BOM traceability coverage. Call list_design_boms and bom_gaps. For the most important BOMs, call bom_impact_analysis. Return: BOM Inventory, Coverage Patterns, Unresolved Ref Hotspots, and Recommended Next Fixes.");
+    } else if (std.mem.eql(u8, name, "component_substitute")) blk: {
+        const part = try tools.requireStringArg(args, "part");
+        break :blk try std.fmt.allocPrint(alloc, "Evaluate substitute risk for part {s}. First call find_part_usage with part={s}. Then inspect the most important affected items with get_bom_item. Return sections: Current Usage, Trace Links Potentially Affected, Verification/Requirement Exposure, and Questions Before Approving a Substitute. Do not assume interchangeability unless the graph explicitly supports it.", .{ part, part });
     } else return error.NotFound;
     defer alloc.free(body);
     const heading = try workbooks.workbookHeading(req_ctx.registry, alloc);

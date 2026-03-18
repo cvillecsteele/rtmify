@@ -580,6 +580,36 @@ pub fn renderPdfWithContext(
     try writePdf(alloc, pb.pages.items, writer);
 }
 
+pub fn renderPdfFromMarkdown(markdown: []const u8, writer: anytype) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var pb = PageBuilder.init(alloc);
+    defer pb.deinit();
+
+    var lines = std.mem.splitScalar(u8, markdown, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) {
+            pb.y -= 4.0;
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "# ")) {
+            try pb.drawText(trimmed[2..], FONT_TITLE, true);
+        } else if (std.mem.startsWith(u8, trimmed, "## ")) {
+            try pb.drawSection(trimmed[3..]);
+        } else if (std.mem.startsWith(u8, trimmed, "### ")) {
+            try pb.drawText(trimmed[4..], FONT_SECTION, true);
+        } else {
+            try pb.drawText(trimmed, FONT_BODY, false);
+        }
+    }
+
+    if (pb.cur.items.len > 0) try pb.finalizePage();
+    try writePdf(alloc, pb.pages.items, writer);
+}
+
 // ---------------------------------------------------------------------------
 // DHR report (PDF)
 // ---------------------------------------------------------------------------
@@ -901,6 +931,19 @@ test "render_pdf fixture" {
     try testing.expect(std.mem.indexOf(u8, out, "Hard Gaps") != null);
     try testing.expect(std.mem.indexOf(u8, out, "Advisory Gaps") != null);
     try testing.expect(std.mem.indexOf(u8, out, "Unresolved Mitigation Requirement") != null);
+}
+
+test "render_pdf_from_markdown emits basic pdf" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+
+    try renderPdfFromMarkdown("# Design BOM Report\n\n## Summary\n\n- Items: 7\n", buf.writer(testing.allocator));
+
+    const out = buf.items;
+    try testing.expect(std.mem.startsWith(u8, out, "%PDF-1.4"));
+    try testing.expect(std.mem.indexOf(u8, out, "Design BOM Report") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Summary") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "%%EOF") != null);
 }
 
 test "render_pdf no gaps no yellow" {

@@ -229,3 +229,117 @@ test "get_bom_item returns linked requirements and tests" {
     try testing.expect(std.mem.indexOf(u8, payload.text, "\"unresolved_requirement_ids\":[]") != null);
     try testing.expect(std.mem.indexOf(u8, payload.text, "\"unresolved_test_ids\":[]") != null);
 }
+
+test "design bom tools expose list usage and gaps" {
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\",\"product_status\":\"Active\"}", null);
+    try db.addNode("product://ASM-2000-REV-A", "Product", "{\"full_identifier\":\"ASM-2000-REV-A\",\"product_status\":\"Obsolete\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Req\"}", null);
+    var ingest = try internal.bom.ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "FBRFET-3300",
+        \\      "child_revision": "A",
+        \\      "quantity": "1",
+        \\      "requirement_ids": "REQ-001;REQ-404"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer ingest.deinit(testing.allocator);
+    var obsolete_ingest = try internal.bom.ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "legacy",
+        \\  "full_product_identifier": "ASM-2000-REV-A",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-2000",
+        \\      "child_part": "FBRFET-3300",
+        \\      "quantity": "1",
+        \\      "requirement_ids": "REQ-404"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer obsolete_ingest.deinit(testing.allocator);
+
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+
+    var list_args = std.json.ObjectMap.init(testing.allocator);
+    defer list_args.deinit();
+    try list_args.put("full_product_identifier", .{ .string = "ASM-1000-REV-C" });
+    const list_dispatch = try support.buildToolPayloadForTest("list_design_boms", .{ .object = list_args }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer list_dispatch.deinit(testing.allocator);
+    const list_payload = switch (list_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, list_payload.text, "\"design_boms\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, list_payload.text, "\"item_count\":") != null);
+    try testing.expect(std.mem.indexOf(u8, list_payload.text, "\"ASM-2000-REV-A\"") == null);
+
+    var list_all_args = std.json.ObjectMap.init(testing.allocator);
+    defer list_all_args.deinit();
+    try list_all_args.put("include_obsolete", .{ .bool = true });
+    const list_all_dispatch = try support.buildToolPayloadForTest("list_design_boms", .{ .object = list_all_args }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer list_all_dispatch.deinit(testing.allocator);
+    const list_all_payload = switch (list_all_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, list_all_payload.text, "\"ASM-2000-REV-A\"") != null);
+
+    var usage_args = std.json.ObjectMap.init(testing.allocator);
+    defer usage_args.deinit();
+    try usage_args.put("part", .{ .string = "FBRFET-3300" });
+    const usage_dispatch = try support.buildToolPayloadForTest("find_part_usage", .{ .object = usage_args }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer usage_dispatch.deinit(testing.allocator);
+    const usage_payload = switch (usage_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, usage_payload.text, "\"usages\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, usage_payload.text, "FBRFET-3300") != null);
+    try testing.expect(std.mem.indexOf(u8, usage_payload.text, "\"ASM-2000-REV-A\"") == null);
+
+    var gaps_args = std.json.ObjectMap.init(testing.allocator);
+    defer gaps_args.deinit();
+    const gaps_dispatch = try support.buildToolPayloadForTest("bom_gaps", .{ .object = gaps_args }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer gaps_dispatch.deinit(testing.allocator);
+    const gaps_payload = switch (gaps_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, gaps_payload.text, "\"gaps\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, gaps_payload.text, "\"REQ-404\"") != null);
+    try testing.expect(std.mem.indexOf(u8, gaps_payload.text, "\"ASM-2000-REV-A\"") == null);
+
+    var gaps_all_args = std.json.ObjectMap.init(testing.allocator);
+    defer gaps_all_args.deinit();
+    try gaps_all_args.put("include_inactive", .{ .bool = true });
+    const gaps_all_dispatch = try support.buildToolPayloadForTest("bom_gaps", .{ .object = gaps_all_args }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer gaps_all_dispatch.deinit(testing.allocator);
+    const gaps_all_payload = switch (gaps_all_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, gaps_all_payload.text, "\"ASM-2000-REV-A\"") != null);
+}

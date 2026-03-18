@@ -54,3 +54,26 @@ test "bom trace prompt references get_bom_item and bom-item resource" {
     try testing.expect(std.mem.indexOf(u8, resp, "bom-item://ASM-1000-REV-C/hardware/pcba/C0805-10UF@A") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Unresolved Declared Refs") != null);
 }
+
+test "bom coverage prompt references design bom tools" {
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("full_product_identifier", .{ .string = "ASM-1000-REV-C" });
+    try args_obj.put("bom_name", .{ .string = "pcba" });
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    var license_service = try internal.license.initDefaultStub(testing.allocator, .{});
+    defer license_service.deinit(testing.allocator);
+    const req_ctx = internal.RequestContext{ .registry = &registry, .secure_store_ref = &store, .state = &state, .license_service = &license_service, .refresh_active_runtime_fn = null, .alloc = testing.allocator };
+    const runtime_ctx = internal.RuntimeContext{ .db = &db, .profile_name = "generic" };
+    const resp = try prompts.promptGetResult("bom_coverage", .{ .object = args_obj }, &req_ctx, &runtime_ctx);
+    defer testing.allocator.free(resp);
+    try testing.expect(std.mem.indexOf(u8, resp, "list_design_boms") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "bom_gaps") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "bom_impact_analysis") != null);
+}

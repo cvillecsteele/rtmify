@@ -5,6 +5,55 @@ const json_util = @import("../json_util.zig");
 const provider_common = @import("../provider_common.zig");
 const workbook_paths = @import("paths.zig");
 
+pub const DesignBomSyncKind = enum { google, excel, local_xlsx };
+
+pub const DesignBomSyncConfig = struct {
+    kind: DesignBomSyncKind,
+    enabled: bool = true,
+    display_name: []const u8,
+    workbook_url: ?[]const u8 = null,
+    workbook_label: ?[]const u8 = null,
+    credential_ref: ?[]const u8 = null,
+    credential_display: ?[]const u8 = null,
+    google_sheet_id: ?[]const u8 = null,
+    excel_drive_id: ?[]const u8 = null,
+    excel_item_id: ?[]const u8 = null,
+    local_xlsx_path: ?[]const u8 = null,
+    last_sync_at: i64 = 0,
+    last_error: ?[]const u8 = null,
+
+    pub fn deinit(self: *DesignBomSyncConfig, alloc: Allocator) void {
+        alloc.free(self.display_name);
+        if (self.workbook_url) |v| alloc.free(v);
+        if (self.workbook_label) |v| alloc.free(v);
+        if (self.credential_ref) |v| alloc.free(v);
+        if (self.credential_display) |v| alloc.free(v);
+        if (self.google_sheet_id) |v| alloc.free(v);
+        if (self.excel_drive_id) |v| alloc.free(v);
+        if (self.excel_item_id) |v| alloc.free(v);
+        if (self.local_xlsx_path) |v| alloc.free(v);
+        if (self.last_error) |v| alloc.free(v);
+    }
+
+    pub fn clone(self: DesignBomSyncConfig, alloc: Allocator) !DesignBomSyncConfig {
+        return .{
+            .kind = self.kind,
+            .enabled = self.enabled,
+            .display_name = try alloc.dupe(u8, self.display_name),
+            .workbook_url = if (self.workbook_url) |v| try alloc.dupe(u8, v) else null,
+            .workbook_label = if (self.workbook_label) |v| try alloc.dupe(u8, v) else null,
+            .credential_ref = if (self.credential_ref) |v| try alloc.dupe(u8, v) else null,
+            .credential_display = if (self.credential_display) |v| try alloc.dupe(u8, v) else null,
+            .google_sheet_id = if (self.google_sheet_id) |v| try alloc.dupe(u8, v) else null,
+            .excel_drive_id = if (self.excel_drive_id) |v| try alloc.dupe(u8, v) else null,
+            .excel_item_id = if (self.excel_item_id) |v| try alloc.dupe(u8, v) else null,
+            .local_xlsx_path = if (self.local_xlsx_path) |v| try alloc.dupe(u8, v) else null,
+            .last_sync_at = self.last_sync_at,
+            .last_error = if (self.last_error) |v| try alloc.dupe(u8, v) else null,
+        };
+    }
+};
+
 pub const WorkbookConfig = struct {
     id: []const u8,
     slug: []const u8,
@@ -22,6 +71,7 @@ pub const WorkbookConfig = struct {
     google_sheet_id: ?[]const u8 = null,
     excel_drive_id: ?[]const u8 = null,
     excel_item_id: ?[]const u8 = null,
+    design_bom_sync: ?DesignBomSyncConfig = null,
 
     pub fn deinit(self: *WorkbookConfig, alloc: Allocator) void {
         alloc.free(self.id);
@@ -39,6 +89,7 @@ pub const WorkbookConfig = struct {
         if (self.google_sheet_id) |v| alloc.free(v);
         if (self.excel_drive_id) |v| alloc.free(v);
         if (self.excel_item_id) |v| alloc.free(v);
+        if (self.design_bom_sync) |*v| v.deinit(alloc);
     }
 
     pub fn clone(self: WorkbookConfig, alloc: Allocator) !WorkbookConfig {
@@ -59,6 +110,7 @@ pub const WorkbookConfig = struct {
             .google_sheet_id = if (self.google_sheet_id) |v| try alloc.dupe(u8, v) else null,
             .excel_drive_id = if (self.excel_drive_id) |v| try alloc.dupe(u8, v) else null,
             .excel_item_id = if (self.excel_item_id) |v| try alloc.dupe(u8, v) else null,
+            .design_bom_sync = if (self.design_bom_sync) |v| try v.clone(alloc) else null,
         };
     }
 };
@@ -246,6 +298,18 @@ pub fn activateWorkbookId(cfg: *LiveConfig, id: []const u8, alloc: Allocator) !v
     if (workbook.removed_at != null) return error.WorkbookRemoved;
     if (cfg.active_workbook_id) |existing| alloc.free(existing);
     cfg.active_workbook_id = try alloc.dupe(u8, id);
+}
+
+pub fn replaceActiveDesignBomSync(cfg: *LiveConfig, sync_cfg: DesignBomSyncConfig, alloc: Allocator) !void {
+    const workbook = activeWorkbook(cfg) orelse return error.NoActiveWorkbook;
+    if (workbook.design_bom_sync) |*existing| existing.deinit(alloc);
+    workbook.design_bom_sync = try sync_cfg.clone(alloc);
+}
+
+pub fn clearActiveDesignBomSync(cfg: *LiveConfig, alloc: Allocator) !void {
+    const workbook = activeWorkbook(cfg) orelse return error.NoActiveWorkbook;
+    if (workbook.design_bom_sync) |*existing| existing.deinit(alloc);
+    workbook.design_bom_sync = null;
 }
 
 pub fn renameWorkbook(cfg: *LiveConfig, id: []const u8, display_name: []const u8, alloc: Allocator) !void {
@@ -574,6 +638,7 @@ fn parseWorkbook(value: std.json.Value, alloc: Allocator) !WorkbookConfig {
         .google_sheet_id = try dupOptionalString(value, "google_sheet_id", alloc),
         .excel_drive_id = try dupOptionalString(value, "excel_drive_id", alloc),
         .excel_item_id = try dupOptionalString(value, "excel_item_id", alloc),
+        .design_bom_sync = try parseDesignBomSync(value, alloc),
     };
 }
 
@@ -633,6 +698,76 @@ fn appendWorkbookJson(buf: *std.ArrayList(u8), workbook: WorkbookConfig, alloc: 
     try appendJsonStringOpt(buf, workbook.excel_drive_id, alloc);
     try buf.appendSlice(alloc, ",\"excel_item_id\":");
     try appendJsonStringOpt(buf, workbook.excel_item_id, alloc);
+    try buf.appendSlice(alloc, ",\"design_bom_sync\":");
+    if (workbook.design_bom_sync) |design_bom_sync| {
+        try appendDesignBomSyncJson(buf, design_bom_sync, alloc);
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
+    try buf.append(alloc, '}');
+}
+
+fn parseDesignBomSyncKind(value: []const u8) ?DesignBomSyncKind {
+    if (std.mem.eql(u8, value, "google")) return .google;
+    if (std.mem.eql(u8, value, "excel")) return .excel;
+    if (std.mem.eql(u8, value, "local_xlsx")) return .local_xlsx;
+    return null;
+}
+
+fn parseDesignBomSync(value: std.json.Value, alloc: Allocator) !?DesignBomSyncConfig {
+    const field = json_util.getObjectField(value, "design_bom_sync") orelse return null;
+    if (field == .null) return null;
+    if (field != .object) return error.InvalidJson;
+    const kind_raw = json_util.getString(field, "kind") orelse return error.InvalidJson;
+    const kind = parseDesignBomSyncKind(kind_raw) orelse return error.InvalidJson;
+    const enabled = if (json_util.getObjectField(field, "enabled")) |raw| switch (raw) {
+        .bool => raw.bool,
+        else => return error.InvalidJson,
+    } else true;
+    const display_name = json_util.getString(field, "display_name") orelse return error.InvalidJson;
+    return .{
+        .kind = kind,
+        .enabled = enabled,
+        .display_name = try alloc.dupe(u8, display_name),
+        .workbook_url = try dupOptionalString(field, "workbook_url", alloc),
+        .workbook_label = try dupOptionalString(field, "workbook_label", alloc),
+        .credential_ref = try dupOptionalString(field, "credential_ref", alloc),
+        .credential_display = try dupOptionalString(field, "credential_display", alloc),
+        .google_sheet_id = try dupOptionalString(field, "google_sheet_id", alloc),
+        .excel_drive_id = try dupOptionalString(field, "excel_drive_id", alloc),
+        .excel_item_id = try dupOptionalString(field, "excel_item_id", alloc),
+        .local_xlsx_path = try dupOptionalString(field, "local_xlsx_path", alloc),
+        .last_sync_at = (try dupOptionalInt(field, "last_sync_at")) orelse 0,
+        .last_error = try dupOptionalString(field, "last_error", alloc),
+    };
+}
+
+fn appendDesignBomSyncJson(buf: *std.ArrayList(u8), design_bom_sync: DesignBomSyncConfig, alloc: Allocator) !void {
+    try buf.appendSlice(alloc, "{\"kind\":");
+    try json_util.appendJsonQuoted(buf, @tagName(design_bom_sync.kind), alloc);
+    try buf.appendSlice(alloc, ",\"enabled\":");
+    try buf.appendSlice(alloc, if (design_bom_sync.enabled) "true" else "false");
+    try buf.appendSlice(alloc, ",\"display_name\":");
+    try json_util.appendJsonQuoted(buf, design_bom_sync.display_name, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_url\":");
+    try appendJsonStringOpt(buf, design_bom_sync.workbook_url, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_label\":");
+    try appendJsonStringOpt(buf, design_bom_sync.workbook_label, alloc);
+    try buf.appendSlice(alloc, ",\"credential_ref\":");
+    try appendJsonStringOpt(buf, design_bom_sync.credential_ref, alloc);
+    try buf.appendSlice(alloc, ",\"credential_display\":");
+    try appendJsonStringOpt(buf, design_bom_sync.credential_display, alloc);
+    try buf.appendSlice(alloc, ",\"google_sheet_id\":");
+    try appendJsonStringOpt(buf, design_bom_sync.google_sheet_id, alloc);
+    try buf.appendSlice(alloc, ",\"excel_drive_id\":");
+    try appendJsonStringOpt(buf, design_bom_sync.excel_drive_id, alloc);
+    try buf.appendSlice(alloc, ",\"excel_item_id\":");
+    try appendJsonStringOpt(buf, design_bom_sync.excel_item_id, alloc);
+    try buf.appendSlice(alloc, ",\"local_xlsx_path\":");
+    try appendJsonStringOpt(buf, design_bom_sync.local_xlsx_path, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"last_sync_at\":{d}", .{design_bom_sync.last_sync_at});
+    try buf.appendSlice(alloc, ",\"last_error\":");
+    try appendJsonStringOpt(buf, design_bom_sync.last_error, alloc);
     try buf.append(alloc, '}');
 }
 
@@ -754,4 +889,26 @@ test "createWorkbookEntry enforces unique display names and unique slugs" {
     defer second.deinit(testing.allocator);
     try testing.expect(std.mem.startsWith(u8, second.slug, "workbook-2-"));
     try testing.expectError(error.DuplicateDisplayName, createWorkbookEntry(&cfg, "Workbook 2", validated, "cred_4", &.{}, testing.allocator));
+}
+
+test "workbook config roundtrips optional design bom sync" {
+    var cfg = try bootstrapConfig(testing.allocator, .{});
+    defer cfg.deinit(testing.allocator);
+    cfg.workbooks[0].design_bom_sync = .{
+        .kind = .local_xlsx,
+        .enabled = true,
+        .display_name = try testing.allocator.dupe(u8, "Design BOM Workbook"),
+        .local_xlsx_path = try testing.allocator.dupe(u8, "/tmp/design-bom.xlsx"),
+        .last_sync_at = 123,
+        .last_error = try testing.allocator.dupe(u8, "none"),
+    };
+
+    const json = try toJson(&cfg, testing.allocator);
+    defer testing.allocator.free(json);
+    var loaded = try loadFromSlice(json, testing.allocator);
+    defer loaded.deinit(testing.allocator);
+    try testing.expect(loaded.workbooks[0].design_bom_sync != null);
+    try testing.expectEqual(DesignBomSyncKind.local_xlsx, loaded.workbooks[0].design_bom_sync.?.kind);
+    try testing.expectEqualStrings("/tmp/design-bom.xlsx", loaded.workbooks[0].design_bom_sync.?.local_xlsx_path.?);
+    try testing.expectEqual(@as(i64, 123), loaded.workbooks[0].design_bom_sync.?.last_sync_at);
 }

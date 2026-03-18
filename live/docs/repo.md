@@ -192,7 +192,7 @@ and the shared template/report path ignore both tabs entirely in this cut.
 |-----------|-------------|------------|
 | `Product` | Live-only product declaration row keyed by `full_identifier` for future manufacturing joins | `assembly`, `revision`, `full_identifier`, `description`, `product_status` |
 | `Decomposition` | Live-only requirement refinement rows that create `REFINED_BY` edges between Requirement nodes | `parent_id`, `child_id` |
-| `BOM` | Live-only named hardware or software BOM attached to a Product | `full_product_identifier`, `bom_name`, `bom_type`, `source_format`, `ingested_at` |
+| `DesignBOM` | Live-only named hardware or software BOM attached to a Product | `bom_class`, `full_product_identifier`, `bom_name`, `bom_type`, `source_format`, `ingested_at` |
 | `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `requirement_ids`, `test_ids`, `purl`, `license`, `hashes` |
 | `DesignInput` | Formal design input derived from a requirement (FDA/IEC 62304) | `description`, `source_req`, `status` |
 | `DesignOutput` | Design artifact satisfying a design input (drawing, spec, firmware, BOM) | `description`, `type`, `version`, `status` |
@@ -223,10 +223,10 @@ and the shared template/report path ignore both tabs entirely in this cut.
 | `CONTAINS` | TestFile | CodeAnnotation | Test file contains this annotation |
 | `CONTROLLED_BY` | DesignOutput | ConfigurationItem | Design output under configuration control |
 | `FOR_PRODUCT` | TestExecution | Product | Execution evidence scoped to a product configuration |
-| `HAS_BOM` | Product | BOM | Product currently declares this named BOM |
-| `CONTAINS` | BOM/BOMItem | BOMItem | BOM tree containment; occurrence facts like quantity and ref designator live on the edge properties |
+| `HAS_DESIGN_BOM` | Product | DesignBOM | Product currently declares this named design BOM |
+| `CONTAINS` | DesignBOM/BOMItem | BOMItem | Design BOM tree containment; occurrence facts like quantity and ref designator live on the edge properties |
 | `REFERENCES_REQUIREMENT` | BOMItem | Requirement | BOM row explicitly references this requirement ID |
-| `REFERENCES_TEST` | BOMItem | Test | BOM row explicitly references this test ID |
+| `REFERENCES_TEST` | BOMItem | Test/TestGroup | BOM row explicitly references this test or test-group ID |
 
 ### External Evidence Ingestion
 
@@ -234,7 +234,11 @@ Live accepts product-scoped external evidence through the local ingestion API an
 
 - `POST /api/v1/test-results`
 - `POST /api/v1/bom`
+- `POST /api/v1/bom/xlsx`
 - `GET /api/v1/bom/:full_product_identifier`
+- `GET /api/v1/bom/design`
+- `GET /api/v1/bom/design/:bom_name`
+- `GET /api/v1/bom/design/:bom_name/items`
 
 `/api/v1/bom` accepts:
 
@@ -248,7 +252,7 @@ Hardware BOM CSV/JSON rows may also declare:
 
 These values are stored on `BOMItem` nodes and resolved by exact ID match to create `REFERENCES_REQUIREMENT` and `REFERENCES_TEST` edges. Unresolved IDs remain on the BOM item properties and emit BOM ingest warnings; they do not fail the upload.
 
-The inbox at `~/.rtmify/inbox` uses the same bearer token and dispatches `.json` and `.csv` files by content. Product matching is exact on `Product.full_identifier`; BOM and SBOM uploads are Live-only and do not affect Trace output.
+The inbox at `~/.rtmify/inbox` uses the same bearer token and dispatches `.json`, `.csv`, and `.xlsx` files by content. Product matching is exact on `Product.full_identifier` for direct CSV/JSON uploads. Grouped workbook/XLSX Design BOM ingest can continue with warning records for missing Product nodes. BOM and SBOM uploads are Live-only and do not affect Trace output.
 
 For DO-178C workbooks, Live also provisions a `Decomposition` tab with
 `parent_id` and `child_id`. Each nonblank row creates `Requirement(parent) --REFINED_BY--> Requirement(child)`.

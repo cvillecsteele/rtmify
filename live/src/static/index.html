@@ -980,6 +980,137 @@
     }
     .badge-pop { animation: badge-pop 0.25s ease-out; }
 
+    .bom-upload-zone {
+      border: 1px dashed var(--brand-border);
+      border-radius: 8px;
+      padding: 18px;
+      background: linear-gradient(180deg, var(--surface-1), var(--brand-bg));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .bom-upload-zone.drag-over { border-color: var(--brand-navy); background: var(--amber-bg); }
+    .bom-upload-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
+    .bom-upload-subtitle { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+    .bom-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border-1);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-2);
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .bom-chip.warn {
+      background: var(--amber-bg);
+      border-color: var(--amber-border);
+      color: var(--amber-text);
+    }
+    .bom-tree {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bom-tree-node {
+      border-left: 2px solid var(--brand-border);
+      padding-left: 12px;
+      margin-left: 2px;
+    }
+    .bom-tree-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .bom-tree-children {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .bom-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .bom-metric {
+      border: 1px solid var(--border-1);
+      border-radius: 8px;
+      background: var(--surface-2);
+      padding: 12px 14px;
+    }
+    .bom-metric-label {
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-4);
+      margin-bottom: 4px;
+    }
+    .bom-metric-value {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-1);
+    }
+    .bom-detail-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 16px;
+    }
+    .bom-sync-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .bom-sync-provider {
+      display: none;
+    }
+    .bom-sync-provider.active {
+      display: block;
+    }
+    .bom-status-list {
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 8px 14px;
+      font-size: 13px;
+    }
+    .bom-status-list dt {
+      color: var(--text-4);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .bom-status-list dd {
+      color: var(--text-1);
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .bom-inline-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .bom-result-block {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    @media (max-width: 980px) {
+      .bom-detail-grid { grid-template-columns: 1fr; }
+      .bom-upload-zone { flex-direction: column; align-items: flex-start; }
+      .bom-status-list { grid-template-columns: 1fr; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       section.active, tbody tr, .detail-inner { animation: none; }
       .expand-btn svg { transition: none; }
@@ -1170,6 +1301,7 @@
 <!-- Primary nav -->
 <nav class="nav-primary">
   <button class="active" data-group="data" onclick="showGroup('data')">Data</button>
+  <button data-group="bom" onclick="showGroup('bom')">BOM</button>
   <button data-group="analysis" onclick="showGroup('analysis')">
     Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
   </button>
@@ -1185,6 +1317,7 @@
     </button>
     <div class="settings-dropdown" id="settings-panel" style="display:none">
       <button onclick="showSettingsTab('workbooks')">Workbooks</button>
+      <button onclick="showSettingsTab('design-bom-sync')">Design BOM Sync</button>
       <button onclick="showSettingsTab('info')">System Info</button>
     </div>
   </div>
@@ -1197,6 +1330,16 @@
   <button data-tab="tests" onclick="showTab('tests')">Tests</button>
   <button data-tab="risks" onclick="showTab('risks')">Risks</button>
   <button data-tab="rtm" onclick="showTab('rtm')">RTM</button>
+</div>
+
+<!-- BOM sub-nav -->
+<div class="nav-sub" data-group="bom">
+  <button class="active" data-tab="design-boms" onclick="showTab('design-boms')">Design BOMs</button>
+  <button data-tab="bom-components" onclick="showTab('bom-components')">Components</button>
+  <button data-tab="bom-coverage" onclick="showTab('bom-coverage')">Coverage</button>
+  <button data-tab="bom-usage" onclick="showTab('bom-usage')">Part Usage</button>
+  <button data-tab="bom-gaps" onclick="showTab('bom-gaps')">BOM Gaps</button>
+  <button data-tab="bom-impact" onclick="showTab('bom-impact')">Impact</button>
 </div>
 
 <!-- Analysis sub-nav -->
@@ -1237,6 +1380,149 @@
         <tbody id="req-body"></tbody>
       </table>
     </div>
+  </section>
+
+  <!-- Design BOMs tab -->
+  <section id="tab-design-boms">
+    <div class="toolbar">
+      <h2>Design BOMs</h2>
+      <button class="btn" onclick="loadDesignBomWorkspace(true)">Refresh</button>
+    </div>
+    <div id="design-boms-error" class="error-banner" style="display:none"></div>
+    <div class="card card--mb card--padded">
+      <div class="bom-upload-zone" id="bom-upload-zone">
+        <div>
+          <div class="bom-upload-title">Upload BOM artifact</div>
+          <div class="bom-upload-subtitle">Drop or choose `.csv`, `.json`, or `.xlsx` to ingest into the active workbook.</div>
+        </div>
+        <div class="bom-inline-actions">
+          <button class="btn" onclick="document.getElementById('bom-upload-input').click()">Choose File</button>
+          <a class="btn" href="/RTMify_Design_BOM_Template.xlsx">Download Template</a>
+        </div>
+      </div>
+      <input id="bom-upload-input" type="file" accept=".csv,.json,.xlsx,application/json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">
+      <div id="bom-upload-result" class="text-sm-subtle mt-12">No upload yet.</div>
+    </div>
+    <div class="card card--mb card--padded">
+      <label class="text-sm-subtle mb-10" style="display:block">
+        <input id="design-boms-include-obsolete" type="checkbox" onchange="loadDesignBomWorkspace(true)">
+        Include obsolete products
+      </label>
+      <h3 class="mb-10">Available Design BOMs</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Status</th>
+            <th>BOM Name</th>
+            <th>Type</th>
+            <th>Source</th>
+            <th>Items</th>
+            <th>Warnings</th>
+            <th>Ingested</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="design-bom-list-body">
+          <tr><td colspan="9" class="empty-state">Loading Design BOMs…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card card--padded">
+      <div id="design-bom-detail">
+        <div class="empty-state">Select a Design BOM to inspect its tree and linked traceability.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BOM components tab -->
+  <section id="tab-bom-components">
+    <div class="toolbar">
+      <h2>Components</h2>
+      <button class="btn" onclick="loadBomComponents()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="bom-components-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="Component product filter">
+      <input id="bom-components-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name (optional)" aria-label="Component BOM name filter">
+      <input id="bom-components-search" class="lobby-input lobby-input--no-mb" type="text" placeholder="Search part, description, or category" aria-label="Component search" onkeydown="if(event.key==='Enter') loadBomComponents()">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="bom-components-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="bom-components-error" class="error-banner" style="display:none"></div>
+    <div id="bom-components-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- BOM coverage tab -->
+  <section id="tab-bom-coverage">
+    <div class="toolbar">
+      <h2>Coverage</h2>
+      <button class="btn" onclick="loadBomCoverage()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="bom-coverage-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="Coverage product filter">
+      <input id="bom-coverage-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name (optional)" aria-label="Coverage BOM name filter">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="bom-coverage-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="bom-coverage-error" class="error-banner" style="display:none"></div>
+    <div id="bom-coverage-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- BOM part usage tab -->
+  <section id="tab-bom-usage">
+    <div class="toolbar">
+      <h2>Part Usage</h2>
+      <button class="btn" onclick="runBomPartUsage()">Analyze</button>
+    </div>
+    <div class="input-row">
+      <input id="bom-usage-part" class="lobby-input lobby-input--no-mb w-input" type="text" placeholder="Part number (e.g. FBRFET-3300)" aria-label="Part number" onkeydown="if(event.key==='Enter') runBomPartUsage()">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="bom-usage-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="bom-usage-error" class="error-banner" style="display:none"></div>
+    <div id="bom-usage-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- BOM gaps tab -->
+  <section id="tab-bom-gaps">
+    <div class="toolbar">
+      <h2>BOM Gaps</h2>
+      <button class="btn" onclick="loadBomGaps()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="bom-gaps-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="Product filter">
+      <input id="bom-gaps-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name (optional)" aria-label="BOM name filter">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="bom-gaps-include-inactive" type="checkbox">
+      Include superseded, EOL, and obsolete products
+    </label>
+    <div id="bom-gaps-error" class="error-banner" style="display:none"></div>
+    <div id="bom-gaps-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- BOM impact tab -->
+  <section id="tab-bom-impact">
+    <div class="toolbar">
+      <h2>BOM Impact Analysis</h2>
+      <button class="btn" onclick="loadBomImpactAnalysis()">Analyze</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="bom-impact-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier" aria-label="Product identifier">
+      <input id="bom-impact-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name" aria-label="BOM name">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="bom-impact-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="bom-impact-error" class="error-banner" style="display:none"></div>
+    <div id="bom-impact-result" class="bom-result-block"></div>
   </section>
 
   <!-- User Needs tab -->
@@ -1613,6 +1899,63 @@ audit_readiness_summary(profile="aerospace")</div>
     </div>
   </section>
 
+  <!-- Design BOM Sync tab -->
+  <section id="tab-design-bom-sync">
+    <div class="toolbar">
+      <h2>Design BOM Sync</h2>
+      <button class="btn" onclick="loadDesignBomSyncSettings(true)">Refresh</button>
+    </div>
+    <div id="design-bom-sync-error" class="error-banner" style="display:none"></div>
+    <div class="card card--mb card--padded">
+      <h3 class="mb-10">Current Status</h3>
+      <dl id="design-bom-sync-status" class="bom-status-list">
+        <dt>State</dt><dd>Loading…</dd>
+      </dl>
+    </div>
+    <div class="card card--padded">
+      <h3 class="mb-10">Configure Secondary Design BOM Source</h3>
+      <div class="bom-sync-grid">
+        <div>
+          <label class="lobby-label" for="design-bom-sync-kind">Source Kind</label>
+          <select id="design-bom-sync-kind" class="lobby-input lobby-input--no-mb" onchange="toggleDesignBomSyncKind()">
+            <option value="local_xlsx">Local XLSX</option>
+            <option value="google">Google Sheets</option>
+            <option value="excel">Excel Online</option>
+          </select>
+        </div>
+        <div>
+          <label class="lobby-label" for="design-bom-sync-display-name">Display Name</label>
+          <input id="design-bom-sync-display-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="Design BOM Workbook">
+        </div>
+      </div>
+      <div id="design-bom-sync-local" class="bom-sync-provider active mt-12">
+        <label class="lobby-label" for="design-bom-sync-local-path">Local XLSX Path</label>
+        <input id="design-bom-sync-local-path" class="lobby-input lobby-input--no-mb" type="text" placeholder="/absolute/path/to/design-bom.xlsx">
+      </div>
+      <div id="design-bom-sync-provider" class="bom-sync-provider mt-12">
+        <label class="lobby-label" for="design-bom-sync-workbook-url">Workbook URL</label>
+        <input id="design-bom-sync-workbook-url" class="lobby-input" type="text" placeholder="https://docs.google.com/spreadsheets/d/...">
+        <div id="design-bom-sync-google" class="bom-sync-provider active">
+          <label class="lobby-label" for="design-bom-sync-google-json">Google Service Account JSON</label>
+          <textarea id="design-bom-sync-google-json" class="lobby-input lobby-input--no-mb" rows="6" placeholder='{"client_email":"...","private_key":"..."}'></textarea>
+        </div>
+        <div id="design-bom-sync-excel" class="bom-sync-provider">
+          <div class="bom-sync-grid">
+            <input id="design-bom-sync-excel-tenant" class="lobby-input lobby-input--no-mb" type="text" placeholder="Azure tenant ID">
+            <input id="design-bom-sync-excel-client" class="lobby-input lobby-input--no-mb" type="text" placeholder="Azure client ID">
+            <input id="design-bom-sync-excel-secret" class="lobby-input lobby-input--no-mb" type="password" placeholder="Azure client secret">
+          </div>
+        </div>
+      </div>
+      <div class="bom-inline-actions">
+        <button class="btn" onclick="validateDesignBomSync()">Validate</button>
+        <button class="btn" onclick="saveDesignBomSync()">Save</button>
+        <button class="btn-danger" onclick="deleteDesignBomSync()">Remove</button>
+      </div>
+      <div class="text-sm-subtle mt-12">Provider credentials are not readable back from secure storage. Re-enter them only when changing the source.</div>
+    </div>
+  </section>
+
   <!-- Info tab -->
   <section id="tab-info">
     <div class="toolbar">
@@ -1692,6 +2035,22 @@ audit_readiness_summary(profile="aerospace")</div>
         </p>
         <div class="btn-group">
           <a class="btn" href="/report/coverage.md" download="coverage.md">Markdown</a>
+        </div>
+      </div>
+      <div class="report-card">
+        <h3>Design BOM Report</h3>
+        <p>
+          Product-scoped Design BOM summary with hierarchy, trace links, unresolved refs,
+          and coverage counts for one selected BOM.
+        </p>
+        <div class="bom-sync-grid mb-12">
+          <input id="report-design-bom-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier">
+          <input id="report-design-bom-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name">
+        </div>
+        <div class="btn-group">
+          <button class="btn" onclick="downloadDesignBomReport('pdf')">PDF</button>
+          <button class="btn" onclick="downloadDesignBomReport()">Markdown</button>
+          <button class="btn" onclick="downloadDesignBomReport('docx')">Word (.docx)</button>
         </div>
       </div>
     </div>

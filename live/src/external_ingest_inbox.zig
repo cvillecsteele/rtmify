@@ -53,7 +53,7 @@ pub fn processInboxOnce(db: *graph_live.GraphDb, inbox_dir: []const u8, alloc: A
     while (try it.next()) |entry| {
         if (entry.kind != .file) continue;
         if (entry.name.len == 0 or entry.name[0] == '.') continue;
-        if (!std.mem.endsWith(u8, entry.name, ".json") and !std.mem.endsWith(u8, entry.name, ".csv")) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".json") and !std.mem.endsWith(u8, entry.name, ".csv") and !std.mem.endsWith(u8, entry.name, ".xlsx")) continue;
         try processOneFile(db, inbox_dir, entry.name, alloc);
     }
 }
@@ -92,6 +92,19 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
             defer response.deinit(alloc);
         },
         .bom => {
+            if (std.mem.endsWith(u8, name, ".xlsx")) {
+                var grouped = bom.ingestXlsxBody(db, bytes, alloc) catch |err| {
+                    try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+                    return;
+                };
+                defer grouped.deinit(alloc);
+
+                const archived_path = try archiveFile(inbox_dir, "processed", name, alloc);
+                defer alloc.free(archived_path);
+                try recordGroupedBomWarnings(db, archived_path, grouped, alloc);
+                return;
+            }
+
             var response = bom.ingestInboxFile(db, name, bytes, alloc) catch |err| {
                 try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
                 return;
@@ -110,6 +123,7 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
 }
 
 fn detectArtifactKind(name: []const u8, body: []const u8, alloc: Allocator) !ArtifactKind {
+    if (std.mem.endsWith(u8, name, ".xlsx")) return .bom;
     if (std.mem.endsWith(u8, name, ".csv")) {
         return if (looksLikeBomCsv(body)) .bom else error.UnsupportedFormat;
     }
@@ -196,6 +210,49 @@ fn recordBomWarnings(db: *graph_live.GraphDb, archived_path: []const u8, respons
             subject,
             details.items,
         );
+    }
+}
+
+fn recordGroupedBomWarnings(db: *graph_live.GraphDb, archived_path: []const u8, response: bom.GroupedBomIngestResponse, alloc: Allocator) !void {
+    for (response.groups) |group| {
+        for (group.warnings) |warning| {
+            var details: std.ArrayList(u8) = .empty;
+            defer details.deinit(alloc);
+            try details.appendSlice(alloc, "{\"warning_code\":");
+            try shared.appendJsonStr(&details, warning.code, alloc);
+            try details.appendSlice(alloc, ",\"warning_subject\":");
+            try shared.appendJsonStrOpt(&details, warning.subject, alloc);
+            try details.appendSlice(alloc, ",\"full_product_identifier\":");
+            try shared.appendJsonStr(&details, group.full_product_identifier, alloc);
+            try details.appendSlice(alloc, ",\"bom_name\":");
+            try shared.appendJsonStr(&details, group.bom_name, alloc);
+            try details.appendSlice(alloc, ",\"bom_type\":\"hardware\"}");
+
+            const message = try std.fmt.allocPrint(
+                alloc,
+                "Ingested BOM workbook with warning {s}: {s}",
+                .{ warning.code, warning.message },
+            );
+            defer alloc.free(message);
+            const subject = try alloc.dupe(u8, archived_path);
+            defer alloc.free(subject);
+            const dedupe_key = try std.fmt.allocPrint(
+                alloc,
+                "external_ingest_inbox:{s}:{s}:{s}:{s}",
+                .{ archived_path, group.bom_name, warning.code, warning.subject orelse "" },
+            );
+            defer alloc.free(dedupe_key);
+            try db.upsertRuntimeDiagnostic(
+                dedupe_key,
+                9502,
+                "warn",
+                "External BOM ingested with warnings",
+                message,
+                "external_ingest_inbox",
+                subject,
+                details.items,
+            );
+        }
     }
 }
 
@@ -299,7 +356,7 @@ test "csv bom file in inbox is ingested and moved to processed" {
     try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
     try processInboxOnce(&db, inbox_dir, testing.allocator);
 
-    const bom_json = try bom.getBomJson(&db, "ASM-1000-REV-C", null, null, testing.allocator);
+    const bom_json = try bom.getBomJson(&db, "ASM-1000-REV-C", null, null, false, testing.allocator);
     defer testing.allocator.free(bom_json);
     try testing.expect(std.mem.indexOf(u8, bom_json, "\"bom_name\":\"pcba\"") != null);
 }
@@ -395,7 +452,7 @@ test "cyclonedx json file in inbox is ingested and moved to processed" {
     try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
     try processInboxOnce(&db, inbox_dir, testing.allocator);
 
-    const bom_json = try bom.getBomJson(&db, "ASM-1000-REV-C", "software", "firmware", testing.allocator);
+    const bom_json = try bom.getBomJson(&db, "ASM-1000-REV-C", "software", "firmware", false, testing.allocator);
     defer testing.allocator.free(bom_json);
     try testing.expect(std.mem.indexOf(u8, bom_json, "\"bom_type\":\"software\"") != null);
 }

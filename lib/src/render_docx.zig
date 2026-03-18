@@ -97,6 +97,29 @@ pub fn renderDocxWithContext(
     try writeZip(&files, writer);
 }
 
+pub fn renderDocxFromMarkdown(markdown: []const u8, writer: anytype) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const content_types = try buildContentTypes(alloc);
+    const root_rels = try buildRootRels(alloc);
+    const doc_rels = try buildDocRels(alloc);
+    const styles_xml = try buildStyles(alloc);
+    const footer_xml = try buildFooter(alloc);
+    const document_xml = try buildDocumentFromMarkdown(markdown, alloc);
+
+    const files = [_]ZipFile{
+        .{ .name = "[Content_Types].xml", .data = content_types },
+        .{ .name = "_rels/.rels", .data = root_rels },
+        .{ .name = "word/_rels/document.xml.rels", .data = doc_rels },
+        .{ .name = "word/styles.xml", .data = styles_xml },
+        .{ .name = "word/footer1.xml", .data = footer_xml },
+        .{ .name = "word/document.xml", .data = document_xml },
+    };
+    try writeZip(&files, writer);
+}
+
 // ---------------------------------------------------------------------------
 // ZIP writer (stored mode only)
 // ---------------------------------------------------------------------------
@@ -740,6 +763,19 @@ test "render_docx fixture" {
     try testing.expect(std.mem.indexOf(u8, out, "Hard Gaps") != null);
     try testing.expect(std.mem.indexOf(u8, out, "Advisory Gaps") != null);
     try testing.expect(std.mem.indexOf(u8, out, "Unresolved Mitigation Requirement") != null);
+}
+
+test "render_docx_from_markdown builds docx archive" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+
+    try renderDocxFromMarkdown("# Design BOM Report\n\n## Summary\n\n- Items: 7\n", buf.writer(testing.allocator));
+
+    const out = buf.items;
+    try testing.expect(std.mem.indexOf(u8, out, "PK\x03\x04") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "word/document.xml") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Design BOM Report") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "Summary") != null);
 }
 
 test "render_docx no gaps no yellow" {

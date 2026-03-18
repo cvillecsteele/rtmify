@@ -3,6 +3,7 @@ const sync_mod = @import("sync/mod.zig");
 pub const SyncState = sync_mod.state.SyncState;
 pub const WorkerControl = sync_mod.state.WorkerControl;
 pub const SyncConfig = sync_mod.state.SyncConfig;
+pub const DesignBomSyncSource = sync_mod.state.DesignBomSyncSource;
 pub const RepoScanCtx = sync_mod.repo_scan.RepoScanCtx;
 
 pub fn syncThread(cfg: SyncConfig) void {

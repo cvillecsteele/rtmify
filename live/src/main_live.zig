@@ -470,6 +470,7 @@ fn refreshActiveRuntimeCallback(
 fn maybeStartSync(
     workbook_runtime: *workbook.runtime.WorkbookRuntime,
     active: @import("provider_common.zig").ActiveConnection,
+    design_bom_sync: ?sync_live.DesignBomSyncSource,
     control: *sync_live.WorkerControl,
     alloc: std.mem.Allocator,
 ) !std.Thread {
@@ -489,6 +490,7 @@ fn maybeStartSync(
         .workbook_slug = try alloc.dupe(u8, workbook_runtime.config.slug),
         .profile = profile_mod.fromString(workbook_runtime.config.profile) orelse .generic,
         .active = try active.clone(alloc),
+        .design_bom_sync = if (design_bom_sync) |source| try source.clone(alloc) else null,
         .control = control,
         .alloc = alloc,
         .db = &workbook_runtime.db,
@@ -538,12 +540,63 @@ fn startActiveWorkers(
 
     var loaded = try connection_mod.loadWorkbookConnection(runtime.config, secure_store, alloc);
     defer loaded.deinit(alloc);
+    var design_bom_sync = try resolveDesignBomSyncSource(runtime.config, secure_store, alloc);
+    defer if (design_bom_sync) |*source| source.deinit(alloc);
     if (license_status.permits_use and loaded == .active) {
-        workers.sync_thread = try maybeStartSync(runtime, loaded.active, control, alloc);
+        workers.sync_thread = try maybeStartSync(runtime, loaded.active, design_bom_sync, control, alloc);
         std.log.info("sync thread started for configured provider connection", .{});
     }
 
     registry.installActiveWorkers(workers);
+}
+
+fn resolveDesignBomSyncSource(
+    cfg: workbook.config.WorkbookConfig,
+    secure_store: *secure_store_mod.Store,
+    alloc: std.mem.Allocator,
+) !?sync_live.DesignBomSyncSource {
+    const design_bom_sync = cfg.design_bom_sync orelse return null;
+    if (!design_bom_sync.enabled) return null;
+    return switch (design_bom_sync.kind) {
+        .local_xlsx => if (design_bom_sync.local_xlsx_path) |path|
+            .{ .local_xlsx_path = try alloc.dupe(u8, path) }
+        else
+            null,
+        .google, .excel => blk: {
+            const credential_ref = design_bom_sync.credential_ref orelse break :blk null;
+            const credential_json = secure_store.get(alloc, credential_ref) catch break :blk null;
+            errdefer alloc.free(credential_json);
+            const workbook_url = if (design_bom_sync.workbook_url) |value| try alloc.dupe(u8, value) else {
+                alloc.free(credential_json);
+                break :blk null;
+            };
+            errdefer alloc.free(workbook_url);
+            const workbook_label = if (design_bom_sync.workbook_label) |value| try alloc.dupe(u8, value) else {
+                alloc.free(credential_json);
+                alloc.free(workbook_url);
+                break :blk null;
+            };
+            errdefer alloc.free(workbook_label);
+            const credential_display = if (design_bom_sync.credential_display) |value| try alloc.dupe(u8, value) else null;
+            errdefer if (credential_display) |value| alloc.free(value);
+            const target: online_provider.Target = switch (design_bom_sync.kind) {
+                .google => .{ .google = .{ .sheet_id = try alloc.dupe(u8, design_bom_sync.google_sheet_id orelse break :blk null) } },
+                .excel => .{ .excel = .{
+                    .drive_id = try alloc.dupe(u8, design_bom_sync.excel_drive_id orelse break :blk null),
+                    .item_id = try alloc.dupe(u8, design_bom_sync.excel_item_id orelse break :blk null),
+                } },
+                .local_xlsx => unreachable,
+            };
+            break :blk .{ .provider = .{
+                .platform = if (design_bom_sync.kind == .google) .google else .excel,
+                .credential_json = credential_json,
+                .workbook_url = workbook_url,
+                .workbook_label = workbook_label,
+                .credential_display = credential_display,
+                .target = target,
+            } };
+        },
+    };
 }
 
 fn unescapeNewlines(s: []const u8, alloc: std.mem.Allocator) ![]u8 {
@@ -626,6 +679,6 @@ test "maybeStartSync returns false and resets state for invalid credential" {
     };
     defer active.deinit(alloc);
     var control: sync_live.WorkerControl = .{};
-    try testing.expectError(error.ProviderInitFailed, maybeStartSync(&runtime, active, &control, alloc));
+    try testing.expectError(error.ProviderInitFailed, maybeStartSync(&runtime, active, null, &control, alloc));
     try testing.expect(!runtime.sync_state.sync_started.load(.seq_cst));
 }

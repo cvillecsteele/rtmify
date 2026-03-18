@@ -7,15 +7,17 @@
   const TAB_GROUP = {
     'requirements': 'data', 'user-needs': 'data', 'tests': 'data',
     'risks': 'data', 'rtm': 'data',
+    'design-boms': 'bom', 'bom-components': 'bom', 'bom-coverage': 'bom', 'bom-usage': 'bom', 'bom-gaps': 'bom', 'bom-impact': 'bom',
     'chain-gaps': 'analysis', 'impact': 'analysis', 'review': 'analysis',
     'guide-errors': 'guide', 'mcp-ai': 'guide',
     'code': 'code', 'reports': 'reports',
-    'workbooks': 'settings', 'info': 'settings',
+    'workbooks': 'settings', 'design-bom-sync': 'settings', 'info': 'settings',
   };
 
   // Default sub-tab per group
   const GROUP_DEFAULTS = {
     data: 'requirements',
+    bom: 'design-boms',
     analysis: 'chain-gaps',
     guide: 'guide-errors',
     code: 'code',
@@ -27,6 +29,12 @@
     workbooks: [],
     removedWorkbooks: [],
     switching: false,
+  };
+
+  const bomState = {
+    designBoms: [],
+    selectedProduct: null,
+    selectedBomName: null,
   };
 
   let guideErrorsCache = null;
@@ -61,6 +69,11 @@
     });
 
     if (name === 'review') loadSuspects();
+    if (name === 'design-boms') loadDesignBomWorkspace();
+    if (name === 'bom-components') loadBomComponents();
+    if (name === 'bom-coverage') loadBomCoverage();
+    if (name === 'bom-gaps') loadBomGaps();
+    if (name === 'bom-impact') loadBomImpactAnalysis();
     if (name === 'chain-gaps') { loadProfileState(); loadChainGaps(); }
     if (name === 'guide-errors') loadGuideErrors();
     if (name === 'code') loadCodeTraceability();
@@ -76,6 +89,7 @@
       b.classList.remove('active'));
     document.querySelectorAll('.nav-sub').forEach(sn => sn.classList.remove('active'));
     if (name === 'workbooks') loadWorkbooksView();
+    if (name === 'design-bom-sync') loadDesignBomSyncSettings();
     if (name === 'info') loadInfo();
   }
 
@@ -129,6 +143,19 @@
       case 'switch-workbook':
         e.preventDefault();
         void switchWorkbook(actionEl.dataset.id || '');
+        return true;
+      case 'select-design-bom':
+        e.preventDefault();
+        void selectDesignBom(actionEl.dataset.product || '', actionEl.dataset.bomName || '');
+        return true;
+      case 'inspect-bom-component':
+        e.preventDefault();
+        void inspectBomComponent(
+          actionEl.dataset.itemId || '',
+          actionEl.dataset.part || '',
+          actionEl.dataset.product || '',
+          actionEl.dataset.bomName || '',
+        );
         return true;
       case 'rename-workbook':
         e.preventDefault();
@@ -344,6 +371,7 @@
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
     await loadProfileState();
     await loadWorkbooksState();
+    await loadDesignBomWorkspace();
     loadMcpHelp();
     loadInfo();
   }
@@ -568,6 +596,799 @@
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     await loadWorkbooksState();
+  }
+
+  async function loadDesignBomWorkspace(force = false) {
+    const errEl = document.getElementById('design-boms-error');
+    const includeObsolete = !!document.getElementById('design-boms-include-obsolete')?.checked;
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const params = new URLSearchParams();
+      if (includeObsolete) params.set('include_obsolete', 'true');
+      const res = await fetch(`/api/v1/bom/design?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      bomState.designBoms = Array.isArray(data.design_boms) ? data.design_boms : [];
+      renderDesignBomList();
+
+      const stillSelected = bomState.designBoms.some(b =>
+        b.full_product_identifier === bomState.selectedProduct && b.bom_name === bomState.selectedBomName);
+      if (!stillSelected || force) {
+        if (bomState.designBoms.length) {
+          bomState.selectedProduct = bomState.designBoms[0].full_product_identifier || null;
+          bomState.selectedBomName = bomState.designBoms[0].bom_name || null;
+        } else {
+          bomState.selectedProduct = null;
+          bomState.selectedBomName = null;
+        }
+      }
+      renderDesignBomList();
+      if (bomState.selectedProduct && bomState.selectedBomName) {
+        await loadSelectedDesignBomDetail();
+      } else {
+        const detailEl = document.getElementById('design-bom-detail');
+        if (detailEl) detailEl.innerHTML = '<div class="empty-state">No Design BOMs ingested yet.</div>';
+      }
+    } catch (e) {
+      bomState.designBoms = [];
+      renderDesignBomList();
+      const detailEl = document.getElementById('design-bom-detail');
+      if (detailEl) detailEl.innerHTML = `<div class="empty-state">Failed to load Design BOMs: ${esc(e.message)}</div>`;
+      if (errEl) {
+        errEl.textContent = 'Failed to load Design BOMs: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  function renderDesignBomList() {
+    const bodyEl = document.getElementById('design-bom-list-body');
+    if (!bodyEl) return;
+    if (!bomState.designBoms.length) {
+      bodyEl.innerHTML = '<tr><td colspan="9" class="empty-state">No Design BOMs available for the active workbook.</td></tr>';
+      return;
+    }
+    bodyEl.innerHTML = bomState.designBoms.map(b => {
+      const selected = b.full_product_identifier === bomState.selectedProduct && b.bom_name === bomState.selectedBomName;
+      return `<tr${selected ? ' class="warning"' : ''}>
+        <td><span class="req-id">${esc(b.full_product_identifier || '—')}</span></td>
+        <td>${esc(b.product_status || 'Active')}</td>
+        <td>${esc(b.bom_name || '—')}</td>
+        <td>${esc(b.bom_type || '—')}</td>
+        <td>${esc(b.source_format || '—')}</td>
+        <td>${esc(String(b.item_count || 0))}</td>
+        <td>${esc(String(b.warning_count || 0))}</td>
+        <td>${esc(formatUnixTimestamp(b.ingested_at))}</td>
+        <td><button class="btn" data-action="select-design-bom" data-product="${esc(b.full_product_identifier || '')}" data-bom-name="${esc(b.bom_name || '')}">${selected ? 'Selected' : 'Inspect'}</button></td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function selectDesignBom(fullProductIdentifier, bomName) {
+    bomState.selectedProduct = fullProductIdentifier || null;
+    bomState.selectedBomName = bomName || null;
+    renderDesignBomList();
+    syncBomFiltersFromSelection();
+    await loadSelectedDesignBomDetail();
+  }
+
+  function syncBomFiltersFromSelection() {
+    const product = bomState.selectedProduct || '';
+    const name = bomState.selectedBomName || '';
+    const gapsProduct = document.getElementById('bom-gaps-product');
+    const gapsName = document.getElementById('bom-gaps-name');
+    const impactProduct = document.getElementById('bom-impact-product');
+    const impactName = document.getElementById('bom-impact-name');
+    const componentsProduct = document.getElementById('bom-components-product');
+    const componentsName = document.getElementById('bom-components-name');
+    const coverageProduct = document.getElementById('bom-coverage-product');
+    const coverageName = document.getElementById('bom-coverage-name');
+    const reportProduct = document.getElementById('report-design-bom-product');
+    const reportName = document.getElementById('report-design-bom-name');
+    if (gapsProduct && !gapsProduct.value) gapsProduct.value = product;
+    if (gapsName && !gapsName.value) gapsName.value = name;
+    if (impactProduct && !impactProduct.value) impactProduct.value = product;
+    if (impactName && !impactName.value) impactName.value = name;
+    if (componentsProduct && !componentsProduct.value) componentsProduct.value = product;
+    if (componentsName && !componentsName.value) componentsName.value = name;
+    if (coverageProduct && !coverageProduct.value) coverageProduct.value = product;
+    if (coverageName && !coverageName.value) coverageName.value = name;
+    if (reportProduct && !reportProduct.value) reportProduct.value = product;
+    if (reportName && !reportName.value) reportName.value = name;
+  }
+
+  async function loadSelectedDesignBomDetail() {
+    const detailEl = document.getElementById('design-bom-detail');
+    const includeObsolete = !!document.getElementById('design-boms-include-obsolete')?.checked;
+    if (!detailEl) return;
+    if (!bomState.selectedProduct || !bomState.selectedBomName) {
+      detailEl.innerHTML = '<div class="empty-state">Select a Design BOM to inspect it.</div>';
+      return;
+    }
+    detailEl.innerHTML = '<div class="empty-state">Loading Design BOM detail…</div>';
+    try {
+      const product = encodeURIComponent(bomState.selectedProduct);
+      const bomName = encodeURIComponent(bomState.selectedBomName);
+      const query = includeObsolete ? `full_product_identifier=${product}&include_obsolete=true` : `full_product_identifier=${product}`;
+      const [treeRes, itemsRes] = await Promise.all([
+        fetch(`/api/v1/bom/design/${bomName}?${query}`, { cache: 'no-store' }),
+        fetch(`/api/v1/bom/design/${bomName}/items?${query}`, { cache: 'no-store' }),
+      ]);
+      if (!treeRes.ok) throw new Error(`tree HTTP ${treeRes.status}`);
+      if (!itemsRes.ok) throw new Error(`items HTTP ${itemsRes.status}`);
+      const treeData = await treeRes.json();
+      const itemsData = await itemsRes.json();
+      detailEl.innerHTML = renderDesignBomDetail(treeData, itemsData);
+      syncBomFiltersFromSelection();
+    } catch (e) {
+      detailEl.innerHTML = `<div class="empty-state">Failed to load Design BOM detail: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderDesignBomDetail(treeData, itemsData) {
+    const designBoms = Array.isArray(treeData.design_boms) ? treeData.design_boms : [];
+    const items = Array.isArray(itemsData.items) ? itemsData.items : [];
+    const totalWarnings = items.reduce((sum, item) =>
+      sum + ((item.unresolved_requirement_ids || []).length + (item.unresolved_test_ids || []).length), 0);
+
+    return `
+      <div class="toolbar card-toolbar">
+        <span class="card-title">${esc(treeData.full_product_identifier || '')} · ${esc(treeData.bom_name || '')}</span>
+      </div>
+      <div class="bom-metrics">
+        <div class="bom-metric">
+          <div class="bom-metric-label">BOM Variants</div>
+          <div class="bom-metric-value">${esc(String(designBoms.length))}</div>
+        </div>
+        <div class="bom-metric">
+          <div class="bom-metric-label">Items</div>
+          <div class="bom-metric-value">${esc(String(items.length))}</div>
+        </div>
+        <div class="bom-metric">
+          <div class="bom-metric-label">Unresolved Trace Refs</div>
+          <div class="bom-metric-value">${esc(String(totalWarnings))}</div>
+        </div>
+      </div>
+      <div class="bom-detail-grid">
+        <div>
+          <h3 class="mb-10">Hierarchy</h3>
+          ${designBoms.length ? designBoms.map(b => `
+            <div class="card card--mb card--padded">
+              <div class="bom-tree-head">
+                <span class="req-id">${esc(b.bom_type || '')}</span>
+                <span class="bom-chip">${esc(b.source_format || '')}</span>
+              </div>
+              ${renderBomTreeRoots(b.tree?.roots || [])}
+            </div>
+          `).join('') : '<div class="empty-state">No Design BOM tree available.</div>'}
+        </div>
+        <div>
+          <h3 class="mb-10">Flattened Item Traceability</h3>
+          ${items.length ? `<div class="table-scroll"><table>
+            <thead>
+              <tr>
+                <th>Part</th>
+                <th>Rev</th>
+                <th>Declared Trace</th>
+                <th>Resolved Links</th>
+                <th>Unresolved</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(renderDesignBomItemRow).join('')}
+            </tbody>
+          </table></div>` : '<div class="empty-state">No flattened BOM items available.</div>'}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderBomTreeRoots(roots) {
+    if (!roots.length) return '<div class="empty-state">No root items.</div>';
+    return `<div class="bom-tree">${roots.map(node => renderBomTreeNode(node)).join('')}</div>`;
+  }
+
+  function renderBomTreeNode(node) {
+    if (!node) return '';
+    const props = propsObj(node.properties);
+    const edgeProps = propsObj(node.edge_properties);
+    const trace = []
+      .concat(Array.isArray(props.requirement_ids) ? props.requirement_ids : [])
+      .concat(Array.isArray(props.test_ids) ? props.test_ids : []);
+    return `
+      <div class="bom-tree-node">
+        <div class="bom-tree-head">
+          <span class="req-id">${esc(props.part || node.id || '')}</span>
+          <span class="bom-chip">${esc(props.revision || '-')}</span>
+          ${edgeProps.quantity ? `<span class="bom-chip">qty ${esc(edgeProps.quantity)}</span>` : ''}
+          ${edgeProps.ref_designator ? `<span class="bom-chip">${esc(edgeProps.ref_designator)}</span>` : ''}
+          ${props.category ? `<span class="bom-chip">${esc(props.category)}</span>` : ''}
+        </div>
+        ${props.description ? `<div class="text-sm-subtle">${esc(props.description)}</div>` : ''}
+        ${trace.length ? `<div class="mt-8">${trace.map(value => `<span class="bom-chip">${esc(value)}</span>`).join('')}</div>` : ''}
+        ${Array.isArray(node.children) && node.children.length ? `<div class="bom-tree-children">${node.children.map(child => renderBomTreeNode(child)).join('')}</div>` : ''}
+      </div>
+    `;
+  }
+
+  function renderDesignBomItemRow(item) {
+    const node = item.node || {};
+    const props = propsObj(node.properties);
+    const declared = []
+      .concat(Array.isArray(props.requirement_ids) ? props.requirement_ids : [])
+      .concat(Array.isArray(props.test_ids) ? props.test_ids : []);
+    const linked = []
+      .concat((item.linked_requirements || []).map(n => n.id))
+      .concat((item.linked_tests || []).map(n => n.id));
+    const unresolved = []
+      .concat(item.unresolved_requirement_ids || [])
+      .concat(item.unresolved_test_ids || []);
+    return `<tr>
+      <td><span class="req-id">${esc(props.part || node.id || '—')}</span></td>
+      <td>${esc(props.revision || '—')}</td>
+      <td>${declared.length ? declared.map(value => `<span class="bom-chip">${esc(value)}</span>`).join('') : '<span class="text-placeholder">—</span>'}</td>
+      <td>${linked.length ? linked.map(value => `<span class="bom-chip">${esc(value)}</span>`).join('') : '<span class="text-placeholder">—</span>'}</td>
+      <td>${unresolved.length ? unresolved.map(value => `<span class="bom-chip warn">${esc(value)}</span>`).join('') : '<span class="text-placeholder">—</span>'}</td>
+    </tr>`;
+  }
+
+  async function loadBomComponents() {
+    const errEl = document.getElementById('bom-components-error');
+    const resultEl = document.getElementById('bom-components-result');
+    const productEl = document.getElementById('bom-components-product');
+    const nameEl = document.getElementById('bom-components-name');
+    const searchEl = document.getElementById('bom-components-search');
+    const includeObsolete = !!document.getElementById('bom-components-include-obsolete')?.checked;
+    if (!errEl || !resultEl || !productEl || !nameEl || !searchEl) return;
+    errEl.style.display = 'none';
+
+    const params = new URLSearchParams();
+    if (productEl.value.trim()) params.set('full_product_identifier', productEl.value.trim());
+    if (nameEl.value.trim()) params.set('bom_name', nameEl.value.trim());
+    if (includeObsolete) params.set('include_obsolete', 'true');
+
+    resultEl.innerHTML = '<div class="empty-state">Loading components…</div>';
+    try {
+      const res = await fetch(`/api/v1/bom/components?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const q = searchEl.value.trim().toLowerCase();
+      const rows = (Array.isArray(data.components) ? data.components : []).filter(item => {
+        if (!q) return true;
+        const props = propsObj(item.properties);
+        return [props.part, props.description, props.category, item.full_product_identifier, item.bom_name]
+          .filter(Boolean)
+          .some(value => String(value).toLowerCase().includes(q));
+      });
+      if (!rows.length) {
+        resultEl.innerHTML = '<div class="empty-state">No matching BOM components found.</div>';
+        return;
+      }
+      resultEl.innerHTML = `<div class="table-scroll"><table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>BOM</th>
+            <th>Part</th>
+            <th>Rev</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th>Req Links</th>
+            <th>Test Links</th>
+            <th>Warnings</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(item => {
+            const props = propsObj(item.properties);
+            const warningCount = Number(item.unresolved_requirement_count || 0) + Number(item.unresolved_test_count || 0);
+            return `<tr>
+              <td>${esc(item.full_product_identifier || '—')}</td>
+              <td>${esc(item.bom_name || '—')}</td>
+              <td><span class="req-id">${esc(props.part || '—')}</span></td>
+              <td>${esc(props.revision || '—')}</td>
+              <td>${esc(props.description || '—')}</td>
+              <td>${esc(props.category || '—')}</td>
+              <td>${esc(String(item.linked_requirement_count || 0))}</td>
+              <td>${esc(String(item.linked_test_count || 0))}</td>
+              <td>${esc(String(warningCount))}</td>
+              <td><button class="btn" data-action="inspect-bom-component" data-item-id="${esc(item.item_id || '')}" data-part="${esc(props.part || '')}" data-product="${esc(item.full_product_identifier || '')}" data-bom-name="${esc(item.bom_name || '')}">Inspect</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>`;
+    } catch (e) {
+      errEl.textContent = 'Failed to load BOM components: ' + e.message;
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+    }
+  }
+
+  async function inspectBomComponent(itemId, part, fullProductIdentifier, bomName) {
+    bomState.selectedProduct = fullProductIdentifier || null;
+    bomState.selectedBomName = bomName || null;
+    renderDesignBomList();
+    syncBomFiltersFromSelection();
+    await loadSelectedDesignBomDetail();
+    const usageInput = document.getElementById('bom-usage-part');
+    if (usageInput) usageInput.value = part || '';
+    showTab('bom-usage');
+    await runBomPartUsage();
+  }
+
+  async function loadBomCoverage() {
+    const errEl = document.getElementById('bom-coverage-error');
+    const resultEl = document.getElementById('bom-coverage-result');
+    const productEl = document.getElementById('bom-coverage-product');
+    const nameEl = document.getElementById('bom-coverage-name');
+    const includeObsolete = !!document.getElementById('bom-coverage-include-obsolete')?.checked;
+    if (!errEl || !resultEl || !productEl || !nameEl) return;
+    errEl.style.display = 'none';
+
+    const params = new URLSearchParams();
+    if (productEl.value.trim()) params.set('full_product_identifier', productEl.value.trim());
+    if (nameEl.value.trim()) params.set('bom_name', nameEl.value.trim());
+    if (includeObsolete) params.set('include_obsolete', 'true');
+
+    resultEl.innerHTML = '<div class="empty-state">Loading BOM coverage…</div>';
+    try {
+      const res = await fetch(`/api/v1/bom/coverage?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const summary = data.summary || {};
+      const rows = Array.isArray(data.design_boms) ? data.design_boms : [];
+      resultEl.innerHTML = `
+        <div class="bom-metrics">
+          <div class="bom-metric"><div class="bom-metric-label">Items</div><div class="bom-metric-value">${esc(String(summary.item_count || 0))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Req Covered</div><div class="bom-metric-value">${esc(String(summary.requirement_covered_count || 0))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Test Covered</div><div class="bom-metric-value">${esc(String(summary.test_covered_count || 0))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Fully Covered</div><div class="bom-metric-value">${esc(String(summary.fully_covered_count || 0))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">No Trace</div><div class="bom-metric-value">${esc(String(summary.no_trace_count || 0))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Warnings</div><div class="bom-metric-value">${esc(String(summary.warning_count || 0))}</div></div>
+        </div>
+        ${rows.length ? `<div class="table-scroll"><table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Status</th>
+              <th>BOM</th>
+              <th>Items</th>
+              <th>Req Covered</th>
+              <th>Test Covered</th>
+              <th>Fully Covered</th>
+              <th>No Trace</th>
+              <th>Warnings</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(row => `<tr>
+              <td>${esc(row.full_product_identifier || '—')}</td>
+              <td>${esc(row.product_status || 'Active')}</td>
+              <td>${esc(row.bom_name || '—')}</td>
+              <td>${esc(String(row.item_count || 0))}</td>
+              <td>${esc(String(row.requirement_covered_count || 0))}</td>
+              <td>${esc(String(row.test_covered_count || 0))}</td>
+              <td>${esc(String(row.fully_covered_count || 0))}</td>
+              <td>${esc(String(row.no_trace_count || 0))}</td>
+              <td>${esc(String(row.warning_count || 0))}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>` : '<div class="empty-state">No Design BOM coverage rows found.</div>'}
+      `;
+    } catch (e) {
+      errEl.textContent = 'Failed to load BOM coverage: ' + e.message;
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+    }
+  }
+
+  function downloadDesignBomReport(format = 'md') {
+    const productEl = document.getElementById('report-design-bom-product');
+    const nameEl = document.getElementById('report-design-bom-name');
+    const includeObsolete = !!document.getElementById('design-boms-include-obsolete')?.checked;
+    const fullProductIdentifier = productEl?.value.trim() || bomState.selectedProduct || '';
+    const bomName = nameEl?.value.trim() || bomState.selectedBomName || '';
+    if (!fullProductIdentifier || !bomName) {
+      alert('Select a Design BOM first, or enter both product full_identifier and BOM name.');
+      return;
+    }
+
+    if (productEl && !productEl.value.trim()) productEl.value = fullProductIdentifier;
+    if (nameEl && !nameEl.value.trim()) nameEl.value = bomName;
+
+    const query = new URLSearchParams({
+      full_product_identifier: fullProductIdentifier,
+      bom_name: bomName,
+    });
+    if (includeObsolete) query.set('include_obsolete', 'true');
+    const path = format === 'pdf'
+      ? '/report/design-bom'
+      : (format === 'docx' ? '/report/design-bom.docx' : '/report/design-bom.md');
+    window.location.href = `${path}?${query.toString()}`;
+  }
+
+  async function runBomPartUsage() {
+    const errEl = document.getElementById('bom-usage-error');
+    const resultEl = document.getElementById('bom-usage-result');
+    const inputEl = document.getElementById('bom-usage-part');
+    const includeObsolete = !!document.getElementById('bom-usage-include-obsolete')?.checked;
+    if (!errEl || !resultEl || !inputEl) return;
+    errEl.style.display = 'none';
+    const part = inputEl.value.trim();
+    if (!part) {
+      errEl.textContent = 'Enter a part number.';
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+      return;
+    }
+    resultEl.innerHTML = '<div class="empty-state">Loading part usage…</div>';
+    try {
+      const query = includeObsolete
+        ? `part=${encodeURIComponent(part)}&include_obsolete=true`
+        : `part=${encodeURIComponent(part)}`;
+      const res = await fetch(`/api/v1/bom/part-usage?${query}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const usages = Array.isArray(data.usages) ? data.usages : [];
+      if (!usages.length) {
+        resultEl.innerHTML = '<div class="empty-state">No Design BOM usage found for that part.</div>';
+        return;
+      }
+      resultEl.innerHTML = usages.map(usage => {
+        const designBom = propsObj(usage.design_bom);
+        const parent = propsObj(usage.parent_properties);
+        const edgeProps = propsObj(usage.edge_properties);
+        return `<div class="card card--padded">
+          <div class="bom-tree-head">
+            <span class="req-id">${esc(usage.part || data.part || '')}</span>
+            ${usage.revision ? `<span class="bom-chip">${esc(usage.revision)}</span>` : ''}
+            <span class="bom-chip">${esc(designBom.full_product_identifier || '—')}</span>
+            <span class="bom-chip">${esc(designBom.bom_name || '—')}</span>
+          </div>
+          <div class="text-sm-subtle">Parent: ${esc(parent.part || usage.parent_id || 'BOM root')}</div>
+          <div class="text-sm-subtle">Quantity: ${esc(edgeProps.quantity || '—')} · Ref Des: ${esc(edgeProps.ref_designator || '—')} · Supplier: ${esc(edgeProps.supplier || '—')}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      errEl.textContent = 'Failed to load part usage: ' + e.message;
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+    }
+  }
+
+  async function loadBomGaps() {
+    const errEl = document.getElementById('bom-gaps-error');
+    const resultEl = document.getElementById('bom-gaps-result');
+    const productEl = document.getElementById('bom-gaps-product');
+    const nameEl = document.getElementById('bom-gaps-name');
+    const includeInactive = !!document.getElementById('bom-gaps-include-inactive')?.checked;
+    if (!errEl || !resultEl || !productEl || !nameEl) return;
+    errEl.style.display = 'none';
+    const params = new URLSearchParams();
+    if (productEl.value.trim()) params.set('full_product_identifier', productEl.value.trim());
+    if (nameEl.value.trim()) params.set('bom_name', nameEl.value.trim());
+    if (includeInactive) params.set('include_inactive', 'true');
+    resultEl.innerHTML = '<div class="empty-state">Loading BOM gaps…</div>';
+    try {
+      const res = await fetch(`/api/v1/bom/gaps?${params.toString()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const gaps = Array.isArray(data.gaps) ? data.gaps : [];
+      if (!gaps.length) {
+        resultEl.innerHTML = '<div class="empty-state">No BOM traceability gaps found for the current filter.</div>';
+        return;
+      }
+      resultEl.innerHTML = gaps.map(gap => {
+        const props = propsObj(gap.properties);
+        return `<div class="card card--padded">
+          <div class="bom-tree-head">
+            <span class="req-id">${esc(props.part || gap.item_id || '')}</span>
+            <span class="bom-chip">${esc(props.revision || '-')}</span>
+            <span class="bom-chip">${esc(gap.full_product_identifier || '')}</span>
+            <span class="bom-chip">${esc(gap.bom_name || '')}</span>
+          </div>
+          <div class="text-sm-subtle">Declared requirements: ${(props.requirement_ids || []).map(id => esc(id)).join(', ') || '—'}</div>
+          <div class="text-sm-subtle">Declared tests: ${(props.test_ids || []).map(id => esc(id)).join(', ') || '—'}</div>
+          <div class="mt-8">${(gap.unresolved_requirement_ids || []).concat(gap.unresolved_test_ids || []).map(id => `<span class="bom-chip warn">${esc(id)}</span>`).join('') || '<span class="text-placeholder">All declared refs currently resolve.</span>'}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      errEl.textContent = 'Failed to load BOM gaps: ' + e.message;
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+    }
+  }
+
+  async function loadBomImpactAnalysis() {
+    const errEl = document.getElementById('bom-impact-error');
+    const resultEl = document.getElementById('bom-impact-result');
+    const productEl = document.getElementById('bom-impact-product');
+    const nameEl = document.getElementById('bom-impact-name');
+    const includeObsolete = !!document.getElementById('bom-impact-include-obsolete')?.checked;
+    if (!errEl || !resultEl || !productEl || !nameEl) return;
+    errEl.style.display = 'none';
+    if (!productEl.value.trim() && bomState.selectedProduct) productEl.value = bomState.selectedProduct;
+    if (!nameEl.value.trim() && bomState.selectedBomName) nameEl.value = bomState.selectedBomName;
+    if (!productEl.value.trim() || !nameEl.value.trim()) {
+      errEl.textContent = 'Provide a product full_identifier and BOM name, or select a Design BOM first.';
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+      return;
+    }
+    resultEl.innerHTML = '<div class="empty-state">Loading BOM impact analysis…</div>';
+    try {
+      const query = new URLSearchParams({
+        full_product_identifier: productEl.value.trim(),
+        bom_name: nameEl.value.trim(),
+      });
+      if (includeObsolete) query.set('include_obsolete', 'true');
+      const res = await fetch(`/api/v1/bom/impact-analysis?${query.toString()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) {
+        resultEl.innerHTML = '<div class="empty-state">No impact records found for that Design BOM.</div>';
+        return;
+      }
+      resultEl.innerHTML = items.map(item => {
+        const props = propsObj(item.properties);
+        return `<div class="card card--padded">
+          <div class="bom-tree-head">
+            <span class="req-id">${esc(props.part || item.item_id || '')}</span>
+            <span class="bom-chip">${esc(props.revision || '-')}</span>
+            <span class="bom-chip">${esc(String((item.linked_requirements || []).length))} requirements</span>
+            <span class="bom-chip">${esc(String((item.linked_tests || []).length))} tests</span>
+          </div>
+          <div>${(item.linked_requirements || []).map(node => `<span class="bom-chip">${esc(node.id)}</span>`).join('') || '<span class="text-placeholder">No linked requirements</span>'}</div>
+          <div class="mt-8">${(item.linked_tests || []).map(node => `<span class="bom-chip">${esc(node.id)}</span>`).join('') || '<span class="text-placeholder">No linked tests</span>'}</div>
+        </div>`;
+      }).join('');
+    } catch (e) {
+      errEl.textContent = 'Failed to load BOM impact analysis: ' + e.message;
+      errEl.style.display = 'block';
+      resultEl.innerHTML = '';
+    }
+  }
+
+  function toggleDesignBomSyncKind() {
+    const kind = document.getElementById('design-bom-sync-kind')?.value || 'local_xlsx';
+    const localEl = document.getElementById('design-bom-sync-local');
+    const providerEl = document.getElementById('design-bom-sync-provider');
+    const googleEl = document.getElementById('design-bom-sync-google');
+    const excelEl = document.getElementById('design-bom-sync-excel');
+    if (localEl) localEl.classList.toggle('active', kind === 'local_xlsx');
+    if (providerEl) providerEl.classList.toggle('active', kind !== 'local_xlsx');
+    if (googleEl) googleEl.classList.toggle('active', kind === 'google');
+    if (excelEl) excelEl.classList.toggle('active', kind === 'excel');
+  }
+
+  async function loadDesignBomSyncSettings(force = false) {
+    const errEl = document.getElementById('design-bom-sync-error');
+    const statusEl = document.getElementById('design-bom-sync-status');
+    if (!errEl || !statusEl) return;
+    if (!force) errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/design-bom-sync', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderDesignBomSyncStatus(data);
+      applyDesignBomSyncForm(data);
+    } catch (e) {
+      statusEl.innerHTML = '<dt>State</dt><dd>Unavailable</dd>';
+      errEl.textContent = 'Failed to load Design BOM sync settings: ' + e.message;
+      errEl.style.display = 'block';
+    }
+  }
+
+  function renderDesignBomSyncStatus(data) {
+    const statusEl = document.getElementById('design-bom-sync-status');
+    if (!statusEl) return;
+    if (!data.configured) {
+      statusEl.innerHTML = '<dt>State</dt><dd>Not configured</dd><dt>Sync</dt><dd>No secondary Design BOM source attached.</dd>';
+      return;
+    }
+    statusEl.innerHTML = `
+      <dt>State</dt><dd>${esc(data.kind || 'unknown')}</dd>
+      <dt>Display Name</dt><dd>${esc(data.display_name || '—')}</dd>
+      <dt>Workbook</dt><dd>${esc(data.workbook_label || data.workbook_url || data.local_xlsx_path || '—')}</dd>
+      <dt>Credential</dt><dd>${esc(data.credential_display || 'stored in secure store')}</dd>
+      <dt>Last Sync</dt><dd>${esc(formatUnixTimestamp(data.last_sync_at))}</dd>
+      <dt>Last Result</dt><dd>${data.last_sync_ok === '1' ? 'OK' : (data.last_error || 'No successful sync recorded')}</dd>
+    `;
+  }
+
+  function applyDesignBomSyncForm(data) {
+    const kind = data.configured ? (data.kind || 'local_xlsx') : 'local_xlsx';
+    const kindEl = document.getElementById('design-bom-sync-kind');
+    const displayNameEl = document.getElementById('design-bom-sync-display-name');
+    const localPathEl = document.getElementById('design-bom-sync-local-path');
+    const workbookUrlEl = document.getElementById('design-bom-sync-workbook-url');
+    if (kindEl) kindEl.value = kind;
+    if (displayNameEl) displayNameEl.value = data.display_name || 'Design BOM Workbook';
+    if (localPathEl) localPathEl.value = data.local_xlsx_path || '';
+    if (workbookUrlEl) workbookUrlEl.value = data.workbook_url || '';
+    toggleDesignBomSyncKind();
+  }
+
+  function buildDesignBomSyncDraft() {
+    const kind = document.getElementById('design-bom-sync-kind')?.value || 'local_xlsx';
+    const displayName = document.getElementById('design-bom-sync-display-name')?.value.trim() || 'Design BOM Workbook';
+    if (kind === 'local_xlsx') {
+      const localPath = document.getElementById('design-bom-sync-local-path')?.value.trim() || '';
+      if (!localPath) throw new Error('Enter a local XLSX path.');
+      return { kind, display_name: displayName, local_xlsx_path: localPath };
+    }
+    const workbookUrl = document.getElementById('design-bom-sync-workbook-url')?.value.trim() || '';
+    if (!workbookUrl) throw new Error('Enter a workbook URL.');
+    if (kind === 'google') {
+      const serviceAccountJson = document.getElementById('design-bom-sync-google-json')?.value.trim() || '';
+      if (!serviceAccountJson) throw new Error('Paste the Google service account JSON.');
+      return {
+        kind,
+        platform: 'google',
+        workbook_url: workbookUrl,
+        display_name: displayName,
+        credentials: { service_account_json: serviceAccountJson },
+      };
+    }
+    const tenantId = document.getElementById('design-bom-sync-excel-tenant')?.value.trim() || '';
+    const clientId = document.getElementById('design-bom-sync-excel-client')?.value.trim() || '';
+    const clientSecret = document.getElementById('design-bom-sync-excel-secret')?.value.trim() || '';
+    if (!tenantId || !clientId || !clientSecret) throw new Error('Enter all Excel Online credentials.');
+    return {
+      kind,
+      platform: 'excel',
+      workbook_url: workbookUrl,
+      display_name: displayName,
+      credentials: {
+        tenant_id: tenantId,
+        client_id: clientId,
+        client_secret: clientSecret,
+      },
+    };
+  }
+
+  async function validateDesignBomSync() {
+    const errEl = document.getElementById('design-bom-sync-error');
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const draft = buildDesignBomSyncDraft();
+      const res = await fetch('/api/design-bom-sync/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draft),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      renderDesignBomSyncStatus({
+        configured: true,
+        kind: data.kind,
+        display_name: data.display_name,
+        workbook_label: data.workbook_label,
+        workbook_url: draft.workbook_url,
+        credential_display: data.credential_display,
+        local_xlsx_path: draft.local_xlsx_path,
+        last_sync_at: 0,
+        last_sync_ok: null,
+        last_error: null,
+      });
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = 'Validation failed: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function saveDesignBomSync() {
+    const errEl = document.getElementById('design-bom-sync-error');
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const draft = buildDesignBomSyncDraft();
+      const res = await fetch('/api/design-bom-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draft),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      await loadDesignBomSyncSettings(true);
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = 'Failed to save Design BOM sync: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function deleteDesignBomSync() {
+    const errEl = document.getElementById('design-bom-sync-error');
+    if (!window.confirm('Remove the secondary Design BOM source from the active workbook?')) return;
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/design-bom-sync', { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      await loadDesignBomSyncSettings(true);
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = 'Failed to remove Design BOM sync: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function currentIngestToken() {
+    const tokenEl = document.getElementById('test-results-token');
+    const inline = tokenEl?.textContent?.trim();
+    if (inline && inline !== 'Loading…' && inline !== '—' && inline !== 'unknown') return inline;
+    const res = await fetch('/api/info', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const info = await res.json();
+    if (!info.test_results_token) throw new Error('Missing ingestion token.');
+    return info.test_results_token;
+  }
+
+  async function uploadBomArtifactFile(file) {
+    const resultEl = document.getElementById('bom-upload-result');
+    const errEl = document.getElementById('design-boms-error');
+    if (!resultEl) return;
+    if (errEl) errEl.style.display = 'none';
+    resultEl.textContent = `Uploading ${file.name}…`;
+    try {
+      const token = await currentIngestToken();
+      let res;
+      if (file.name.toLowerCase().endsWith('.xlsx')) {
+        const formData = new FormData();
+        formData.append('file', file, file.name);
+        res = await fetch('/api/v1/bom/xlsx', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body: formData,
+        });
+      } else {
+        const body = await file.text();
+        const contentType = file.name.toLowerCase().endsWith('.csv') ? 'text/csv' : 'application/json';
+        res = await fetch('/api/v1/bom', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': contentType,
+          },
+          body,
+        });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      resultEl.innerHTML = renderBomUploadResult(data);
+      await loadDesignBomWorkspace(true);
+    } catch (e) {
+      resultEl.textContent = '';
+      if (errEl) {
+        errEl.textContent = 'BOM upload failed: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  function renderBomUploadResult(data) {
+    if (Array.isArray(data.groups)) {
+      return data.groups.map(group => {
+        const warningText = (group.warnings || []).map(w => w.code).join(', ');
+        return `<div class="repo-row repo-row--block">
+          <div><strong>${esc(group.full_product_identifier || '')}</strong> · ${esc(group.bom_name || '')}</div>
+          <div class="text-sm-subtle">${esc(group.status || 'unknown')} · rows ${esc(String(group.rows_ingested || 0))} · nodes ${esc(String(group.inserted_nodes || 0))} · edges ${esc(String(group.inserted_edges || 0))}</div>
+          <div class="text-sm-subtle">${group.error ? esc(`${group.error.code}: ${group.error.detail || ''}`) : (warningText ? esc(`warnings: ${warningText}`) : 'no warnings')}</div>
+        </div>`;
+      }).join('');
+    }
+    const warningText = (data.warnings || []).map(w => w.code).join(', ');
+    return `<div class="repo-row repo-row--block">
+      <div><strong>${esc(data.full_product_identifier || '')}</strong> · ${esc(data.bom_name || '')}</div>
+      <div class="text-sm-subtle">nodes ${esc(String(data.inserted_nodes || 0))} · edges ${esc(String(data.inserted_edges || 0))}</div>
+      <div class="text-sm-subtle">${warningText ? esc(`warnings: ${warningText}`) : 'no warnings'}</div>
+    </div>`;
   }
 
   function renderTestResultsApiInfo(info, endpointEl, bomEndpointEl, tokenEl, inboxEl) {
@@ -2523,6 +3344,29 @@
 
   // --- Init ---
   renderProfileList();
+  const bomUploadInput = document.getElementById('bom-upload-input');
+  if (bomUploadInput) {
+    bomUploadInput.addEventListener('change', async function () {
+      if (this.files && this.files[0]) await uploadBomArtifactFile(this.files[0]);
+      this.value = '';
+    });
+  }
+  const bomUploadZone = document.getElementById('bom-upload-zone');
+  if (bomUploadZone) {
+    bomUploadZone.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      bomUploadZone.classList.add('drag-over');
+    });
+    bomUploadZone.addEventListener('dragleave', () => {
+      bomUploadZone.classList.remove('drag-over');
+    });
+    bomUploadZone.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      bomUploadZone.classList.remove('drag-over');
+      const file = event.dataTransfer?.files?.[0];
+      if (file) await uploadBomArtifactFile(file);
+    });
+  }
   window.addEventListener('hashchange', () => {
     handleGuideHash();
   });

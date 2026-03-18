@@ -37,8 +37,21 @@ pub fn statusColorHex(status: []const u8) []const u8 {
     if (std.mem.eql(u8, status, "NO_TEST_LINKED") or
         std.mem.eql(u8, status, "MISSING_FULL_IDENTIFIER") or
         std.mem.eql(u8, status, "NO_REQ_LINKED") or
-        std.mem.eql(u8, status, "MISSING")) return "#FCE8B2";
+        std.mem.eql(u8, status, "MISSING") or
+        std.mem.eql(u8, status, "PRODUCT_UNKNOWN_STATUS")) return "#FCE8B2";
     return "#F4C7C3";
+}
+
+fn isRecognizedProductStatus(raw: []const u8) bool {
+    const value = std.mem.trim(u8, raw, " \r\n\t");
+    if (value.len == 0) return true;
+    return std.ascii.eqlIgnoreCase(value, "Active") or
+        std.ascii.eqlIgnoreCase(value, "In Development") or
+        std.ascii.eqlIgnoreCase(value, "Development") or
+        std.ascii.eqlIgnoreCase(value, "Superseded") or
+        std.ascii.eqlIgnoreCase(value, "EOL") or
+        std.ascii.eqlIgnoreCase(value, "End of Life") or
+        std.ascii.eqlIgnoreCase(value, "Obsolete");
 }
 
 pub fn writeBackStatus(
@@ -261,6 +274,9 @@ pub fn appendProductWriteback(
                 break :blk "DUPLICATE_FULL_IDENTIFIER";
             }
             try seen_identifiers.put(normalized_identifier, {});
+            if (!isRecognizedProductStatus(product_status_raw)) {
+                break :blk "PRODUCT_UNKNOWN_STATUS";
+            }
             break :blk "OK";
         };
 
