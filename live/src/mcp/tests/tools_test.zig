@@ -179,3 +179,53 @@ test "get_bom tool returns product bom tree" {
     try testing.expect(std.mem.indexOf(u8, payload.text, "\"quantity\":\"4\"") != null);
     try testing.expect(payload.structured_json != null);
 }
+
+test "get_bom_item returns linked requirements and tests" {
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Req\"}", null);
+    try db.addNode("TEST-001", "Test", "{\"name\":\"Test\"}", null);
+    var ingest = try internal.bom.ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4",
+        \\      "requirement_id": "REQ-001",
+        \\      "test_id": "TEST-001"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer ingest.deinit(testing.allocator);
+
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("id", .{ .string = "bom-item://ASM-1000-REV-C/hardware/pcba/C0805-10UF@A" });
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+
+    const dispatch = try support.buildToolPayloadForTest("get_bom_item", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer dispatch.deinit(testing.allocator);
+    const payload = switch (dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"linked_requirements\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"linked_tests\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"unresolved_requirement_ids\":[]") != null);
+    try testing.expect(std.mem.indexOf(u8, payload.text, "\"unresolved_test_ids\":[]") != null);
+}

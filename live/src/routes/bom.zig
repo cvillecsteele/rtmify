@@ -290,3 +290,49 @@ test "GET bom returns tree for product" {
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"bom_type\":\"hardware\"") != null);
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"edge_properties\":{\"quantity\":\"4\"") != null);
 }
+
+test "POST bom returns warning codes for unresolved trace refs without failing" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode(
+        "product://ASM-1000-REV-C",
+        "Product",
+        "{\"full_identifier\":\"ASM-1000-REV-C\"}",
+        null,
+    );
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const token_path = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "api-token" });
+    defer testing.allocator.free(token_path);
+    var auth = try test_results_auth.AuthState.initForPath(token_path, testing.allocator);
+    defer auth.deinit(testing.allocator);
+    const token = try auth.currentToken(testing.allocator);
+    defer testing.allocator.free(token);
+    const header = try std.fmt.allocPrint(testing.allocator, "Bearer {s}", .{token});
+    defer testing.allocator.free(header);
+
+    const body =
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4",
+        \\      "requirement_id": "REQ-404",
+        \\      "test_id": "TEST-404"
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    const resp = try handlePostBomResponse(&db, &auth, header, "application/json", body, testing.allocator);
+    defer testing.allocator.free(resp.body);
+    try testing.expectEqual(std.http.Status.ok, resp.status);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"BOM_UNRESOLVED_REQUIREMENT_REF\"") != null);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "\"BOM_UNRESOLVED_TEST_REF\"") != null);
+}

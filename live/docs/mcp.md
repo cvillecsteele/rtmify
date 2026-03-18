@@ -26,6 +26,7 @@ RTMify exposes:
 ## Resource URIs
 
 Canonical resource URIs:
+- `bom-item://<full_product_identifier>/<bom_type>/<bom_name>/<part>@<revision>`
 - `requirement://<id>`
 - `user-need://<id>`
 - `risk://<id>`
@@ -42,6 +43,12 @@ Canonical resource URIs:
 - `report://review`
 
 Resource bodies are returned as Markdown.
+
+`bom-item://...` is the BOM-trace drilldown resource. It summarizes:
+- parent chains
+- declared `requirement_ids` and `test_ids`
+- resolved linked Requirement and Test nodes
+- unresolved declared refs that did not match the graph
 
 When node-like resources include edge lists, the Markdown now preserves
 non-null edge properties inline. This matters most for BOM `CONTAINS`
@@ -137,6 +144,14 @@ Partial composite selectors are rejected. The tool returns a specific
 invalid-argument message telling the caller to provide either `id` or the full
 composite selector.
 
+The result includes:
+- `node`
+- `parent_chains`
+- `linked_requirements`
+- `linked_tests`
+- `unresolved_requirement_ids`
+- `unresolved_test_ids`
+
 ## Prompts
 
 Built-in prompts:
@@ -146,6 +161,21 @@ Built-in prompts:
 - `audit_readiness_summary`
 - `repo_coverage_summary`
 - `design_history_summary`
+- `inspect_bom_item_traceability`
+
+`inspect_bom_item_traceability` is the guided entrypoint for BOM trace review.
+It accepts either:
+- `id`
+- or the full composite selector:
+  - `full_product_identifier`
+  - `bom_type`
+  - `bom_name`
+  - `part`
+  - `revision`
+
+The prompt instructs the client to call `get_bom_item`, read the matching
+`bom-item://...` resource, distinguish resolved links from unresolved declared
+refs, and summarize likely next fixes.
 
 ## Compatibility
 

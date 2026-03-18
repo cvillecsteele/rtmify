@@ -33,6 +33,10 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
     } else if (std.mem.eql(u8, name, "design_history_summary")) blk: {
         const req_id = try tools.requireStringArg(args, "req_id");
         break :blk try std.fmt.allocPrint(alloc, "Summarize design history for requirement {s}. Read design-history://{s}. Return: Requirement, Upstream Need, Design Inputs/Outputs, Configuration Control, Verification, Commits, and Open Traceability Gaps.", .{ req_id, req_id });
+    } else if (std.mem.eql(u8, name, "inspect_bom_item_traceability")) blk: {
+        const item_id = try bomItemSelectorArg(args, alloc);
+        defer alloc.free(item_id);
+        break :blk try std.fmt.allocPrint(alloc, "Inspect BOM item traceability for {s}. First call get_bom_item with id={s}. Then read bom-item://{s}. Distinguish declared requirement_ids/test_ids from resolved links. Return sections: Item, Parent Chain, Linked Requirements, Linked Tests, Unresolved Declared Refs, and Recommended Fixes. If unresolved IDs exist, say whether the issue is more likely a bad BOM export value or a missing synced Requirement/Test node.", .{ item_id, item_id, item_id });
     } else return error.NotFound;
     defer alloc.free(body);
     const heading = try workbooks.workbookHeading(req_ctx.registry, alloc);
@@ -48,4 +52,23 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
     try internal.json_util.appendJsonQuoted(&buf, contextual_body, alloc);
     try buf.appendSlice(alloc, "}}]}");
     return alloc.dupe(u8, buf.items);
+}
+
+fn bomItemSelectorArg(args: ?std.json.Value, alloc: internal.Allocator) ![]u8 {
+    const a = args orelse return error.InvalidArgument;
+    if (internal.json_util.getString(a, "id")) |value| {
+        return alloc.dupe(u8, value);
+    }
+    const full_product_identifier = internal.json_util.getString(a, "full_product_identifier") orelse return error.InvalidArgument;
+    const bom_type = internal.json_util.getString(a, "bom_type") orelse return error.InvalidArgument;
+    const bom_name = internal.json_util.getString(a, "bom_name") orelse return error.InvalidArgument;
+    const part = internal.json_util.getString(a, "part") orelse return error.InvalidArgument;
+    const revision = internal.json_util.getString(a, "revision") orelse return error.InvalidArgument;
+    return std.fmt.allocPrint(alloc, "bom-item://{s}/{s}/{s}/{s}@{s}", .{
+        full_product_identifier,
+        bom_type,
+        bom_name,
+        part,
+        revision,
+    });
 }

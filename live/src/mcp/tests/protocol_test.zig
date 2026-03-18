@@ -24,6 +24,12 @@ test "tools list exposes truthful schemas for structured and narrative tools" {
     const one_of = internal.json_util.getObjectField(get_bom_item_schema, "oneOf") orelse return error.TestUnexpectedResult;
     try testing.expect(one_of == .array);
     try testing.expectEqual(@as(usize, 2), one_of.array.items.len);
+    const get_bom_item_output = internal.json_util.getObjectField(get_bom_item, "outputSchema") orelse return error.TestUnexpectedResult;
+    const get_bom_item_props = internal.json_util.getObjectField(get_bom_item_output, "properties") orelse return error.TestUnexpectedResult;
+    try testing.expect(internal.json_util.getObjectField(get_bom_item_props, "linked_requirements") != null);
+    try testing.expect(internal.json_util.getObjectField(get_bom_item_props, "linked_tests") != null);
+    try testing.expect(internal.json_util.getObjectField(get_bom_item_props, "unresolved_requirement_ids") != null);
+    try testing.expect(internal.json_util.getObjectField(get_bom_item_props, "unresolved_test_ids") != null);
 
     const requirement_trace = support.findToolForTest(parsed.value, "requirement_trace") orelse return error.TestUnexpectedResult;
     try testing.expect(internal.json_util.getObjectField(requirement_trace, "outputSchema") == null);

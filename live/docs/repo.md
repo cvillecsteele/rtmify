@@ -193,7 +193,7 @@ and the shared template/report path ignore both tabs entirely in this cut.
 | `Product` | Live-only product declaration row keyed by `full_identifier` for future manufacturing joins | `assembly`, `revision`, `full_identifier`, `description`, `product_status` |
 | `Decomposition` | Live-only requirement refinement rows that create `REFINED_BY` edges between Requirement nodes | `parent_id`, `child_id` |
 | `BOM` | Live-only named hardware or software BOM attached to a Product | `full_product_identifier`, `bom_name`, `bom_type`, `source_format`, `ingested_at` |
-| `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `purl`, `license`, `hashes` |
+| `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `requirement_ids`, `test_ids`, `purl`, `license`, `hashes` |
 | `DesignInput` | Formal design input derived from a requirement (FDA/IEC 62304) | `description`, `source_req`, `status` |
 | `DesignOutput` | Design artifact satisfying a design input (drawing, spec, firmware, BOM) | `description`, `type`, `version`, `status` |
 | `SourceFile` | A source code file in the working tree linked to a requirement or design output | `path`, `language`, `last_modified`, `line_count` |
@@ -225,6 +225,8 @@ and the shared template/report path ignore both tabs entirely in this cut.
 | `FOR_PRODUCT` | TestExecution | Product | Execution evidence scoped to a product configuration |
 | `HAS_BOM` | Product | BOM | Product currently declares this named BOM |
 | `CONTAINS` | BOM/BOMItem | BOMItem | BOM tree containment; occurrence facts like quantity and ref designator live on the edge properties |
+| `REFERENCES_REQUIREMENT` | BOMItem | Requirement | BOM row explicitly references this requirement ID |
+| `REFERENCES_TEST` | BOMItem | Test | BOM row explicitly references this test ID |
 
 ### External Evidence Ingestion
 
@@ -238,6 +240,13 @@ Live accepts product-scoped external evidence through the local ingestion API an
 
 - raw `text/csv` for RTMify hardware BOM CSV uploads
 - `application/json` for RTMify hardware BOM JSON, CycloneDX JSON, and SPDX JSON
+
+Hardware BOM CSV/JSON rows may also declare:
+
+- `requirement_ids` / `requirement_id`
+- `test_ids` / `test_id`
+
+These values are stored on `BOMItem` nodes and resolved by exact ID match to create `REFERENCES_REQUIREMENT` and `REFERENCES_TEST` edges. Unresolved IDs remain on the BOM item properties and emit BOM ingest warnings; they do not fail the upload.
 
 The inbox at `~/.rtmify/inbox` uses the same bearer token and dispatches `.json` and `.csv` files by content. Product matching is exact on `Product.full_identifier`; BOM and SBOM uploads are Live-only and do not affect Trace output.
 

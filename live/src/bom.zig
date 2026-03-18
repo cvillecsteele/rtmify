@@ -15,6 +15,8 @@ pub const BomOccurrenceInput = struct {
     child_revision: []const u8,
     description: ?[]const u8,
     category: ?[]const u8,
+    requirement_ids: ?[]const []const u8,
+    test_ids: ?[]const []const u8,
     quantity: ?[]const u8,
     ref_designator: ?[]const u8,
     supplier: ?[]const u8,
@@ -28,6 +30,8 @@ pub const BomOccurrenceInput = struct {
         alloc.free(self.child_revision);
         if (self.description) |value| alloc.free(value);
         if (self.category) |value| alloc.free(value);
+        if (self.requirement_ids) |values| freeStringSlice(values, alloc);
+        if (self.test_ids) |values| freeStringSlice(values, alloc);
         if (self.quantity) |value| alloc.free(value);
         if (self.ref_designator) |value| alloc.free(value);
         if (self.supplier) |value| alloc.free(value);
@@ -113,6 +117,8 @@ const ItemSpec = struct {
     revision: []const u8,
     description: ?[]const u8 = null,
     category: ?[]const u8 = null,
+    requirement_ids: ?[]const []const u8 = null,
+    test_ids: ?[]const []const u8 = null,
     purl: ?[]const u8 = null,
     license: ?[]const u8 = null,
     hashes_json: ?[]const u8 = null,
@@ -176,6 +182,116 @@ pub fn ingestResponseJson(response: BomIngestResponse, alloc: Allocator) ![]cons
     }
     try buf.appendSlice(alloc, "]}");
     return alloc.dupe(u8, buf.items);
+}
+
+fn freeStringSlice(items: []const []const u8, alloc: Allocator) void {
+    for (items) |item| alloc.free(item);
+    alloc.free(items);
+}
+
+fn dupStringSlice(items: []const []const u8, alloc: Allocator) ![]const []const u8 {
+    var duped = try alloc.alloc([]const u8, items.len);
+    var count: usize = 0;
+    errdefer {
+        for (duped[0..count]) |item| alloc.free(item);
+        alloc.free(duped);
+    }
+    for (items, 0..) |item, idx| {
+        duped[idx] = try alloc.dupe(u8, item);
+        count = idx + 1;
+    }
+    return duped;
+}
+
+fn appendJsonStringArray(buf: *std.ArrayList(u8), items: ?[]const []const u8, alloc: Allocator) !void {
+    try buf.append(alloc, '[');
+    if (items) |values| {
+        for (values, 0..) |value, idx| {
+            if (idx > 0) try buf.append(alloc, ',');
+            try shared.appendJsonStr(buf, value, alloc);
+        }
+    }
+    try buf.append(alloc, ']');
+}
+
+fn stringSliceContains(items: []const []const u8, needle: []const u8) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item, needle)) return true;
+    }
+    return false;
+}
+
+fn mergeTraceRefLists(existing: *?[]const []const u8, incoming: ?[]const []const u8, alloc: Allocator) !void {
+    if (incoming == null) return;
+    if (existing.* == null) {
+        existing.* = incoming;
+        return;
+    }
+
+    const old_items = existing.*.?;
+    const incoming_items = incoming.?;
+
+    var merged = try alloc.alloc([]const u8, old_items.len + incoming_items.len);
+    var count: usize = 0;
+    for (old_items) |item| {
+        merged[count] = item;
+        count += 1;
+    }
+    for (incoming_items) |item| {
+        if (stringSliceContains(merged[0..count], item)) {
+            alloc.free(item);
+            continue;
+        }
+        merged[count] = item;
+        count += 1;
+    }
+
+    alloc.free(old_items);
+    alloc.free(incoming_items);
+    existing.* = merged[0..count];
+}
+
+fn parseTraceRefCell(value: []const u8, alloc: Allocator) !?[]const []const u8 {
+    var refs: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (refs.items) |item| alloc.free(item);
+        refs.deinit(alloc);
+    }
+
+    var it = std.mem.tokenizeAny(u8, value, ",;|");
+    while (it.next()) |token| {
+        const trimmed = std.mem.trim(u8, token, " \r\n\t");
+        if (trimmed.len == 0 or stringSliceContains(refs.items, trimmed)) continue;
+        try refs.append(alloc, try alloc.dupe(u8, trimmed));
+    }
+
+    if (refs.items.len == 0) {
+        refs.deinit(alloc);
+        return null;
+    }
+    return @constCast(try refs.toOwnedSlice(alloc));
+}
+
+fn parseTraceRefJsonField(item: std.json.Value, field_name: []const u8, alloc: Allocator) !?[]const []const u8 {
+    const field = json_util.getObjectField(item, field_name) orelse return null;
+
+    var refs: ?[]const []const u8 = null;
+    switch (field) {
+        .string => refs = try parseTraceRefCell(field.string, alloc),
+        .array => {
+            for (field.array.items) |entry| {
+                if (entry != .string) {
+                    if (refs) |items| freeStringSlice(items, alloc);
+                    return error.InvalidJson;
+                }
+                const parsed = try parseTraceRefCell(entry.string, alloc);
+                errdefer if (parsed) |items| freeStringSlice(items, alloc);
+                try mergeTraceRefLists(&refs, parsed, alloc);
+            }
+        },
+        else => return error.InvalidJson,
+    }
+    return refs;
 }
 
 pub fn getBomJson(
@@ -262,8 +378,86 @@ pub fn getBomItemJson(
         visited.deinit();
     }
     try appendParentChainsJson(&buf, db, item_id, &visited, alloc);
+
+    var linked_requirements: std.ArrayList(graph_live.Node) = .empty;
+    defer shared.freeNodeList(&linked_requirements, alloc);
+    try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_REQUIREMENT", "Requirement", alloc, &linked_requirements);
+
+    var linked_tests: std.ArrayList(graph_live.Node) = .empty;
+    defer shared.freeNodeList(&linked_tests, alloc);
+    try shared.collectNodesViaOutgoingEdge(db, item_id, "REFERENCES_TEST", "Test", alloc, &linked_tests);
+
+    try buf.appendSlice(alloc, ",\"linked_requirements\":");
+    try appendNodeJsonArray(&buf, linked_requirements.items, alloc);
+    try buf.appendSlice(alloc, ",\"linked_tests\":");
+    try appendNodeJsonArray(&buf, linked_tests.items, alloc);
+
+    const unresolved_requirement_ids = try unresolvedTraceRefs(node.?.properties, "requirement_ids", linked_requirements.items, alloc);
+    defer freeStringSlice(unresolved_requirement_ids, alloc);
+    const unresolved_test_ids = try unresolvedTraceRefs(node.?.properties, "test_ids", linked_tests.items, alloc);
+    defer freeStringSlice(unresolved_test_ids, alloc);
+    try buf.appendSlice(alloc, ",\"unresolved_requirement_ids\":");
+    try appendJsonStringArray(&buf, unresolved_requirement_ids, alloc);
+    try buf.appendSlice(alloc, ",\"unresolved_test_ids\":");
+    try appendJsonStringArray(&buf, unresolved_test_ids, alloc);
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+fn appendNodeJsonArray(buf: *std.ArrayList(u8), nodes: []const graph_live.Node, alloc: Allocator) !void {
+    try buf.append(alloc, '[');
+    for (nodes, 0..) |node, idx| {
+        if (idx > 0) try buf.append(alloc, ',');
+        try shared.appendNodeObject(buf, node, alloc);
+    }
+    try buf.append(alloc, ']');
+}
+
+fn unresolvedTraceRefs(
+    properties_json: []const u8,
+    field_name: []const u8,
+    linked_nodes: []const graph_live.Node,
+    alloc: Allocator,
+) ![]const []const u8 {
+    const declared = try parseStringArrayProperty(properties_json, field_name, alloc);
+    errdefer freeStringSlice(declared, alloc);
+
+    var unresolved: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (unresolved.items) |item| alloc.free(item);
+        unresolved.deinit(alloc);
+    }
+    for (declared) |declared_id| {
+        var matched = false;
+        for (linked_nodes) |node| {
+            if (std.mem.eql(u8, node.id, declared_id)) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) try unresolved.append(alloc, try alloc.dupe(u8, declared_id));
+    }
+    freeStringSlice(declared, alloc);
+    return unresolved.toOwnedSlice(alloc);
+}
+
+fn parseStringArrayProperty(properties_json: []const u8, field_name: []const u8, alloc: Allocator) ![]const []const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, properties_json, .{});
+    defer parsed.deinit();
+
+    const field = json_util.getObjectField(parsed.value, field_name) orelse return try alloc.alloc([]const u8, 0);
+    if (field != .array) return error.InvalidJson;
+
+    var items: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (items.items) |item| alloc.free(item);
+        items.deinit(alloc);
+    }
+    for (field.array.items) |entry| {
+        if (entry != .string) return error.InvalidJson;
+        try items.append(alloc, try alloc.dupe(u8, entry.string));
+    }
+    return items.toOwnedSlice(alloc);
 }
 
 pub fn getProductSerialsJson(db: *graph_live.GraphDb, full_product_identifier: []const u8, alloc: Allocator) ![]const u8 {
@@ -451,6 +645,35 @@ fn ingestPrepared(
         try db.addNode(item_id, "BOMItem", props, null);
     }
 
+    var trace_edges_inserted: usize = 0;
+    var warning_seen = std.StringHashMap(void).init(alloc);
+    defer {
+        var it = warning_seen.keyIterator();
+        while (it.next()) |key| alloc.free(key.*);
+        warning_seen.deinit();
+    }
+    item_it = item_specs.iterator();
+    while (item_it.next()) |entry| {
+        const item_id = try bomItemNodeId(
+            prepared.submission.full_product_identifier,
+            prepared.submission.bom_type,
+            prepared.submission.bom_name,
+            entry.value_ptr.part,
+            entry.value_ptr.revision,
+            alloc,
+        );
+        defer alloc.free(item_id);
+        trace_edges_inserted += try appendBomTraceEdges(
+            db,
+            item_id,
+            entry.value_ptr.*,
+            prepared.submission.source_format,
+            &prepared.warnings,
+            &warning_seen,
+            alloc,
+        );
+    }
+
     for (prepared.submission.occurrences) |occurrence| {
         const child_id = try bomItemNodeId(
             prepared.submission.full_product_identifier,
@@ -488,9 +711,112 @@ fn ingestPrepared(
         .bom_type = prepared.submission.bom_type,
         .source_format = prepared.submission.source_format,
         .inserted_nodes = 1 + item_specs.count(),
-        .inserted_edges = 1 + prepared.submission.occurrences.len,
+        .inserted_edges = 1 + prepared.submission.occurrences.len + trace_edges_inserted,
         .warnings = try prepared.warnings.toOwnedSlice(alloc),
     };
+}
+
+fn appendBomTraceEdges(
+    db: *graph_live.GraphDb,
+    item_id: []const u8,
+    item: ItemSpec,
+    source_format: BomFormat,
+    warnings: *std.ArrayList(BomWarning),
+    warning_seen: *std.StringHashMap(void),
+    alloc: Allocator,
+) !usize {
+    var inserted: usize = 0;
+    const item_subject = try std.fmt.allocPrint(alloc, "{s}@{s}", .{ item.part, item.revision });
+    defer alloc.free(item_subject);
+
+    if (item.requirement_ids) |refs| {
+        for (refs) |req_id| {
+            if (try nodeExistsOfType(db, req_id, "Requirement")) {
+                const edge_props = try referenceEdgePropertiesJson(source_format, "requirement_ids", alloc);
+                defer alloc.free(edge_props);
+                try db.addEdgeWithProperties(item_id, req_id, "REFERENCES_REQUIREMENT", edge_props);
+                inserted += 1;
+            } else {
+                try appendUnresolvedTraceRefWarning(
+                    warnings,
+                    warning_seen,
+                    "BOM_UNRESOLVED_REQUIREMENT_REF",
+                    item_subject,
+                    "Requirement",
+                    req_id,
+                    alloc,
+                );
+            }
+        }
+    }
+
+    if (item.test_ids) |refs| {
+        for (refs) |test_id| {
+            if (try nodeExistsOfType(db, test_id, "Test")) {
+                const edge_props = try referenceEdgePropertiesJson(source_format, "test_ids", alloc);
+                defer alloc.free(edge_props);
+                try db.addEdgeWithProperties(item_id, test_id, "REFERENCES_TEST", edge_props);
+                inserted += 1;
+            } else {
+                try appendUnresolvedTraceRefWarning(
+                    warnings,
+                    warning_seen,
+                    "BOM_UNRESOLVED_TEST_REF",
+                    item_subject,
+                    "Test",
+                    test_id,
+                    alloc,
+                );
+            }
+        }
+    }
+
+    return inserted;
+}
+
+fn appendUnresolvedTraceRefWarning(
+    warnings: *std.ArrayList(BomWarning),
+    warning_seen: *std.StringHashMap(void),
+    code: []const u8,
+    item_subject: []const u8,
+    ref_type: []const u8,
+    ref_id: []const u8,
+    alloc: Allocator,
+) !void {
+    const dedupe_key = try std.fmt.allocPrint(alloc, "{s}|{s}|{s}", .{ item_subject, code, ref_id });
+    if (warning_seen.contains(dedupe_key)) {
+        alloc.free(dedupe_key);
+        return;
+    }
+    try warning_seen.put(dedupe_key, {});
+
+    const message = try std.fmt.allocPrint(alloc, "BOM item '{s}' references missing {s} '{s}'", .{ item_subject, ref_type, ref_id });
+    defer alloc.free(message);
+    try appendWarning(warnings, code, message, item_subject, alloc);
+}
+
+fn nodeExistsOfType(db: *graph_live.GraphDb, node_id: []const u8, node_type: []const u8) !bool {
+    var st = try db.db.prepare(
+        \\SELECT 1
+        \\FROM nodes
+        \\WHERE id=? AND type=?
+        \\LIMIT 1
+    );
+    defer st.finalize();
+    try st.bindText(1, node_id);
+    try st.bindText(2, node_type);
+    return try st.step();
+}
+
+fn referenceEdgePropertiesJson(source_format: BomFormat, declared_field: []const u8, alloc: Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"relation_source\":");
+    try shared.appendJsonStr(&buf, bomFormatString(source_format), alloc);
+    try buf.appendSlice(alloc, ",\"declared_field\":");
+    try shared.appendJsonStr(&buf, declared_field, alloc);
+    try buf.append(alloc, '}');
+    return alloc.dupe(u8, buf.items);
 }
 
 fn prepareHttpBody(content_type: ?[]const u8, body: []const u8, alloc: Allocator) (BomError || error{OutOfMemory})!PreparedBom {
@@ -556,6 +882,10 @@ fn prepareHardwareCsv(body: []const u8, alloc: Allocator) (BomError || error{Out
     const description_col = resolveCol(header, "description");
     const supplier_col = resolveCol(header, "supplier");
     const category_col = resolveCol(header, "category");
+    const requirement_ids_col = resolveCol(header, "requirement_ids");
+    const requirement_id_col = resolveCol(header, "requirement_id");
+    const test_ids_col = resolveCol(header, "test_ids");
+    const test_id_col = resolveCol(header, "test_id");
 
     var relation_seen = std.StringHashMap(void).init(alloc);
     defer {
@@ -622,6 +952,34 @@ fn prepareHardwareCsv(body: []const u8, alloc: Allocator) (BomError || error{Out
                 .revision = try alloc.dupe(u8, child_revision),
                 .description = try optionalCellAt(row, description_col, alloc),
                 .category = try optionalCellAt(row, category_col, alloc),
+                .requirement_ids = blk: {
+                    var refs: ?[]const []const u8 = null;
+                    if (requirement_ids_col) |idx| {
+                        const parsed = try parseTraceRefCell(if (idx < row.len) row[idx] else "", alloc);
+                        errdefer if (parsed) |items| freeStringSlice(items, alloc);
+                        try mergeTraceRefLists(&refs, parsed, alloc);
+                    }
+                    if (requirement_id_col) |idx| {
+                        const parsed = try parseTraceRefCell(if (idx < row.len) row[idx] else "", alloc);
+                        errdefer if (parsed) |items| freeStringSlice(items, alloc);
+                        try mergeTraceRefLists(&refs, parsed, alloc);
+                    }
+                    break :blk refs;
+                },
+                .test_ids = blk: {
+                    var refs: ?[]const []const u8 = null;
+                    if (test_ids_col) |idx| {
+                        const parsed = try parseTraceRefCell(if (idx < row.len) row[idx] else "", alloc);
+                        errdefer if (parsed) |items| freeStringSlice(items, alloc);
+                        try mergeTraceRefLists(&refs, parsed, alloc);
+                    }
+                    if (test_id_col) |idx| {
+                        const parsed = try parseTraceRefCell(if (idx < row.len) row[idx] else "", alloc);
+                        errdefer if (parsed) |items| freeStringSlice(items, alloc);
+                        try mergeTraceRefLists(&refs, parsed, alloc);
+                    }
+                    break :blk refs;
+                },
                 .purl = null,
                 .license = null,
                 .hashes_json = null,
@@ -713,6 +1071,26 @@ fn prepareHardwareJson(root: std.json.Value, alloc: Allocator) (BomError || erro
                 .revision = try alloc.dupe(u8, child_revision),
                 .description = if (json_util.getString(item, "description")) |value| try alloc.dupe(u8, value) else null,
                 .category = if (json_util.getString(item, "category")) |value| try alloc.dupe(u8, value) else null,
+                .requirement_ids = blk: {
+                    var refs: ?[]const []const u8 = null;
+                    const plural = try parseTraceRefJsonField(item, "requirement_ids", alloc);
+                    errdefer if (plural) |items| freeStringSlice(items, alloc);
+                    try mergeTraceRefLists(&refs, plural, alloc);
+                    const singular = try parseTraceRefJsonField(item, "requirement_id", alloc);
+                    errdefer if (singular) |items| freeStringSlice(items, alloc);
+                    try mergeTraceRefLists(&refs, singular, alloc);
+                    break :blk refs;
+                },
+                .test_ids = blk: {
+                    var refs: ?[]const []const u8 = null;
+                    const plural = try parseTraceRefJsonField(item, "test_ids", alloc);
+                    errdefer if (plural) |items| freeStringSlice(items, alloc);
+                    try mergeTraceRefLists(&refs, plural, alloc);
+                    const singular = try parseTraceRefJsonField(item, "test_id", alloc);
+                    errdefer if (singular) |items| freeStringSlice(items, alloc);
+                    try mergeTraceRefLists(&refs, singular, alloc);
+                    break :blk refs;
+                },
                 .purl = null,
                 .license = null,
                 .hashes_json = null,
@@ -1331,6 +1709,10 @@ fn itemPropertiesJson(item: ItemSpec, alloc: Allocator) ![]const u8 {
     try shared.appendJsonStrOpt(&buf, item.description, alloc);
     try buf.appendSlice(alloc, ",\"category\":");
     try shared.appendJsonStrOpt(&buf, item.category, alloc);
+    try buf.appendSlice(alloc, ",\"requirement_ids\":");
+    try appendJsonStringArray(&buf, item.requirement_ids, alloc);
+    try buf.appendSlice(alloc, ",\"test_ids\":");
+    try appendJsonStringArray(&buf, item.test_ids, alloc);
     try buf.appendSlice(alloc, ",\"purl\":");
     try shared.appendJsonStrOpt(&buf, item.purl, alloc);
     try buf.appendSlice(alloc, ",\"license\":");
@@ -1363,6 +1745,8 @@ fn occurrenceFromItem(parent_key: ?[]const u8, item: ItemSpec, alloc: Allocator)
         .child_revision = try alloc.dupe(u8, item.revision),
         .description = if (item.description) |value| try alloc.dupe(u8, value) else null,
         .category = if (item.category) |value| try alloc.dupe(u8, value) else null,
+        .requirement_ids = if (item.requirement_ids) |values| try dupStringSlice(values, alloc) else null,
+        .test_ids = if (item.test_ids) |values| try dupStringSlice(values, alloc) else null,
         .quantity = null,
         .ref_designator = null,
         .supplier = null,
@@ -1373,11 +1757,20 @@ fn occurrenceFromItem(parent_key: ?[]const u8, item: ItemSpec, alloc: Allocator)
 }
 
 fn ensureItemSpec(items: *std.StringHashMap(ItemSpec), key: []const u8, part: []const u8, revision: []const u8, alloc: Allocator) !void {
-    if (items.contains(key)) return;
-    try items.put(try alloc.dupe(u8, key), .{
+    const key_copy = try alloc.dupe(u8, key);
+    errdefer alloc.free(key_copy);
+    const gop = try items.getOrPut(key_copy);
+    if (gop.found_existing) {
+        alloc.free(key_copy);
+        return;
+    }
+    gop.key_ptr.* = key_copy;
+    gop.value_ptr.* = .{
         .part = try alloc.dupe(u8, part),
         .revision = try alloc.dupe(u8, revision),
-    });
+        .requirement_ids = null,
+        .test_ids = null,
+    };
 }
 
 fn upsertItemSpec(items: *std.StringHashMap(ItemSpec), key: []const u8, occurrence: BomOccurrenceInput, alloc: Allocator) !void {
@@ -1386,6 +1779,8 @@ fn upsertItemSpec(items: *std.StringHashMap(ItemSpec), key: []const u8, occurren
         .revision = try alloc.dupe(u8, occurrence.child_revision),
         .description = if (occurrence.description) |value| try alloc.dupe(u8, value) else null,
         .category = if (occurrence.category) |value| try alloc.dupe(u8, value) else null,
+        .requirement_ids = if (occurrence.requirement_ids) |values| try dupStringSlice(values, alloc) else null,
+        .test_ids = if (occurrence.test_ids) |values| try dupStringSlice(values, alloc) else null,
         .purl = if (occurrence.purl) |value| try alloc.dupe(u8, value) else null,
         .license = if (occurrence.license) |value| try alloc.dupe(u8, value) else null,
         .hashes_json = if (occurrence.hashes_json) |value| try alloc.dupe(u8, value) else null,
@@ -1393,11 +1788,15 @@ fn upsertItemSpec(items: *std.StringHashMap(ItemSpec), key: []const u8, occurren
 }
 
 fn upsertItemSpecExplicit(items: *std.StringHashMap(ItemSpec), key: []const u8, incoming: ItemSpec, alloc: Allocator) !void {
-    const gop = try items.getOrPut(try alloc.dupe(u8, key));
+    const key_copy = try alloc.dupe(u8, key);
+    errdefer alloc.free(key_copy);
+    const gop = try items.getOrPut(key_copy);
     if (!gop.found_existing) {
+        gop.key_ptr.* = key_copy;
         gop.value_ptr.* = incoming;
         return;
     }
+    alloc.free(key_copy);
     alloc.free(incoming.part);
     alloc.free(incoming.revision);
 
@@ -1415,6 +1814,8 @@ fn upsertItemSpecExplicit(items: *std.StringHashMap(ItemSpec), key: []const u8, 
             alloc.free(value);
         }
     }
+    try mergeTraceRefLists(&gop.value_ptr.requirement_ids, incoming.requirement_ids, alloc);
+    try mergeTraceRefLists(&gop.value_ptr.test_ids, incoming.test_ids, alloc);
     if (incoming.purl) |value| {
         if (gop.value_ptr.purl == null) {
             gop.value_ptr.purl = value;
@@ -1446,6 +1847,8 @@ fn deinitItemMap(items: *std.StringHashMap(ItemSpec), alloc: Allocator) void {
         alloc.free(entry.value_ptr.revision);
         if (entry.value_ptr.description) |value| alloc.free(value);
         if (entry.value_ptr.category) |value| alloc.free(value);
+        if (entry.value_ptr.requirement_ids) |values| freeStringSlice(values, alloc);
+        if (entry.value_ptr.test_ids) |values| freeStringSlice(values, alloc);
         if (entry.value_ptr.purl) |value| alloc.free(value);
         if (entry.value_ptr.license) |value| alloc.free(value);
         if (entry.value_ptr.hashes_json) |value| alloc.free(value);
@@ -1483,6 +1886,8 @@ fn cycloneDxItemSpec(component: std.json.Value, alloc: Allocator) !ItemSpec {
         .revision = try alloc.dupe(u8, version),
         .description = if (json_util.getString(component, "description")) |value| try alloc.dupe(u8, value) else try alloc.dupe(u8, name),
         .category = if (json_util.getString(component, "type")) |value| try alloc.dupe(u8, value) else null,
+        .requirement_ids = null,
+        .test_ids = null,
         .purl = if (json_util.getString(component, "purl")) |value| try alloc.dupe(u8, value) else null,
         .license = try cyclonedxLicense(component, alloc),
         .hashes_json = try hashesJson(component, "hashes", alloc),
@@ -1497,6 +1902,8 @@ fn spdxItemSpec(pkg: std.json.Value, alloc: Allocator) !ItemSpec {
         .revision = try alloc.dupe(u8, version),
         .description = if (json_util.getString(pkg, "description")) |value| try alloc.dupe(u8, value) else try alloc.dupe(u8, name),
         .category = null,
+        .requirement_ids = null,
+        .test_ids = null,
         .purl = try spdxPurl(pkg, alloc),
         .license = if (json_util.getString(pkg, "licenseConcluded")) |value| try alloc.dupe(u8, value) else null,
         .hashes_json = try hashesJson(pkg, "checksums", alloc),
@@ -1663,6 +2070,81 @@ test "prepare hardware csv rejects mismatched bom name across rows" {
     try testing.expectError(error.InvalidCsv, prepareHardwareCsv(body, testing.allocator));
 }
 
+test "hardware csv trace refs create BOM item properties and typed edges" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Req\"}", null);
+    try db.addNode("REQ-002", "Requirement", "{\"statement\":\"Req 2\"}", null);
+    try db.addNode("TEST-001", "Test", "{\"name\":\"Test 1\"}", null);
+
+    var ingest = try ingestHttpBody(
+        &db,
+        "text/csv",
+        \\bom_name,full_identifier,parent_part,parent_revision,child_part,child_revision,quantity,requirement_ids,test_id
+        \\pcba,ASM-1000-REV-C,ASM-1000,REV-C,C0805-10UF,A,4,"REQ-001;REQ-002",TEST-001
+    ,
+        testing.allocator,
+    );
+    defer ingest.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), ingest.warnings.len);
+
+    const item_id = "bom-item://ASM-1000-REV-C/hardware/pcba/C0805-10UF@A";
+    const item_json = try getBomItemJson(&db, item_id, testing.allocator);
+    defer testing.allocator.free(item_json);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"requirement_ids\":[\"REQ-001\",\"REQ-002\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"test_ids\":[\"TEST-001\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"linked_requirements\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"id\":\"REQ-002\"") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"linked_tests\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"id\":\"TEST-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"unresolved_requirement_ids\":[]") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"unresolved_test_ids\":[]") != null);
+}
+
+test "hardware json unresolved trace refs warn and preserve declared ids" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Req\"}", null);
+
+    var ingest = try ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4",
+        \\      "requirement_ids": "REQ-001|REQ-404",
+        \\      "test_ids": ["TEST-404"]
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer ingest.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), ingest.warnings.len);
+    try testing.expectEqualStrings("BOM_UNRESOLVED_REQUIREMENT_REF", ingest.warnings[0].code);
+    try testing.expectEqualStrings("BOM_UNRESOLVED_TEST_REF", ingest.warnings[1].code);
+
+    const item_id = "bom-item://ASM-1000-REV-C/hardware/pcba/C0805-10UF@A";
+    const item_json = try getBomItemJson(&db, item_id, testing.allocator);
+    defer testing.allocator.free(item_json);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"requirement_ids\":[\"REQ-001\",\"REQ-404\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"test_ids\":[\"TEST-404\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"unresolved_requirement_ids\":[\"REQ-404\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"unresolved_test_ids\":[\"TEST-404\"]") != null);
+}
+
 test "edge properties round trip through graph and node detail JSON" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
@@ -1757,6 +2239,63 @@ test "re-ingesting same bom key replaces only that bom subtree" {
     try testing.expect(std.mem.indexOf(u8, bom_json, "R0402-1K") != null);
     try testing.expect(std.mem.indexOf(u8, bom_json, "C0805-10UF") == null);
     try testing.expect(std.mem.indexOf(u8, bom_json, "\"bom_name\":\"firmware\"") != null);
+}
+
+test "re-ingesting same bom key replaces stale BOM trace edges" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("product://ASM-1000-REV-C", "Product", "{\"full_identifier\":\"ASM-1000-REV-C\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Req 1\"}", null);
+    try db.addNode("REQ-002", "Requirement", "{\"statement\":\"Req 2\"}", null);
+
+    var first = try ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4",
+        \\      "requirement_id": "REQ-001"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer first.deinit(testing.allocator);
+
+    var second = try ingestHttpBody(
+        &db,
+        "application/json",
+        \\{
+        \\  "bom_name": "pcba",
+        \\  "full_product_identifier": "ASM-1000-REV-C",
+        \\  "bom_items": [
+        \\    {
+        \\      "parent_part": "ASM-1000",
+        \\      "parent_revision": "REV-C",
+        \\      "child_part": "C0805-10UF",
+        \\      "child_revision": "A",
+        \\      "quantity": "4",
+        \\      "requirement_id": "REQ-002"
+        \\    }
+        \\  ]
+        \\}
+    ,
+        testing.allocator,
+    );
+    defer second.deinit(testing.allocator);
+
+    const item_json = try getBomItemJson(&db, "bom-item://ASM-1000-REV-C/hardware/pcba/C0805-10UF@A", testing.allocator);
+    defer testing.allocator.free(item_json);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"id\":\"REQ-002\"") != null);
+    try testing.expect(std.mem.indexOf(u8, item_json, "\"id\":\"REQ-001\"") == null);
 }
 
 test "software component query filters by purl prefix" {
