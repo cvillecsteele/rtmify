@@ -15,6 +15,8 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
     defer owned_active.deinit(cfg.alloc);
     var owned_design_bom_sync = cfg.design_bom_sync;
     defer if (owned_design_bom_sync) |*source| source.deinit(cfg.alloc);
+    var owned_soup_sync = cfg.soup_sync;
+    defer if (owned_soup_sync) |*source| source.deinit(cfg.alloc);
 
     var active = owned_active.clone(alloc) catch {
         cfg.state.setError("provider_setup_failed");
@@ -30,6 +32,14 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
     else
         null;
     defer if (design_bom_source) |*source| source.deinit(alloc);
+    var soup_source = if (owned_soup_sync) |source|
+        source.clone(alloc) catch {
+            cfg.state.setError("soup_source_setup_failed");
+            return;
+        }
+    else
+        null;
+    defer if (soup_source) |*source| source.deinit(alloc);
 
     var runtime = internal.ProviderRuntime.init(active, alloc) catch |e| {
         cfg.state.setError(@errorName(e));
@@ -43,12 +53,27 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
     var design_bom_last_change_token: ?[]u8 = null;
     defer if (design_bom_last_change_token) |tok| alloc.free(tok);
     var design_bom_last_local_mtime: ?i128 = null;
+    var soup_runtime: ?internal.ProviderRuntime = null;
+    defer if (soup_runtime) |*runtime_ref| runtime_ref.deinit(alloc);
+    var soup_last_change_token: ?[]u8 = null;
+    defer if (soup_last_change_token) |tok| alloc.free(tok);
+    var soup_last_local_mtime: ?i128 = null;
 
     if (design_bom_source) |source| switch (source) {
         .provider => |provider_active| {
             design_bom_runtime = internal.ProviderRuntime.init(provider_active, alloc) catch |e| blk: {
                 cfg.db.storeConfig("design_bom_last_sync_error", @errorName(e)) catch {};
                 recordDesignBomSyncDiagnostic(cfg.db, "provider_init_failed", @errorName(e), alloc) catch {};
+                break :blk null;
+            };
+        },
+        .local_xlsx_path => {},
+    };
+    if (soup_source) |source| switch (source.source) {
+        .provider => |provider_active| {
+            soup_runtime = internal.ProviderRuntime.init(provider_active, alloc) catch |e| blk: {
+                cfg.db.storeConfig("soup_last_sync_error", @errorName(e)) catch {};
+                recordSoupSyncDiagnostic(cfg.db, "provider_init_failed", @errorName(e), alloc) catch {};
                 break :blk null;
             };
         },
@@ -131,6 +156,21 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
             recordDesignBomSyncDiagnostic(cfg.db, "sync_failed", msg, alloc) catch {};
             std.log.warn("design bom sync failed: {s}", .{msg});
         };
+        runSoupSyncIfNeeded(
+            cfg.db,
+            soup_source,
+            if (soup_runtime) |*runtime_ref| runtime_ref else null,
+            &soup_last_change_token,
+            &soup_last_local_mtime,
+            force_sync,
+            alloc,
+        ) catch |e| {
+            const msg = @errorName(e);
+            cfg.db.storeConfig("soup_last_sync_error", msg) catch {};
+            cfg.db.storeConfig("soup_last_sync_ok", "0") catch {};
+            recordSoupSyncDiagnostic(cfg.db, "sync_failed", msg, alloc) catch {};
+            std.log.warn("soup sync failed: {s}", .{msg});
+        };
         cfg.state.sync_in_progress.store(false, .seq_cst);
 
         const synced_at = std.time.timestamp();
@@ -147,6 +187,42 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
         backoff = 30;
 
         cfg.control.waitTimeout(30 * std.time.ns_per_s);
+    }
+}
+
+fn runSoupSyncIfNeeded(
+    db: *internal.GraphDb,
+    soup_source: ?state_mod.SoupSyncSource,
+    soup_runtime: ?*internal.ProviderRuntime,
+    last_change_token: *?[]u8,
+    last_local_mtime: *?i128,
+    force_sync: bool,
+    alloc: internal.Allocator,
+) !void {
+    const source = soup_source orelse return;
+    switch (source.source) {
+        .provider => {
+            const runtime = soup_runtime orelse return;
+            const change_token = try runtime.changeToken(alloc);
+            if (last_change_token.*) |prev| {
+                if (!force_sync and std.mem.eql(u8, prev, change_token)) {
+                    alloc.free(change_token);
+                    return;
+                }
+                alloc.free(prev);
+            }
+            last_change_token.* = @constCast(change_token);
+            try syncSoupProvider(db, runtime, source.full_product_identifier, source.bom_name, alloc);
+        },
+        .local_xlsx_path => |path| {
+            const file = try std.fs.openFileAbsolute(path, .{});
+            defer file.close();
+            const stat = try file.stat();
+            const current_mtime = stat.mtime;
+            if (!force_sync and last_local_mtime.* != null and last_local_mtime.*.? == current_mtime) return;
+            last_local_mtime.* = current_mtime;
+            try syncSoupXlsx(db, path, source.full_product_identifier, source.bom_name, alloc);
+        },
     }
 }
 
@@ -204,6 +280,37 @@ fn syncDesignBomXlsx(db: *internal.GraphDb, path: []const u8, alloc: internal.Al
     var response = try internal.bom.ingestXlsxPath(db, path, alloc);
     defer response.deinit(alloc);
     try recordDesignBomSyncResult(db, response, alloc);
+}
+
+fn syncSoupProvider(
+    db: *internal.GraphDb,
+    runtime: *internal.ProviderRuntime,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    alloc: internal.Allocator,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const existing_tabs = try runtime.listTabs(a);
+    defer internal.online_provider.freeTabRefs(existing_tabs, a);
+    const soup_rows = try cycle.readOptionalTab(runtime, existing_tabs, "SOUP Components", a);
+    if (soup_rows.len == 0) return;
+    var response = try internal.soup.ingestSheetRows(db, soup_rows, full_product_identifier, bom_name, alloc);
+    defer response.deinit(alloc);
+    try recordSoupSyncResult(db, response, alloc);
+}
+
+fn syncSoupXlsx(
+    db: *internal.GraphDb,
+    path: []const u8,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    alloc: internal.Allocator,
+) !void {
+    var response = try internal.soup.ingestXlsxPath(db, path, full_product_identifier, bom_name, alloc);
+    defer response.deinit(alloc);
+    try recordSoupSyncResult(db, response, alloc);
 }
 
 fn recordDesignBomSyncResult(db: *internal.GraphDb, response: internal.bom.GroupedBomIngestResponse, alloc: internal.Allocator) !void {
@@ -267,6 +374,62 @@ fn recordDesignBomSyncDiagnostic(db: *internal.GraphDb, code_suffix: []const u8,
         "Design BOM sync issue",
         message,
         "design_bom_sync",
+        null,
+        "{}",
+    );
+}
+
+fn recordSoupSyncResult(db: *internal.GraphDb, response: internal.soup.SoupIngestResponse, alloc: internal.Allocator) !void {
+    const now = std.time.timestamp();
+    const timestamp = try std.fmt.allocPrint(alloc, "{d}", .{now});
+    defer alloc.free(timestamp);
+    try db.storeConfig("soup_last_sync_at", timestamp);
+    try db.storeConfig("soup_last_sync_error", "");
+    try db.storeConfig("soup_last_sync_ok", "1");
+
+    for (response.warnings) |warning| {
+        var details: std.ArrayList(u8) = .empty;
+        defer details.deinit(alloc);
+        try details.appendSlice(alloc, "{\"warning_code\":");
+        try internal.json_util.appendJsonQuoted(&details, warning.code, alloc);
+        try details.appendSlice(alloc, ",\"warning_subject\":");
+        if (warning.subject) |subject| {
+            try internal.json_util.appendJsonQuoted(&details, subject, alloc);
+        } else {
+            try details.appendSlice(alloc, "null");
+        }
+        try details.appendSlice(alloc, ",\"full_product_identifier\":");
+        try internal.json_util.appendJsonQuoted(&details, response.full_product_identifier, alloc);
+        try details.appendSlice(alloc, ",\"bom_name\":");
+        try internal.json_util.appendJsonQuoted(&details, response.bom_name, alloc);
+        try details.appendSlice(alloc, ",\"bom_type\":\"software\"}");
+        const subject = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ response.full_product_identifier, response.bom_name });
+        defer alloc.free(subject);
+        const dedupe_key = try std.fmt.allocPrint(alloc, "soup_sync:{s}:{s}:{s}", .{ response.full_product_identifier, response.bom_name, warning.code });
+        defer alloc.free(dedupe_key);
+        try db.upsertRuntimeDiagnostic(
+            dedupe_key,
+            9504,
+            "warn",
+            "SOUP sync warning",
+            warning.message,
+            "soup_sync",
+            subject,
+            details.items,
+        );
+    }
+}
+
+fn recordSoupSyncDiagnostic(db: *internal.GraphDb, code_suffix: []const u8, message: []const u8, alloc: internal.Allocator) !void {
+    const dedupe_key = try std.fmt.allocPrint(alloc, "soup_sync:{s}", .{code_suffix});
+    defer alloc.free(dedupe_key);
+    try db.upsertRuntimeDiagnostic(
+        dedupe_key,
+        9504,
+        "warn",
+        "SOUP sync issue",
+        message,
+        "soup_sync",
         null,
         "{}",
     );

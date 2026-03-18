@@ -471,6 +471,7 @@ fn maybeStartSync(
     workbook_runtime: *workbook.runtime.WorkbookRuntime,
     active: @import("provider_common.zig").ActiveConnection,
     design_bom_sync: ?sync_live.DesignBomSyncSource,
+    soup_sync: ?sync_live.SoupSyncSource,
     control: *sync_live.WorkerControl,
     alloc: std.mem.Allocator,
 ) !std.Thread {
@@ -491,6 +492,7 @@ fn maybeStartSync(
         .profile = profile_mod.fromString(workbook_runtime.config.profile) orelse .generic,
         .active = try active.clone(alloc),
         .design_bom_sync = if (design_bom_sync) |source| try source.clone(alloc) else null,
+        .soup_sync = if (soup_sync) |source| try source.clone(alloc) else null,
         .control = control,
         .alloc = alloc,
         .db = &workbook_runtime.db,
@@ -542,8 +544,10 @@ fn startActiveWorkers(
     defer loaded.deinit(alloc);
     var design_bom_sync = try resolveDesignBomSyncSource(runtime.config, secure_store, alloc);
     defer if (design_bom_sync) |*source| source.deinit(alloc);
+    var soup_sync = try resolveSoupSyncSource(runtime.config, secure_store, alloc);
+    defer if (soup_sync) |*source| source.deinit(alloc);
     if (license_status.permits_use and loaded == .active) {
-        workers.sync_thread = try maybeStartSync(runtime, loaded.active, design_bom_sync, control, alloc);
+        workers.sync_thread = try maybeStartSync(runtime, loaded.active, design_bom_sync, soup_sync, control, alloc);
         std.log.info("sync thread started for configured provider connection", .{});
     }
 
@@ -596,6 +600,62 @@ fn resolveDesignBomSyncSource(
                 .target = target,
             } };
         },
+    };
+}
+
+fn resolveSoupSyncSource(
+    cfg: workbook.config.WorkbookConfig,
+    secure_store: *secure_store_mod.Store,
+    alloc: std.mem.Allocator,
+) !?sync_live.SoupSyncSource {
+    const soup_sync = cfg.soup_sync orelse return null;
+    if (!soup_sync.enabled) return null;
+    const bom_name = if (soup_sync.bom_name) |value|
+        try alloc.dupe(u8, value)
+    else
+        try alloc.dupe(u8, "SOUP Components");
+    errdefer alloc.free(bom_name);
+    const full_product_identifier = try alloc.dupe(u8, soup_sync.full_product_identifier);
+    errdefer alloc.free(full_product_identifier);
+
+    const payload_source: sync_live.SoupSyncPayloadSource = switch (soup_sync.kind) {
+        .local_xlsx => if (soup_sync.local_xlsx_path) |path|
+            .{ .local_xlsx_path = try alloc.dupe(u8, path) }
+        else
+            return null,
+        .google, .excel => blk: {
+            const credential_ref = soup_sync.credential_ref orelse return null;
+            const credential_json = secure_store.get(alloc, credential_ref) catch return null;
+            errdefer alloc.free(credential_json);
+            const workbook_url = if (soup_sync.workbook_url) |value| try alloc.dupe(u8, value) else return null;
+            errdefer alloc.free(workbook_url);
+            const workbook_label = if (soup_sync.workbook_label) |value| try alloc.dupe(u8, value) else return null;
+            errdefer alloc.free(workbook_label);
+            const credential_display = if (soup_sync.credential_display) |value| try alloc.dupe(u8, value) else null;
+            errdefer if (credential_display) |value| alloc.free(value);
+            const target: online_provider.Target = switch (soup_sync.kind) {
+                .google => .{ .google = .{ .sheet_id = try alloc.dupe(u8, soup_sync.google_sheet_id orelse return null) } },
+                .excel => .{ .excel = .{
+                    .drive_id = try alloc.dupe(u8, soup_sync.excel_drive_id orelse return null),
+                    .item_id = try alloc.dupe(u8, soup_sync.excel_item_id orelse return null),
+                } },
+                .local_xlsx => unreachable,
+            };
+            break :blk .{ .provider = .{
+                .platform = if (soup_sync.kind == .google) .google else .excel,
+                .credential_json = credential_json,
+                .workbook_url = workbook_url,
+                .workbook_label = workbook_label,
+                .credential_display = credential_display,
+                .target = target,
+            } };
+        },
+    };
+
+    return .{
+        .source = payload_source,
+        .full_product_identifier = full_product_identifier,
+        .bom_name = bom_name,
     };
 }
 
@@ -679,6 +739,6 @@ test "maybeStartSync returns false and resets state for invalid credential" {
     };
     defer active.deinit(alloc);
     var control: sync_live.WorkerControl = .{};
-    try testing.expectError(error.ProviderInitFailed, maybeStartSync(&runtime, active, null, &control, alloc));
+    try testing.expectError(error.ProviderInitFailed, maybeStartSync(&runtime, active, null, null, &control, alloc));
     try testing.expect(!runtime.sync_state.sync_started.load(.seq_cst));
 }

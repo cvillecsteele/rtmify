@@ -8,7 +8,7 @@ const shared = @import("routes/shared.zig");
 const xlsx = @import("rtmify").xlsx;
 
 pub const BomType = enum { hardware, software };
-pub const BomFormat = enum { hardware_csv, hardware_json, cyclonedx, spdx, xlsx, sheets };
+pub const BomFormat = enum { hardware_csv, hardware_json, cyclonedx, spdx, xlsx, sheets, soup_json, soup_xlsx };
 
 const ProductStatus = enum {
     active,
@@ -33,6 +33,9 @@ pub const BomOccurrenceInput = struct {
     purl: ?[]const u8,
     license: ?[]const u8,
     hashes_json: ?[]const u8,
+    safety_class: ?[]const u8,
+    known_anomalies: ?[]const u8,
+    anomaly_evaluation: ?[]const u8,
 
     pub fn deinit(self: *BomOccurrenceInput, alloc: Allocator) void {
         if (self.parent_key) |value| alloc.free(value);
@@ -48,6 +51,9 @@ pub const BomOccurrenceInput = struct {
         if (self.purl) |value| alloc.free(value);
         if (self.license) |value| alloc.free(value);
         if (self.hashes_json) |value| alloc.free(value);
+        if (self.safety_class) |value| alloc.free(value);
+        if (self.known_anomalies) |value| alloc.free(value);
+        if (self.anomaly_evaluation) |value| alloc.free(value);
     }
 };
 
@@ -194,8 +200,11 @@ fn productStatusForIdentifier(db: *graph_live.GraphDb, full_product_identifier: 
     return classifyProductStatus(if (st.columnIsNull(0)) null else st.columnText(0));
 }
 
-const IngestOptions = struct {
+pub const IngestOptions = struct {
     allow_missing_product: bool = false,
+    unresolved_requirement_warning_code: []const u8 = "BOM_UNRESOLVED_REQUIREMENT_REF",
+    unresolved_test_warning_code: []const u8 = "BOM_UNRESOLVED_TEST_REF",
+    warning_subject_label: []const u8 = "BOM item",
 };
 
 const ItemSpec = struct {
@@ -203,11 +212,15 @@ const ItemSpec = struct {
     revision: []const u8,
     description: ?[]const u8 = null,
     category: ?[]const u8 = null,
+    supplier: ?[]const u8 = null,
     requirement_ids: ?[]const []const u8 = null,
     test_ids: ?[]const []const u8 = null,
     purl: ?[]const u8 = null,
     license: ?[]const u8 = null,
     hashes_json: ?[]const u8 = null,
+    safety_class: ?[]const u8 = null,
+    known_anomalies: ?[]const u8 = null,
+    anomaly_evaluation: ?[]const u8 = null,
 };
 
 const RelationSpec = struct {
@@ -265,6 +278,21 @@ pub fn ingestXlsxPath(
     const sheets = try xlsx.parse(arena, path);
     const design_bom_rows = findSheetRows(sheets, "Design BOM") orelse return error.MissingDesignBomTab;
     return ingestDesignBomRows(db, design_bom_rows, findSheetRows(sheets, "Product"), .xlsx, alloc);
+}
+
+pub fn ingestSubmission(
+    db: *graph_live.GraphDb,
+    submission: BomSubmission,
+    warnings: std.ArrayList(BomWarning),
+    options: IngestOptions,
+    alloc: Allocator,
+) (BomError || db_mod.DbError || error{OutOfMemory})!BomIngestResponse {
+    var prepared = PreparedBom{
+        .submission = submission,
+        .warnings = warnings,
+    };
+    defer prepared.deinit(alloc);
+    return ingestPrepared(db, &prepared, options, alloc);
 }
 
 pub fn ingestResponseJson(response: BomIngestResponse, alloc: Allocator) ![]const u8 {
@@ -1839,6 +1867,7 @@ fn ingestPrepared(
             item_id,
             entry.value_ptr.*,
             prepared.submission.source_format,
+            options,
             &prepared.warnings,
             &warning_seen,
             alloc,
@@ -1892,6 +1921,7 @@ fn appendBomTraceEdges(
     item_id: []const u8,
     item: ItemSpec,
     source_format: BomFormat,
+    options: IngestOptions,
     warnings: *std.ArrayList(BomWarning),
     warning_seen: *std.StringHashMap(void),
     alloc: Allocator,
@@ -1911,7 +1941,8 @@ fn appendBomTraceEdges(
                 try appendUnresolvedTraceRefWarning(
                     warnings,
                     warning_seen,
-                    "BOM_UNRESOLVED_REQUIREMENT_REF",
+                    options.unresolved_requirement_warning_code,
+                    options.warning_subject_label,
                     item_subject,
                     "Requirement",
                     req_id,
@@ -1932,7 +1963,8 @@ fn appendBomTraceEdges(
                 try appendUnresolvedTraceRefWarning(
                     warnings,
                     warning_seen,
-                    "BOM_UNRESOLVED_TEST_REF",
+                    options.unresolved_test_warning_code,
+                    options.warning_subject_label,
                     item_subject,
                     "Test/TestGroup",
                     test_id,
@@ -1949,6 +1981,7 @@ fn appendUnresolvedTraceRefWarning(
     warnings: *std.ArrayList(BomWarning),
     warning_seen: *std.StringHashMap(void),
     code: []const u8,
+    subject_label: []const u8,
     item_subject: []const u8,
     ref_type: []const u8,
     ref_id: []const u8,
@@ -1961,7 +1994,7 @@ fn appendUnresolvedTraceRefWarning(
     }
     try warning_seen.put(dedupe_key, {});
 
-    const message = try std.fmt.allocPrint(alloc, "BOM item '{s}' references missing {s} '{s}'", .{ item_subject, ref_type, ref_id });
+    const message = try std.fmt.allocPrint(alloc, "{s} '{s}' references missing {s} '{s}'", .{ subject_label, item_subject, ref_type, ref_id });
     defer alloc.free(message);
     try appendWarning(warnings, code, message, item_subject, alloc);
 }
@@ -2124,6 +2157,7 @@ fn prepareHardwareCsv(body: []const u8, alloc: Allocator) (BomError || error{Out
                 .revision = try alloc.dupe(u8, child_revision),
                 .description = try optionalCellAt(row, description_col, alloc),
                 .category = try optionalCellAt(row, category_col, alloc),
+                .supplier = try optionalCellAt(row, supplier_col, alloc),
                 .requirement_ids = blk: {
                     var refs: ?[]const []const u8 = null;
                     if (requirement_ids_col) |idx| {
@@ -2155,6 +2189,9 @@ fn prepareHardwareCsv(body: []const u8, alloc: Allocator) (BomError || error{Out
                 .purl = null,
                 .license = null,
                 .hashes_json = null,
+                .safety_class = null,
+                .known_anomalies = null,
+                .anomaly_evaluation = null,
             },
             alloc,
         );
@@ -2243,6 +2280,7 @@ fn prepareHardwareJson(root: std.json.Value, alloc: Allocator) (BomError || erro
                 .revision = try alloc.dupe(u8, child_revision),
                 .description = if (json_util.getString(item, "description")) |value| try alloc.dupe(u8, value) else null,
                 .category = if (json_util.getString(item, "category")) |value| try alloc.dupe(u8, value) else null,
+                .supplier = if (json_util.getString(item, "supplier")) |value| try alloc.dupe(u8, value) else null,
                 .requirement_ids = blk: {
                     var refs: ?[]const []const u8 = null;
                     const plural = try parseTraceRefJsonField(item, "requirement_ids", alloc);
@@ -2266,6 +2304,9 @@ fn prepareHardwareJson(root: std.json.Value, alloc: Allocator) (BomError || erro
                 .purl = null,
                 .license = null,
                 .hashes_json = null,
+                .safety_class = null,
+                .known_anomalies = null,
+                .anomaly_evaluation = null,
             },
             alloc,
         );
@@ -2563,7 +2604,10 @@ fn finalizeOccurrences(
         var occurrence = try occurrenceFromItem(relation.parent_key, item, alloc);
         if (relation.quantity) |value| occurrence.quantity = try alloc.dupe(u8, value);
         if (relation.ref_designator) |value| occurrence.ref_designator = try alloc.dupe(u8, value);
-        if (relation.supplier) |value| occurrence.supplier = try alloc.dupe(u8, value);
+        if (relation.supplier) |value| {
+            if (occurrence.supplier) |existing| alloc.free(existing);
+            occurrence.supplier = try alloc.dupe(u8, value);
+        }
         _ = source_format;
         try occurrences.append(alloc, occurrence);
     }
@@ -2883,6 +2927,8 @@ fn itemPropertiesJson(item: ItemSpec, alloc: Allocator) ![]const u8 {
     try shared.appendJsonStrOpt(&buf, item.description, alloc);
     try buf.appendSlice(alloc, ",\"category\":");
     try shared.appendJsonStrOpt(&buf, item.category, alloc);
+    try buf.appendSlice(alloc, ",\"supplier\":");
+    try shared.appendJsonStrOpt(&buf, item.supplier, alloc);
     try buf.appendSlice(alloc, ",\"requirement_ids\":");
     try appendJsonStringArray(&buf, item.requirement_ids, alloc);
     try buf.appendSlice(alloc, ",\"test_ids\":");
@@ -2891,6 +2937,12 @@ fn itemPropertiesJson(item: ItemSpec, alloc: Allocator) ![]const u8 {
     try shared.appendJsonStrOpt(&buf, item.purl, alloc);
     try buf.appendSlice(alloc, ",\"license\":");
     try shared.appendJsonStrOpt(&buf, item.license, alloc);
+    try buf.appendSlice(alloc, ",\"safety_class\":");
+    try shared.appendJsonStrOpt(&buf, item.safety_class, alloc);
+    try buf.appendSlice(alloc, ",\"known_anomalies\":");
+    try shared.appendJsonStrOpt(&buf, item.known_anomalies, alloc);
+    try buf.appendSlice(alloc, ",\"anomaly_evaluation\":");
+    try shared.appendJsonStrOpt(&buf, item.anomaly_evaluation, alloc);
     try buf.appendSlice(alloc, ",\"hashes\":");
     if (item.hashes_json) |value| try buf.appendSlice(alloc, value) else try buf.appendSlice(alloc, "null");
     try buf.append(alloc, '}');
@@ -2919,14 +2971,17 @@ fn occurrenceFromItem(parent_key: ?[]const u8, item: ItemSpec, alloc: Allocator)
         .child_revision = try alloc.dupe(u8, item.revision),
         .description = if (item.description) |value| try alloc.dupe(u8, value) else null,
         .category = if (item.category) |value| try alloc.dupe(u8, value) else null,
+        .supplier = if (item.supplier) |value| try alloc.dupe(u8, value) else null,
         .requirement_ids = if (item.requirement_ids) |values| try dupStringSlice(values, alloc) else null,
         .test_ids = if (item.test_ids) |values| try dupStringSlice(values, alloc) else null,
         .quantity = null,
         .ref_designator = null,
-        .supplier = null,
         .purl = if (item.purl) |value| try alloc.dupe(u8, value) else null,
         .license = if (item.license) |value| try alloc.dupe(u8, value) else null,
         .hashes_json = if (item.hashes_json) |value| try alloc.dupe(u8, value) else null,
+        .safety_class = if (item.safety_class) |value| try alloc.dupe(u8, value) else null,
+        .known_anomalies = if (item.known_anomalies) |value| try alloc.dupe(u8, value) else null,
+        .anomaly_evaluation = if (item.anomaly_evaluation) |value| try alloc.dupe(u8, value) else null,
     };
 }
 
@@ -2953,11 +3008,15 @@ fn upsertItemSpec(items: *std.StringHashMap(ItemSpec), key: []const u8, occurren
         .revision = try alloc.dupe(u8, occurrence.child_revision),
         .description = if (occurrence.description) |value| try alloc.dupe(u8, value) else null,
         .category = if (occurrence.category) |value| try alloc.dupe(u8, value) else null,
+        .supplier = if (occurrence.supplier) |value| try alloc.dupe(u8, value) else null,
         .requirement_ids = if (occurrence.requirement_ids) |values| try dupStringSlice(values, alloc) else null,
         .test_ids = if (occurrence.test_ids) |values| try dupStringSlice(values, alloc) else null,
         .purl = if (occurrence.purl) |value| try alloc.dupe(u8, value) else null,
         .license = if (occurrence.license) |value| try alloc.dupe(u8, value) else null,
         .hashes_json = if (occurrence.hashes_json) |value| try alloc.dupe(u8, value) else null,
+        .safety_class = if (occurrence.safety_class) |value| try alloc.dupe(u8, value) else null,
+        .known_anomalies = if (occurrence.known_anomalies) |value| try alloc.dupe(u8, value) else null,
+        .anomaly_evaluation = if (occurrence.anomaly_evaluation) |value| try alloc.dupe(u8, value) else null,
     }, alloc);
 }
 
@@ -2988,6 +3047,13 @@ fn upsertItemSpecExplicit(items: *std.StringHashMap(ItemSpec), key: []const u8, 
             alloc.free(value);
         }
     }
+    if (incoming.supplier) |value| {
+        if (gop.value_ptr.supplier == null) {
+            gop.value_ptr.supplier = value;
+        } else {
+            alloc.free(value);
+        }
+    }
     try mergeTraceRefLists(&gop.value_ptr.requirement_ids, incoming.requirement_ids, alloc);
     try mergeTraceRefLists(&gop.value_ptr.test_ids, incoming.test_ids, alloc);
     if (incoming.purl) |value| {
@@ -3011,6 +3077,27 @@ fn upsertItemSpecExplicit(items: *std.StringHashMap(ItemSpec), key: []const u8, 
             alloc.free(value);
         }
     }
+    if (incoming.safety_class) |value| {
+        if (gop.value_ptr.safety_class == null) {
+            gop.value_ptr.safety_class = value;
+        } else {
+            alloc.free(value);
+        }
+    }
+    if (incoming.known_anomalies) |value| {
+        if (gop.value_ptr.known_anomalies == null) {
+            gop.value_ptr.known_anomalies = value;
+        } else {
+            alloc.free(value);
+        }
+    }
+    if (incoming.anomaly_evaluation) |value| {
+        if (gop.value_ptr.anomaly_evaluation == null) {
+            gop.value_ptr.anomaly_evaluation = value;
+        } else {
+            alloc.free(value);
+        }
+    }
 }
 
 fn deinitItemMap(items: *std.StringHashMap(ItemSpec), alloc: Allocator) void {
@@ -3021,11 +3108,15 @@ fn deinitItemMap(items: *std.StringHashMap(ItemSpec), alloc: Allocator) void {
         alloc.free(entry.value_ptr.revision);
         if (entry.value_ptr.description) |value| alloc.free(value);
         if (entry.value_ptr.category) |value| alloc.free(value);
+        if (entry.value_ptr.supplier) |value| alloc.free(value);
         if (entry.value_ptr.requirement_ids) |values| freeStringSlice(values, alloc);
         if (entry.value_ptr.test_ids) |values| freeStringSlice(values, alloc);
         if (entry.value_ptr.purl) |value| alloc.free(value);
         if (entry.value_ptr.license) |value| alloc.free(value);
         if (entry.value_ptr.hashes_json) |value| alloc.free(value);
+        if (entry.value_ptr.safety_class) |value| alloc.free(value);
+        if (entry.value_ptr.known_anomalies) |value| alloc.free(value);
+        if (entry.value_ptr.anomaly_evaluation) |value| alloc.free(value);
     }
     items.deinit();
 }
@@ -3060,11 +3151,15 @@ fn cycloneDxItemSpec(component: std.json.Value, alloc: Allocator) !ItemSpec {
         .revision = try alloc.dupe(u8, version),
         .description = if (json_util.getString(component, "description")) |value| try alloc.dupe(u8, value) else try alloc.dupe(u8, name),
         .category = if (json_util.getString(component, "type")) |value| try alloc.dupe(u8, value) else null,
+        .supplier = null,
         .requirement_ids = null,
         .test_ids = null,
         .purl = if (json_util.getString(component, "purl")) |value| try alloc.dupe(u8, value) else null,
         .license = try cyclonedxLicense(component, alloc),
         .hashes_json = try hashesJson(component, "hashes", alloc),
+        .safety_class = null,
+        .known_anomalies = null,
+        .anomaly_evaluation = null,
     };
 }
 
@@ -3076,11 +3171,15 @@ fn spdxItemSpec(pkg: std.json.Value, alloc: Allocator) !ItemSpec {
         .revision = try alloc.dupe(u8, version),
         .description = if (json_util.getString(pkg, "description")) |value| try alloc.dupe(u8, value) else try alloc.dupe(u8, name),
         .category = null,
+        .supplier = null,
         .requirement_ids = null,
         .test_ids = null,
         .purl = try spdxPurl(pkg, alloc),
         .license = if (json_util.getString(pkg, "licenseConcluded")) |value| try alloc.dupe(u8, value) else null,
         .hashes_json = try hashesJson(pkg, "checksums", alloc),
+        .safety_class = null,
+        .known_anomalies = null,
+        .anomaly_evaluation = null,
     };
 }
 
@@ -3229,6 +3328,8 @@ fn bomFormatString(value: BomFormat) []const u8 {
         .spdx => "spdx",
         .xlsx => "xlsx",
         .sheets => "sheets",
+        .soup_json => "soup_json",
+        .soup_xlsx => "soup_xlsx",
     };
 }
 

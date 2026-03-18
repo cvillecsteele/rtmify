@@ -297,11 +297,251 @@ pub fn handleDeleteDesignBomSyncResponse(registry: *workbook.registry.WorkbookRe
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true,\"configured\":false}"), true);
 }
 
+pub fn handleSoupSyncValidateResponse(registry: *workbook.registry.WorkbookRegistry, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_json\"}"), false);
+    };
+    defer parsed.deinit();
+    const root = parsed.value;
+    const full_product_identifier = json_util.getString(root, "full_product_identifier") orelse
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing_full_product_identifier\"}"), false);
+    if (!(try activeProductExists(registry, full_product_identifier, alloc))) {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"SOUP_PRODUCT_NOT_FOUND\"}"), false);
+    }
+
+    const kind = json_util.getString(root, "kind") orelse "";
+    if (std.mem.eql(u8, kind, "local_xlsx")) {
+        const path = json_util.getString(root, "local_xlsx_path") orelse
+            return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing_local_xlsx_path\"}"), false);
+        validateLocalSoupWorkbook(path, alloc) catch |e| {
+            return shared.jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)}), false);
+        };
+        const display_name = json_util.getString(root, "display_name") orelse "SOUP Workbook";
+        const bom_name = json_util.getString(root, "bom_name") orelse "SOUP Components";
+        return shared.jsonRouteResponse(
+            .ok,
+            try std.fmt.allocPrint(
+                alloc,
+                "{{\"ok\":true,\"kind\":\"local_xlsx\",\"display_name\":\"{s}\",\"local_xlsx_path\":\"{s}\",\"full_product_identifier\":\"{s}\",\"bom_name\":\"{s}\"}}",
+                .{ display_name, path, full_product_identifier, bom_name },
+            ),
+            true,
+        );
+    }
+    if (!secure_store_mod.backendSupported(store.*)) {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
+    }
+    var draft = connection_mod.parseDraftFromJson(body, alloc) catch |e| {
+        return shared.jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)}), false);
+    };
+    defer draft.deinit(alloc);
+    var validated = connection_mod.validateDraft(draft, alloc) catch |e| {
+        return shared.jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"failed to validate connection: {s}\"}}", .{@errorName(e)}), false);
+    };
+    defer validated.deinit(alloc);
+    var active = validated.toActive();
+    defer active.deinit(alloc);
+    var runtime = try online_provider.ProviderRuntime.init(active, alloc);
+    defer runtime.deinit(alloc);
+    const tabs = try runtime.listTabs(alloc);
+    defer online_provider.freeTabRefs(tabs, alloc);
+    if (!providerTabExists(tabs, "SOUP Components")) {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing_soup_tab\"}"), false);
+    }
+    const display_name = json_util.getString(root, "display_name") orelse validated.workbook_label;
+    const bom_name = json_util.getString(root, "bom_name") orelse "SOUP Components";
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"ok\":true,\"kind\":");
+    try shared.appendJsonStr(&buf, online_provider.providerIdString(validated.platform), alloc);
+    try buf.appendSlice(alloc, ",\"display_name\":");
+    try shared.appendJsonStr(&buf, display_name, alloc);
+    try buf.appendSlice(alloc, ",\"credential_display\":");
+    try shared.appendJsonStrOpt(&buf, validated.credential_display, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_label\":");
+    try shared.appendJsonStr(&buf, validated.workbook_label, alloc);
+    try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+    try shared.appendJsonStr(&buf, full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"bom_name\":");
+    try shared.appendJsonStr(&buf, bom_name, alloc);
+    try buf.append(alloc, '}');
+    return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, buf.items), true);
+}
+
+pub fn handleSoupSyncResponse(registry: *workbook.registry.WorkbookRegistry, store: *secure_store_mod.Store, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_json\"}"), false);
+    };
+    defer parsed.deinit();
+    const root = parsed.value;
+    const full_product_identifier = json_util.getString(root, "full_product_identifier") orelse
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing_full_product_identifier\"}"), false);
+    if (!(try activeProductExists(registry, full_product_identifier, alloc))) {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"SOUP_PRODUCT_NOT_FOUND\"}"), false);
+    }
+    const bom_name = json_util.getString(root, "bom_name") orelse "SOUP Components";
+    const kind = json_util.getString(root, "kind") orelse "";
+
+    const active_cfg = try registry.activeConfig();
+    const old_credential_ref = if (active_cfg.soup_sync) |cfg| if (cfg.credential_ref) |value| try alloc.dupe(u8, value) else null else null;
+    defer if (old_credential_ref) |value| alloc.free(value);
+
+    var sync_cfg: workbook.config.SoupSyncConfig = undefined;
+    if (std.mem.eql(u8, kind, "local_xlsx")) {
+        const path = json_util.getString(root, "local_xlsx_path") orelse
+            return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"missing_local_xlsx_path\"}"), false);
+        validateLocalSoupWorkbook(path, alloc) catch |e| {
+            return shared.jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)}), false);
+        };
+        sync_cfg = .{
+            .kind = .local_xlsx,
+            .enabled = true,
+            .display_name = try alloc.dupe(u8, json_util.getString(root, "display_name") orelse "SOUP Workbook"),
+            .bom_name = try alloc.dupe(u8, bom_name),
+            .full_product_identifier = try alloc.dupe(u8, full_product_identifier),
+            .local_xlsx_path = try alloc.dupe(u8, path),
+        };
+    } else {
+        if (!secure_store_mod.backendSupported(store.*)) {
+            return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"secure_storage_unavailable\"}"), false);
+        }
+        var draft = connection_mod.parseDraftFromJson(body, alloc) catch |e| {
+            return shared.jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"{s}\"}}", .{@errorName(e)}), false);
+        };
+        defer draft.deinit(alloc);
+        var validated = connection_mod.validateDraft(draft, alloc) catch |e| {
+            return shared.jsonRouteResponse(.bad_request, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"failed to connect: {s}\"}}", .{@errorName(e)}), false);
+        };
+        defer validated.deinit(alloc);
+        const credential_ref = try secure_store_mod.generateCredentialRef(alloc);
+        defer alloc.free(credential_ref);
+        try store.put(alloc, credential_ref, validated.credential_json);
+        errdefer store.delete(alloc, credential_ref) catch {};
+
+        sync_cfg = .{
+            .kind = if (validated.platform == .google) .google else .excel,
+            .enabled = true,
+            .display_name = try alloc.dupe(u8, json_util.getString(root, "display_name") orelse validated.workbook_label),
+            .bom_name = try alloc.dupe(u8, bom_name),
+            .full_product_identifier = try alloc.dupe(u8, full_product_identifier),
+            .workbook_url = try alloc.dupe(u8, validated.workbook_url),
+            .workbook_label = try alloc.dupe(u8, validated.workbook_label),
+            .credential_ref = try alloc.dupe(u8, credential_ref),
+            .credential_display = if (validated.credential_display) |value| try alloc.dupe(u8, value) else null,
+            .google_sheet_id = switch (validated.target) {
+                .google => |google| try alloc.dupe(u8, google.sheet_id),
+                else => null,
+            },
+            .excel_drive_id = switch (validated.target) {
+                .excel => |excel| try alloc.dupe(u8, excel.drive_id),
+                else => null,
+            },
+            .excel_item_id = switch (validated.target) {
+                .excel => |excel| try alloc.dupe(u8, excel.item_id),
+                else => null,
+            },
+        };
+    }
+    defer sync_cfg.deinit(alloc);
+
+    try workbook.config.replaceActiveSoupSync(&registry.live_config, sync_cfg, alloc);
+    {
+        const runtime = try registry.active();
+        runtime.config.deinit(alloc);
+        runtime.config = try (try registry.activeConfig()).clone(alloc);
+    }
+    try registry.save(alloc);
+    if (old_credential_ref) |value| {
+        if (sync_cfg.credential_ref == null or !std.mem.eql(u8, value, sync_cfg.credential_ref.?)) {
+            store.delete(alloc, value) catch {};
+        }
+    }
+    return handleGetSoupSyncResponse(registry, alloc);
+}
+
+pub fn handleGetSoupSyncResponse(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) !shared.JsonRouteResponse {
+    const cfg = try registry.activeConfig();
+    const sync_cfg = cfg.soup_sync orelse {
+        return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"configured\":false}"), true);
+    };
+    const runtime = registry.active() catch null;
+    const db = if (runtime) |value| &value.db else null;
+    const last_sync_at = if (db) |db_ref| try db_ref.getConfig("soup_last_sync_at", alloc) else null;
+    defer if (last_sync_at) |value| alloc.free(value);
+    const last_sync_ok = if (db) |db_ref| try db_ref.getConfig("soup_last_sync_ok", alloc) else null;
+    defer if (last_sync_ok) |value| alloc.free(value);
+    const last_sync_error = if (db) |db_ref| try db_ref.getConfig("soup_last_sync_error", alloc) else null;
+    defer if (last_sync_error) |value| alloc.free(value);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"configured\":true,\"kind\":");
+    try shared.appendJsonStr(&buf, @tagName(sync_cfg.kind), alloc);
+    try buf.appendSlice(alloc, ",\"enabled\":");
+    try buf.appendSlice(alloc, if (sync_cfg.enabled) "true" else "false");
+    try buf.appendSlice(alloc, ",\"display_name\":");
+    try shared.appendJsonStr(&buf, sync_cfg.display_name, alloc);
+    try buf.appendSlice(alloc, ",\"bom_name\":");
+    try shared.appendJsonStrOpt(&buf, sync_cfg.bom_name, alloc);
+    try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+    try shared.appendJsonStr(&buf, sync_cfg.full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_url\":");
+    try shared.appendJsonStrOpt(&buf, sync_cfg.workbook_url, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_label\":");
+    try shared.appendJsonStrOpt(&buf, sync_cfg.workbook_label, alloc);
+    try buf.appendSlice(alloc, ",\"credential_display\":");
+    try shared.appendJsonStrOpt(&buf, sync_cfg.credential_display, alloc);
+    try buf.appendSlice(alloc, ",\"local_xlsx_path\":");
+    try shared.appendJsonStrOpt(&buf, sync_cfg.local_xlsx_path, alloc);
+    try buf.appendSlice(alloc, ",\"last_sync_at\":");
+    try shared.appendJsonStrOpt(&buf, last_sync_at, alloc);
+    try buf.appendSlice(alloc, ",\"last_sync_ok\":");
+    try shared.appendJsonStrOpt(&buf, last_sync_ok, alloc);
+    try buf.appendSlice(alloc, ",\"last_error\":");
+    try shared.appendJsonStrOpt(&buf, last_sync_error, alloc);
+    try buf.append(alloc, '}');
+    return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, buf.items), true);
+}
+
+pub fn handleDeleteSoupSyncResponse(registry: *workbook.registry.WorkbookRegistry, store: *secure_store_mod.Store, alloc: Allocator) !shared.JsonRouteResponse {
+    const cfg = try registry.activeConfig();
+    const old_ref = if (cfg.soup_sync) |sync_cfg| if (sync_cfg.credential_ref) |value| try alloc.dupe(u8, value) else null else null;
+    defer if (old_ref) |value| alloc.free(value);
+    try workbook.config.clearActiveSoupSync(&registry.live_config, alloc);
+    {
+        const runtime = try registry.active();
+        runtime.config.deinit(alloc);
+        runtime.config = try (try registry.activeConfig()).clone(alloc);
+    }
+    try registry.save(alloc);
+    if (old_ref) |value| store.delete(alloc, value) catch {};
+    return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true,\"configured\":false}"), true);
+}
+
 fn validateLocalDesignBomWorkbook(path: []const u8, alloc: Allocator) !void {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const sheets = try xlsx.parse(arena_state.allocator(), path);
     if (!sheetExists(sheets, "Design BOM")) return error.MissingDesignBomTab;
+}
+
+fn validateLocalSoupWorkbook(path: []const u8, alloc: Allocator) !void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const sheets = try xlsx.parse(arena_state.allocator(), path);
+    if (!sheetExists(sheets, "SOUP Components")) return error.MissingSoupTab;
+}
+
+fn activeProductExists(registry: *workbook.registry.WorkbookRegistry, full_product_identifier: []const u8, alloc: Allocator) !bool {
+    const runtime = try registry.active();
+    const product_id = try std.fmt.allocPrint(alloc, "product://{s}", .{full_product_identifier});
+    defer alloc.free(product_id);
+    const node = try runtime.db.getNode(product_id, alloc);
+    if (node) |value| {
+        shared.freeNode(value, alloc);
+        return true;
+    }
+    return false;
 }
 
 fn providerTabExists(tabs: []const online_provider.TabRef, want: []const u8) bool {

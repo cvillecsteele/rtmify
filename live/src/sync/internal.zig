@@ -18,6 +18,7 @@ pub const provider_common = @import("../provider_common.zig");
 pub const json_util = @import("../json_util.zig");
 pub const test_results = @import("../test_results.zig");
 pub const bom = @import("../bom.zig");
+pub const soup = @import("../soup.zig");
 
 pub const GraphDb = graph_live.GraphDb;
 pub const ProviderRuntime = online_provider.ProviderRuntime;

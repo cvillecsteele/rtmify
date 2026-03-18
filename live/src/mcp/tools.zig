@@ -210,6 +210,26 @@ pub fn buildToolPayload(
         const bom_name = try requireStringArg(args, "bom_name");
         const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
         return .{ .payload = jsonPayloadOwned(try internal.bom.bomImpactAnalysisJson(db, full_product_identifier, bom_name, include_obsolete, alloc)) };
+    } else if (std.mem.eql(u8, name, "list_software_boms")) {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.soup.listSoftwareBomsJson(db, full_product_identifier, bom_name, include_obsolete, alloc)) };
+    } else if (std.mem.eql(u8, name, "get_soup_components")) {
+        const full_product_identifier = try requireStringArg(args, "full_product_identifier");
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.soup.getSoupComponentsJson(db, full_product_identifier, bom_name orelse internal.soup.default_bom_name, include_obsolete, alloc)) };
+    } else if (std.mem.eql(u8, name, "soup_by_safety_class")) {
+        const full_product_identifier = try requireStringArg(args, "full_product_identifier");
+        const safety_class = try requireStringArg(args, "safety_class");
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.soup.soupSafetyClassesJson(db, full_product_identifier, safety_class, include_obsolete, alloc)) };
+    } else if (std.mem.eql(u8, name, "soup_by_license")) {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const license_filter = if (args) |a| internal.json_util.getString(a, "license") else null;
+        const include_obsolete = getBoolArg(args, "include_obsolete") orelse false;
+        return .{ .payload = jsonPayloadOwned(try internal.soup.soupLicensesJson(db, full_product_identifier, license_filter, include_obsolete, alloc)) };
     } else if (std.mem.eql(u8, name, "get_product_serials")) {
         const full_product_identifier = try requireStringArg(args, "full_product_identifier");
         return .{ .payload = jsonPayloadOwned(try internal.bom.getProductSerialsJson(db, full_product_identifier, alloc)) };

@@ -6,6 +6,7 @@ const provider_common = @import("../provider_common.zig");
 const workbook_paths = @import("paths.zig");
 
 pub const DesignBomSyncKind = enum { google, excel, local_xlsx };
+pub const SoupSyncKind = enum { google, excel, local_xlsx };
 
 pub const DesignBomSyncConfig = struct {
     kind: DesignBomSyncKind,
@@ -54,6 +55,59 @@ pub const DesignBomSyncConfig = struct {
     }
 };
 
+pub const SoupSyncConfig = struct {
+    kind: SoupSyncKind,
+    enabled: bool = true,
+    display_name: []const u8,
+    bom_name: ?[]const u8 = null,
+    full_product_identifier: []const u8,
+    workbook_url: ?[]const u8 = null,
+    workbook_label: ?[]const u8 = null,
+    credential_ref: ?[]const u8 = null,
+    credential_display: ?[]const u8 = null,
+    google_sheet_id: ?[]const u8 = null,
+    excel_drive_id: ?[]const u8 = null,
+    excel_item_id: ?[]const u8 = null,
+    local_xlsx_path: ?[]const u8 = null,
+    last_sync_at: i64 = 0,
+    last_error: ?[]const u8 = null,
+
+    pub fn deinit(self: *SoupSyncConfig, alloc: Allocator) void {
+        alloc.free(self.display_name);
+        if (self.bom_name) |v| alloc.free(v);
+        alloc.free(self.full_product_identifier);
+        if (self.workbook_url) |v| alloc.free(v);
+        if (self.workbook_label) |v| alloc.free(v);
+        if (self.credential_ref) |v| alloc.free(v);
+        if (self.credential_display) |v| alloc.free(v);
+        if (self.google_sheet_id) |v| alloc.free(v);
+        if (self.excel_drive_id) |v| alloc.free(v);
+        if (self.excel_item_id) |v| alloc.free(v);
+        if (self.local_xlsx_path) |v| alloc.free(v);
+        if (self.last_error) |v| alloc.free(v);
+    }
+
+    pub fn clone(self: SoupSyncConfig, alloc: Allocator) !SoupSyncConfig {
+        return .{
+            .kind = self.kind,
+            .enabled = self.enabled,
+            .display_name = try alloc.dupe(u8, self.display_name),
+            .bom_name = if (self.bom_name) |v| try alloc.dupe(u8, v) else null,
+            .full_product_identifier = try alloc.dupe(u8, self.full_product_identifier),
+            .workbook_url = if (self.workbook_url) |v| try alloc.dupe(u8, v) else null,
+            .workbook_label = if (self.workbook_label) |v| try alloc.dupe(u8, v) else null,
+            .credential_ref = if (self.credential_ref) |v| try alloc.dupe(u8, v) else null,
+            .credential_display = if (self.credential_display) |v| try alloc.dupe(u8, v) else null,
+            .google_sheet_id = if (self.google_sheet_id) |v| try alloc.dupe(u8, v) else null,
+            .excel_drive_id = if (self.excel_drive_id) |v| try alloc.dupe(u8, v) else null,
+            .excel_item_id = if (self.excel_item_id) |v| try alloc.dupe(u8, v) else null,
+            .local_xlsx_path = if (self.local_xlsx_path) |v| try alloc.dupe(u8, v) else null,
+            .last_sync_at = self.last_sync_at,
+            .last_error = if (self.last_error) |v| try alloc.dupe(u8, v) else null,
+        };
+    }
+};
+
 pub const WorkbookConfig = struct {
     id: []const u8,
     slug: []const u8,
@@ -72,6 +126,7 @@ pub const WorkbookConfig = struct {
     excel_drive_id: ?[]const u8 = null,
     excel_item_id: ?[]const u8 = null,
     design_bom_sync: ?DesignBomSyncConfig = null,
+    soup_sync: ?SoupSyncConfig = null,
 
     pub fn deinit(self: *WorkbookConfig, alloc: Allocator) void {
         alloc.free(self.id);
@@ -90,6 +145,7 @@ pub const WorkbookConfig = struct {
         if (self.excel_drive_id) |v| alloc.free(v);
         if (self.excel_item_id) |v| alloc.free(v);
         if (self.design_bom_sync) |*v| v.deinit(alloc);
+        if (self.soup_sync) |*v| v.deinit(alloc);
     }
 
     pub fn clone(self: WorkbookConfig, alloc: Allocator) !WorkbookConfig {
@@ -111,6 +167,7 @@ pub const WorkbookConfig = struct {
             .excel_drive_id = if (self.excel_drive_id) |v| try alloc.dupe(u8, v) else null,
             .excel_item_id = if (self.excel_item_id) |v| try alloc.dupe(u8, v) else null,
             .design_bom_sync = if (self.design_bom_sync) |v| try v.clone(alloc) else null,
+            .soup_sync = if (self.soup_sync) |v| try v.clone(alloc) else null,
         };
     }
 };
@@ -310,6 +367,18 @@ pub fn clearActiveDesignBomSync(cfg: *LiveConfig, alloc: Allocator) !void {
     const workbook = activeWorkbook(cfg) orelse return error.NoActiveWorkbook;
     if (workbook.design_bom_sync) |*existing| existing.deinit(alloc);
     workbook.design_bom_sync = null;
+}
+
+pub fn replaceActiveSoupSync(cfg: *LiveConfig, sync_cfg: SoupSyncConfig, alloc: Allocator) !void {
+    const workbook = activeWorkbook(cfg) orelse return error.NoActiveWorkbook;
+    if (workbook.soup_sync) |*existing| existing.deinit(alloc);
+    workbook.soup_sync = try sync_cfg.clone(alloc);
+}
+
+pub fn clearActiveSoupSync(cfg: *LiveConfig, alloc: Allocator) !void {
+    const workbook = activeWorkbook(cfg) orelse return error.NoActiveWorkbook;
+    if (workbook.soup_sync) |*existing| existing.deinit(alloc);
+    workbook.soup_sync = null;
 }
 
 pub fn renameWorkbook(cfg: *LiveConfig, id: []const u8, display_name: []const u8, alloc: Allocator) !void {
@@ -639,6 +708,7 @@ fn parseWorkbook(value: std.json.Value, alloc: Allocator) !WorkbookConfig {
         .excel_drive_id = try dupOptionalString(value, "excel_drive_id", alloc),
         .excel_item_id = try dupOptionalString(value, "excel_item_id", alloc),
         .design_bom_sync = try parseDesignBomSync(value, alloc),
+        .soup_sync = try parseSoupSync(value, alloc),
     };
 }
 
@@ -704,10 +774,23 @@ fn appendWorkbookJson(buf: *std.ArrayList(u8), workbook: WorkbookConfig, alloc: 
     } else {
         try buf.appendSlice(alloc, "null");
     }
+    try buf.appendSlice(alloc, ",\"soup_sync\":");
+    if (workbook.soup_sync) |soup_sync| {
+        try appendSoupSyncJson(buf, soup_sync, alloc);
+    } else {
+        try buf.appendSlice(alloc, "null");
+    }
     try buf.append(alloc, '}');
 }
 
 fn parseDesignBomSyncKind(value: []const u8) ?DesignBomSyncKind {
+    if (std.mem.eql(u8, value, "google")) return .google;
+    if (std.mem.eql(u8, value, "excel")) return .excel;
+    if (std.mem.eql(u8, value, "local_xlsx")) return .local_xlsx;
+    return null;
+}
+
+fn parseSoupSyncKind(value: []const u8) ?SoupSyncKind {
     if (std.mem.eql(u8, value, "google")) return .google;
     if (std.mem.eql(u8, value, "excel")) return .excel;
     if (std.mem.eql(u8, value, "local_xlsx")) return .local_xlsx;
@@ -768,6 +851,70 @@ fn appendDesignBomSyncJson(buf: *std.ArrayList(u8), design_bom_sync: DesignBomSy
     try std.fmt.format(buf.writer(alloc), ",\"last_sync_at\":{d}", .{design_bom_sync.last_sync_at});
     try buf.appendSlice(alloc, ",\"last_error\":");
     try appendJsonStringOpt(buf, design_bom_sync.last_error, alloc);
+    try buf.append(alloc, '}');
+}
+
+fn parseSoupSync(value: std.json.Value, alloc: Allocator) !?SoupSyncConfig {
+    const field = json_util.getObjectField(value, "soup_sync") orelse return null;
+    if (field == .null) return null;
+    if (field != .object) return error.InvalidJson;
+    const kind_raw = json_util.getString(field, "kind") orelse return error.InvalidJson;
+    const kind = parseSoupSyncKind(kind_raw) orelse return error.InvalidJson;
+    const enabled = if (json_util.getObjectField(field, "enabled")) |raw| switch (raw) {
+        .bool => raw.bool,
+        else => return error.InvalidJson,
+    } else true;
+    const display_name = json_util.getString(field, "display_name") orelse return error.InvalidJson;
+    const full_product_identifier = json_util.getString(field, "full_product_identifier") orelse return error.InvalidJson;
+    return .{
+        .kind = kind,
+        .enabled = enabled,
+        .display_name = try alloc.dupe(u8, display_name),
+        .bom_name = try dupOptionalString(field, "bom_name", alloc),
+        .full_product_identifier = try alloc.dupe(u8, full_product_identifier),
+        .workbook_url = try dupOptionalString(field, "workbook_url", alloc),
+        .workbook_label = try dupOptionalString(field, "workbook_label", alloc),
+        .credential_ref = try dupOptionalString(field, "credential_ref", alloc),
+        .credential_display = try dupOptionalString(field, "credential_display", alloc),
+        .google_sheet_id = try dupOptionalString(field, "google_sheet_id", alloc),
+        .excel_drive_id = try dupOptionalString(field, "excel_drive_id", alloc),
+        .excel_item_id = try dupOptionalString(field, "excel_item_id", alloc),
+        .local_xlsx_path = try dupOptionalString(field, "local_xlsx_path", alloc),
+        .last_sync_at = (try dupOptionalInt(field, "last_sync_at")) orelse 0,
+        .last_error = try dupOptionalString(field, "last_error", alloc),
+    };
+}
+
+fn appendSoupSyncJson(buf: *std.ArrayList(u8), soup_sync: SoupSyncConfig, alloc: Allocator) !void {
+    try buf.appendSlice(alloc, "{\"kind\":");
+    try json_util.appendJsonQuoted(buf, @tagName(soup_sync.kind), alloc);
+    try buf.appendSlice(alloc, ",\"enabled\":");
+    try buf.appendSlice(alloc, if (soup_sync.enabled) "true" else "false");
+    try buf.appendSlice(alloc, ",\"display_name\":");
+    try json_util.appendJsonQuoted(buf, soup_sync.display_name, alloc);
+    try buf.appendSlice(alloc, ",\"bom_name\":");
+    try appendJsonStringOpt(buf, soup_sync.bom_name, alloc);
+    try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+    try json_util.appendJsonQuoted(buf, soup_sync.full_product_identifier, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_url\":");
+    try appendJsonStringOpt(buf, soup_sync.workbook_url, alloc);
+    try buf.appendSlice(alloc, ",\"workbook_label\":");
+    try appendJsonStringOpt(buf, soup_sync.workbook_label, alloc);
+    try buf.appendSlice(alloc, ",\"credential_ref\":");
+    try appendJsonStringOpt(buf, soup_sync.credential_ref, alloc);
+    try buf.appendSlice(alloc, ",\"credential_display\":");
+    try appendJsonStringOpt(buf, soup_sync.credential_display, alloc);
+    try buf.appendSlice(alloc, ",\"google_sheet_id\":");
+    try appendJsonStringOpt(buf, soup_sync.google_sheet_id, alloc);
+    try buf.appendSlice(alloc, ",\"excel_drive_id\":");
+    try appendJsonStringOpt(buf, soup_sync.excel_drive_id, alloc);
+    try buf.appendSlice(alloc, ",\"excel_item_id\":");
+    try appendJsonStringOpt(buf, soup_sync.excel_item_id, alloc);
+    try buf.appendSlice(alloc, ",\"local_xlsx_path\":");
+    try appendJsonStringOpt(buf, soup_sync.local_xlsx_path, alloc);
+    try std.fmt.format(buf.writer(alloc), ",\"last_sync_at\":{d}", .{soup_sync.last_sync_at});
+    try buf.appendSlice(alloc, ",\"last_error\":");
+    try appendJsonStringOpt(buf, soup_sync.last_error, alloc);
     try buf.append(alloc, '}');
 }
 

@@ -99,6 +99,38 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
         try buf.append(alloc, ']');
     }
 
+    if (design_boms.items.len > 0) {
+        _ = buf.pop();
+        var added_software_index = false;
+        var count: usize = 0;
+        for (design_boms.items) |bom_node| {
+            const bom_type = internal.json_util.extractJsonFieldStatic(bom_node.properties, "bom_type") orelse continue;
+            if (!std.mem.eql(u8, bom_type, "software")) continue;
+            if (!added_software_index) {
+                try buf.append(alloc, ',');
+                try buf.appendSlice(alloc, "{\"uri\":\"software-boms://\",\"name\":\"Software BOMs\",\"description\":\"Software Design BOM and SOUP register inventory for the active workbook.\",\"mimeType\":\"text/markdown\"}");
+                added_software_index = true;
+            }
+            const full_product_identifier = internal.json_util.extractJsonFieldStatic(bom_node.properties, "full_product_identifier") orelse continue;
+            const bom_name = internal.json_util.extractJsonFieldStatic(bom_node.properties, "bom_name") orelse continue;
+            const uri = try std.fmt.allocPrint(alloc, "soup-components://{s}/{s}", .{ full_product_identifier, bom_name });
+            defer alloc.free(uri);
+            const display_name = try std.fmt.allocPrint(alloc, "SOUP {s} / {s}", .{ full_product_identifier, bom_name });
+            defer alloc.free(display_name);
+            try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"uri\":");
+            try internal.json_util.appendJsonQuoted(&buf, uri, alloc);
+            try buf.appendSlice(alloc, ",\"name\":");
+            try internal.json_util.appendJsonQuoted(&buf, display_name, alloc);
+            try buf.appendSlice(alloc, ",\"description\":");
+            try internal.json_util.appendJsonQuoted(&buf, "Flattened SOUP/software component register with statuses and unresolved refs.", alloc);
+            try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+            count += 1;
+            if (count >= 5) break;
+        }
+        try buf.append(alloc, ']');
+    }
+
     if (bom_items.items.len > 0) {
         _ = buf.pop();
         for (bom_items.items, 0..) |item, idx| {
@@ -116,6 +148,38 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
             try internal.json_util.appendJsonQuoted(&buf, "Parent chains plus resolved and unresolved requirement/test links for this BOM item.", alloc);
             try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
         }
+        var soup_count: usize = 0;
+        for (bom_items.items) |item| {
+            if (soup_count >= 5) break;
+            if (!std.mem.containsAtLeast(u8, item.id, 1, "/software/")) continue;
+            const part = internal.json_util.extractJsonFieldStatic(item.properties, "part") orelse continue;
+            const revision = internal.json_util.extractJsonFieldStatic(item.properties, "revision") orelse continue;
+            const bom_prefix = "bom-item://";
+            if (!std.mem.startsWith(u8, item.id, bom_prefix)) continue;
+            const rest = item.id[bom_prefix.len..];
+            const slash1 = std.mem.indexOfScalar(u8, rest, '/') orelse continue;
+            const slash2_rel = std.mem.indexOfScalar(u8, rest[slash1 + 1 ..], '/') orelse continue;
+            const bom_name = rest[slash1 + 1 + slash2_rel + 1 ..];
+            const at = std.mem.lastIndexOfScalar(u8, bom_name, '@') orelse continue;
+            const soup_uri = try std.fmt.allocPrint(alloc, "soup-component://{s}/{s}/{s}@{s}", .{
+                rest[0..slash1],
+                bom_name[0..at],
+                part,
+                revision,
+            });
+            defer alloc.free(soup_uri);
+            const display_name = try std.fmt.allocPrint(alloc, "SOUP Component {s}@{s}", .{ part, revision });
+            defer alloc.free(display_name);
+            try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"uri\":");
+            try internal.json_util.appendJsonQuoted(&buf, soup_uri, alloc);
+            try buf.appendSlice(alloc, ",\"name\":");
+            try internal.json_util.appendJsonQuoted(&buf, display_name, alloc);
+            try buf.appendSlice(alloc, ",\"description\":");
+            try internal.json_util.appendJsonQuoted(&buf, "SOUP component drill-down with trace links, anomaly fields, and unresolved refs.", alloc);
+            try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+            soup_count += 1;
+        }
         try buf.append(alloc, ']');
     }
 
@@ -127,6 +191,12 @@ pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestConte
     const alloc = req_ctx.alloc;
     const text = if (std.mem.startsWith(u8, uri, "design-bom://"))
         try designBomMarkdown(uri["design-bom://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.eql(u8, uri, "software-boms://"))
+        try softwareBomsMarkdown(runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "soup-components://"))
+        try soupComponentsMarkdown(uri["soup-components://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "soup-component://"))
+        try soupComponentMarkdown(uri["soup-component://".len..], runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "bom-item://"))
         try bomItemTraceMarkdown(uri, runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "requirement://"))
@@ -270,6 +340,73 @@ fn bomItemTraceMarkdown(item_id: []const u8, db: *internal.graph_live.GraphDb, a
     try appendStringArraySection(&buf, "Unresolved Requirement IDs", internal.json_util.getObjectField(parsed.value, "unresolved_requirement_ids"), alloc);
     try appendStringArraySection(&buf, "Unresolved Test IDs", internal.json_util.getObjectField(parsed.value, "unresolved_test_ids"), alloc);
     return alloc.dupe(u8, buf.items);
+}
+
+fn soupComponentsMarkdown(path: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const slash = std.mem.indexOfScalar(u8, path, '/') orelse return error.InvalidArgument;
+    const full_product_identifier = path[0..slash];
+    const bom_name = path[slash + 1 ..];
+    return @constCast(try internal.soup.soupRegisterMarkdown(db, full_product_identifier, bom_name, false, alloc));
+}
+
+fn softwareBomsMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const json = try internal.soup.listSoftwareBomsJson(db, null, null, false, alloc);
+    defer alloc.free(json);
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, json, .{});
+    defer parsed.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "# Software BOMs\n\n");
+    const rows = internal.json_util.getObjectField(parsed.value, "software_boms") orelse return alloc.dupe(u8, buf.items);
+    if (rows != .array or rows.array.items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n");
+        return alloc.dupe(u8, buf.items);
+    }
+    for (rows.array.items) |row| {
+        const product = internal.json_util.getString(row, "full_product_identifier") orelse "unknown";
+        const bom_name = internal.json_util.getString(row, "bom_name") orelse "SOUP Components";
+        const source_format = internal.json_util.getString(row, "source_format") orelse "unknown";
+        const item_count: i64 = if (internal.json_util.getObjectField(row, "item_count")) |v| switch (v) {
+            .integer => v.integer,
+            else => 0,
+        } else 0;
+        const warning_count: i64 = if (internal.json_util.getObjectField(row, "warning_count")) |v| switch (v) {
+            .integer => v.integer,
+            else => 0,
+        } else 0;
+        try std.fmt.format(buf.writer(alloc), "- `{s}` / `{s}` — source `{s}` — items {d} — warnings {d}\n", .{
+            product,
+            bom_name,
+            source_format,
+            item_count,
+            warning_count,
+        });
+    }
+    return alloc.dupe(u8, buf.items);
+}
+
+fn soupComponentMarkdown(path: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const slash1 = std.mem.indexOfScalar(u8, path, '/') orelse return error.InvalidArgument;
+    const full_product_identifier = path[0..slash1];
+    const rest = path[slash1 + 1 ..];
+    const slash2 = std.mem.indexOfScalar(u8, rest, '/') orelse return error.InvalidArgument;
+    const bom_name = rest[0..slash2];
+    const part_and_rev = rest[slash2 + 1 ..];
+    const at = std.mem.lastIndexOfScalar(u8, part_and_rev, '@') orelse return error.InvalidArgument;
+    const part = part_and_rev[0..at];
+    const revision = part_and_rev[at + 1 ..];
+    const item_id = try std.fmt.allocPrint(alloc, "bom-item://{s}/software/{s}/{s}@{s}", .{
+        full_product_identifier,
+        bom_name,
+        part,
+        revision,
+    });
+    defer alloc.free(item_id);
+    return bomItemTraceMarkdown(item_id, db, alloc);
 }
 
 fn appendParentChainsSection(buf: *std.ArrayList(u8), value: ?std.json.Value, alloc: internal.Allocator) !void {

@@ -12,6 +12,7 @@ pub const json_util = @import("../json_util.zig");
 pub const chain_mod = @import("../chain.zig");
 pub const test_results = @import("../test_results.zig");
 pub const bom = @import("../bom.zig");
+pub const soup = @import("../soup.zig");
 pub const workbook = @import("../workbook/mod.zig");
 pub const shared = @import("../routes/shared.zig");
 

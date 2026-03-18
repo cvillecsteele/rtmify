@@ -55,6 +55,22 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
     } else if (std.mem.eql(u8, name, "component_substitute")) blk: {
         const part = try tools.requireStringArg(args, "part");
         break :blk try std.fmt.allocPrint(alloc, "Evaluate substitute risk for part {s}. First call find_part_usage with part={s}. Then inspect the most important affected items with get_bom_item. Return sections: Current Usage, Trace Links Potentially Affected, Verification/Requirement Exposure, and Questions Before Approving a Substitute. Do not assume interchangeability unless the graph explicitly supports it.", .{ part, part });
+    } else if (std.mem.eql(u8, name, "soup_audit_prep")) blk: {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        break :blk try std.fmt.allocPrint(alloc, "Prepare a SOUP audit summary. Call list_software_boms with full_product_identifier={s} bom_name={s}. Then call get_soup_components and bom_gaps for the most relevant SOUP register. If available, read soup-components://{s}/{s}. Return sections: Inventory, Anomaly Documentation, Requirement/Test Linkage, Unresolved Refs, and Audit Risks. Make the canonical-source rule explicit if the same BOM could also come from CycloneDX/SPDX.", .{
+            full_product_identifier orelse "*",
+            bom_name orelse "*",
+            full_product_identifier orelse "*",
+            bom_name orelse internal.soup.default_bom_name,
+        });
+    } else if (std.mem.eql(u8, name, "soup_coverage")) blk: {
+        const full_product_identifier = if (args) |a| internal.json_util.getString(a, "full_product_identifier") else null;
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        break :blk try std.fmt.allocPrint(alloc, "Summarize SOUP coverage for product={s} bom_name={s}. Call list_software_boms, get_soup_components, soup_by_license, and bom_gaps. Return sections: Component Inventory, Safety Classes, Licenses, Requirement/Test Coverage, and Highest-Risk Gaps. Call out items with unknown version or missing anomaly evaluation explicitly.", .{
+            full_product_identifier orelse "*",
+            bom_name orelse "*",
+        });
     } else return error.NotFound;
     defer alloc.free(body);
     const heading = try workbooks.workbookHeading(req_ctx.registry, alloc);

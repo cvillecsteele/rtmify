@@ -1302,6 +1302,7 @@
 <nav class="nav-primary">
   <button class="active" data-group="data" onclick="showGroup('data')">Data</button>
   <button data-group="bom" onclick="showGroup('bom')">BOM</button>
+  <button data-group="soup" onclick="showGroup('soup')">Software / SOUP</button>
   <button data-group="analysis" onclick="showGroup('analysis')">
     Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
   </button>
@@ -1318,6 +1319,7 @@
     <div class="settings-dropdown" id="settings-panel" style="display:none">
       <button onclick="showSettingsTab('workbooks')">Workbooks</button>
       <button onclick="showSettingsTab('design-bom-sync')">Design BOM Sync</button>
+      <button onclick="showSettingsTab('soup-sync')">SOUP Sync</button>
       <button onclick="showSettingsTab('info')">System Info</button>
     </div>
   </div>
@@ -1340,6 +1342,15 @@
   <button data-tab="bom-usage" onclick="showTab('bom-usage')">Part Usage</button>
   <button data-tab="bom-gaps" onclick="showTab('bom-gaps')">BOM Gaps</button>
   <button data-tab="bom-impact" onclick="showTab('bom-impact')">Impact</button>
+</div>
+
+<!-- SOUP sub-nav -->
+<div class="nav-sub" data-group="soup">
+  <button class="active" data-tab="software-boms" onclick="showTab('software-boms')">SOUP Registers</button>
+  <button data-tab="soup-components" onclick="showTab('soup-components')">Components</button>
+  <button data-tab="soup-gaps" onclick="showTab('soup-gaps')">Gaps</button>
+  <button data-tab="soup-licenses" onclick="showTab('soup-licenses')">Licenses</button>
+  <button data-tab="soup-safety" onclick="showTab('soup-safety')">Safety Classes</button>
 </div>
 
 <!-- Analysis sub-nav -->
@@ -1523,6 +1534,136 @@
     </label>
     <div id="bom-impact-error" class="error-banner" style="display:none"></div>
     <div id="bom-impact-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- Software / SOUP tab -->
+  <section id="tab-software-boms">
+    <div class="toolbar">
+      <h2>Software / SOUP</h2>
+      <button class="btn" onclick="loadSoupWorkspace(true)">Refresh</button>
+    </div>
+    <div id="software-boms-error" class="error-banner" style="display:none"></div>
+    <div class="card card--mb card--padded">
+      <div class="bom-upload-zone" id="soup-upload-zone">
+        <div>
+          <div class="bom-upload-title">Upload SOUP register</div>
+          <div class="bom-upload-subtitle">Drop or choose `.json` or `.xlsx`. SOUP `.xlsx` uploads require a product anchor and use the <code>SOUP Components</code> tab.</div>
+        </div>
+        <div class="bom-inline-actions">
+          <button class="btn" onclick="document.getElementById('soup-upload-input').click()">Choose File</button>
+          <a class="btn" href="/RTMify_SOUP_Template.xlsx">Download Template</a>
+        </div>
+      </div>
+      <div class="bom-sync-grid mt-12">
+        <input id="soup-upload-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier for .xlsx uploads">
+        <input id="soup-upload-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (optional, defaults to SOUP Components)">
+      </div>
+      <input id="soup-upload-input" type="file" accept=".json,.xlsx,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">
+      <div id="soup-upload-result" class="text-sm-subtle mt-12">No upload yet.</div>
+      <div class="text-sm-subtle mt-12">Canonical-source rule: if a SOUP sheet and an automated CycloneDX/SPDX ingest target the same product + BOM name, the last writer wins. Use different <code>bom_name</code> values if you want them to coexist.</div>
+    </div>
+    <div class="card card--mb card--padded">
+      <label class="text-sm-subtle mb-10" style="display:block">
+        <input id="software-boms-include-obsolete" type="checkbox" onchange="loadSoupWorkspace(true)">
+        Include obsolete products
+      </label>
+      <h3 class="mb-10">Available Software BOMs / SOUP Registers</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Status</th>
+            <th>BOM Name</th>
+            <th>Source</th>
+            <th>Items</th>
+            <th>Warnings</th>
+            <th>Ingested</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="software-bom-list-body">
+          <tr><td colspan="8" class="empty-state">Loading software BOMs…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card card--padded">
+      <div id="software-bom-detail">
+        <div class="empty-state">Select a software BOM or SOUP register to inspect component traceability, anomaly notes, and unresolved links.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SOUP components tab -->
+  <section id="tab-soup-components">
+    <div class="toolbar">
+      <h2>SOUP Components</h2>
+      <button class="btn" onclick="loadSoupComponents()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="soup-components-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier" aria-label="SOUP product filter">
+      <input id="soup-components-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (optional)" aria-label="SOUP BOM name filter">
+      <input id="soup-components-search" class="lobby-input lobby-input--no-mb" type="text" placeholder="Search component, license, supplier, or category" aria-label="SOUP search" onkeydown="if(event.key==='Enter') loadSoupComponents()">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="soup-components-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="soup-components-error" class="error-banner" style="display:none"></div>
+    <div id="soup-components-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- SOUP gaps tab -->
+  <section id="tab-soup-gaps">
+    <div class="toolbar">
+      <h2>SOUP Gaps</h2>
+      <button class="btn" onclick="loadSoupGaps()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="soup-gaps-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="SOUP gap product filter">
+      <input id="soup-gaps-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (optional)" aria-label="SOUP gap BOM name filter">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="soup-gaps-include-inactive" type="checkbox">
+      Include superseded, EOL, and obsolete products
+    </label>
+    <div id="soup-gaps-error" class="error-banner" style="display:none"></div>
+    <div id="soup-gaps-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- SOUP licenses tab -->
+  <section id="tab-soup-licenses">
+    <div class="toolbar">
+      <h2>SOUP Licenses</h2>
+      <button class="btn" onclick="loadSoupLicenses()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="soup-licenses-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="SOUP license product filter">
+      <input id="soup-licenses-license" class="lobby-input lobby-input--no-mb" type="text" placeholder="License substring (optional)" aria-label="SOUP license filter" onkeydown="if(event.key==='Enter') loadSoupLicenses()">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="soup-licenses-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="soup-licenses-error" class="error-banner" style="display:none"></div>
+    <div id="soup-licenses-result" class="bom-result-block"></div>
+  </section>
+
+  <!-- SOUP safety classes tab -->
+  <section id="tab-soup-safety">
+    <div class="toolbar">
+      <h2>SOUP Safety Classes</h2>
+      <button class="btn" onclick="loadSoupSafetyClasses()">Refresh</button>
+    </div>
+    <div class="bom-sync-grid mb-12">
+      <input id="soup-safety-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier" aria-label="SOUP safety-class product filter">
+      <input id="soup-safety-class" class="lobby-input lobby-input--no-mb" type="text" placeholder="Safety class (optional)" aria-label="SOUP safety class filter" onkeydown="if(event.key==='Enter') loadSoupSafetyClasses()">
+    </div>
+    <label class="text-sm-subtle mb-12" style="display:block">
+      <input id="soup-safety-include-obsolete" type="checkbox">
+      Include obsolete products
+    </label>
+    <div id="soup-safety-error" class="error-banner" style="display:none"></div>
+    <div id="soup-safety-result" class="bom-result-block"></div>
   </section>
 
   <!-- User Needs tab -->
@@ -1956,6 +2097,71 @@ audit_readiness_summary(profile="aerospace")</div>
     </div>
   </section>
 
+  <!-- SOUP Sync tab -->
+  <section id="tab-soup-sync">
+    <div class="toolbar">
+      <h2>SOUP Sync</h2>
+      <button class="btn" onclick="loadSoupSyncSettings(true)">Refresh</button>
+    </div>
+    <div id="soup-sync-error" class="error-banner" style="display:none"></div>
+    <div class="card card--mb card--padded">
+      <h3 class="mb-10">Current Status</h3>
+      <dl id="soup-sync-status" class="bom-status-list">
+        <dt>State</dt><dd>Loading…</dd>
+      </dl>
+    </div>
+    <div class="card card--padded">
+      <h3 class="mb-10">Configure Secondary SOUP Source</h3>
+      <div class="bom-sync-grid">
+        <div>
+          <label class="lobby-label" for="soup-sync-kind">Source Kind</label>
+          <select id="soup-sync-kind" class="lobby-input lobby-input--no-mb" onchange="toggleSoupSyncKind()">
+            <option value="local_xlsx">Local XLSX</option>
+            <option value="google">Google Sheets</option>
+            <option value="excel">Excel Online</option>
+          </select>
+        </div>
+        <div>
+          <label class="lobby-label" for="soup-sync-display-name">Display Name</label>
+          <input id="soup-sync-display-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP Workbook">
+        </div>
+        <div>
+          <label class="lobby-label" for="soup-sync-product">Product Anchor</label>
+          <input id="soup-sync-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier">
+        </div>
+        <div>
+          <label class="lobby-label" for="soup-sync-bom-name">SOUP BOM Name</label>
+          <input id="soup-sync-bom-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP Components">
+        </div>
+      </div>
+      <div id="soup-sync-local" class="bom-sync-provider active mt-12">
+        <label class="lobby-label" for="soup-sync-local-path">Local XLSX Path</label>
+        <input id="soup-sync-local-path" class="lobby-input lobby-input--no-mb" type="text" placeholder="/absolute/path/to/soup.xlsx">
+      </div>
+      <div id="soup-sync-provider" class="bom-sync-provider mt-12">
+        <label class="lobby-label" for="soup-sync-workbook-url">Workbook URL</label>
+        <input id="soup-sync-workbook-url" class="lobby-input" type="text" placeholder="https://docs.google.com/spreadsheets/d/...">
+        <div id="soup-sync-google" class="bom-sync-provider active">
+          <label class="lobby-label" for="soup-sync-google-json">Google Service Account JSON</label>
+          <textarea id="soup-sync-google-json" class="lobby-input lobby-input--no-mb" rows="6" placeholder='{"client_email":"...","private_key":"..."}'></textarea>
+        </div>
+        <div id="soup-sync-excel" class="bom-sync-provider">
+          <div class="bom-sync-grid">
+            <input id="soup-sync-excel-tenant" class="lobby-input lobby-input--no-mb" type="text" placeholder="Azure tenant ID">
+            <input id="soup-sync-excel-client" class="lobby-input lobby-input--no-mb" type="text" placeholder="Azure client ID">
+            <input id="soup-sync-excel-secret" class="lobby-input lobby-input--no-mb" type="password" placeholder="Azure client secret">
+          </div>
+        </div>
+      </div>
+      <div class="bom-inline-actions">
+        <button class="btn" onclick="validateSoupSync()">Validate</button>
+        <button class="btn" onclick="saveSoupSync()">Save</button>
+        <button class="btn-danger" onclick="deleteSoupSync()">Remove</button>
+      </div>
+      <div class="text-sm-subtle mt-12">SOUP sync is read-only. The product anchor is stored in config and the workbook is never written back.</div>
+    </div>
+  </section>
+
   <!-- Info tab -->
   <section id="tab-info">
     <div class="toolbar">
@@ -2051,6 +2257,22 @@ audit_readiness_summary(profile="aerospace")</div>
           <button class="btn" onclick="downloadDesignBomReport('pdf')">PDF</button>
           <button class="btn" onclick="downloadDesignBomReport()">Markdown</button>
           <button class="btn" onclick="downloadDesignBomReport('docx')">Word (.docx)</button>
+        </div>
+      </div>
+      <div class="report-card">
+        <h3>SOUP Register Report</h3>
+        <p>
+          Product-scoped SOUP register with component metadata, anomaly notes, safety classes,
+          linked requirements/tests, unresolved refs, and SOUP-specific statuses.
+        </p>
+        <div class="bom-sync-grid mb-12">
+          <input id="report-soup-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier">
+          <input id="report-soup-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (defaults to SOUP Components)">
+        </div>
+        <div class="btn-group">
+          <button class="btn" onclick="downloadSoupReport('pdf')">PDF</button>
+          <button class="btn" onclick="downloadSoupReport()">Markdown</button>
+          <button class="btn" onclick="downloadSoupReport('docx')">Word (.docx)</button>
         </div>
       </div>
     </div>

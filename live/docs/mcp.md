@@ -27,6 +27,9 @@ RTMify exposes:
 
 Canonical resource URIs:
 - `design-bom://<full_product_identifier>/<bom_name>`
+- `software-boms://`
+- `soup-components://<full_product_identifier>/<bom_name>`
+- `soup-component://<full_product_identifier>/<bom_name>/<part>@<revision>`
 - `bom-item://<full_product_identifier>/<bom_type>/<bom_name>/<part>@<revision>`
 - `requirement://<id>`
 - `user-need://<id>`
@@ -57,6 +60,13 @@ Resource bodies are returned as Markdown.
 - resolved linked Requirement and Test nodes
 - unresolved declared refs that did not match the graph
 
+`soup-components://...` is the SOUP/software register read model. It summarizes:
+- component inventory
+- supplier, license, purl, and safety class
+- anomaly documentation and evaluation text
+- resolved and unresolved requirement/test links
+- SOUP status flags such as `SOUP_VERSION_UNKNOWN`
+
 When node-like resources include edge lists, the Markdown now preserves
 non-null edge properties inline. This matters most for BOM `CONTAINS`
 relationships, where occurrence data such as `quantity`, `ref_designator`,
@@ -76,7 +86,7 @@ RTMify MCP tools are split into two output classes:
 Structured data tools include:
 - graph queries such as `get_rtm`, `get_node`, `search`, `get_schema`
 - verification/test-result queries such as `get_execution`, `get_verification_status`
-- BOM queries such as `get_bom`, `get_bom_item`, `list_design_boms`, `find_part_usage`, `bom_gaps`, `bom_impact_analysis`, `get_product_serials`
+- BOM queries such as `get_bom`, `get_bom_item`, `list_design_boms`, `find_part_usage`, `bom_gaps`, `bom_impact_analysis`, `list_software_boms`, `get_soup_components`, `soup_by_safety_class`, `soup_by_license`, `get_product_serials`
 
 Narrative tools include:
 - `requirement_trace`
@@ -217,6 +227,61 @@ Built-in prompts:
 - `eol_impact`
 - `bom_coverage`
 - `component_substitute`
+- `soup_audit_prep`
+- `soup_coverage`
+
+## SOUP Tool Contracts
+
+### `list_software_boms`
+
+Returns software `DesignBOM` summaries, including manual SOUP registers and automated SBOM ingests. Optional filters:
+
+- `full_product_identifier`
+- `bom_name`
+- `include_obsolete`
+
+### `get_soup_components`
+
+Arguments:
+
+- `full_product_identifier` required
+- `bom_name` optional, defaults to `SOUP Components`
+- `include_obsolete` optional
+
+Returns flattened component rows with:
+
+- `part`
+- `revision`
+- `supplier`
+- `category`
+- `license`
+- `purl`
+- `safety_class`
+- `known_anomalies`
+- `anomaly_evaluation`
+- declared and linked requirement/test counts
+- unresolved declared refs
+- SOUP status flags
+
+### `soup_by_safety_class`
+
+Arguments:
+
+- `full_product_identifier` required
+- `safety_class` required
+- `include_obsolete` optional
+
+Returns software components filtered to one product and one safety class.
+
+### `soup_by_license`
+
+Arguments:
+
+- `full_product_identifier` optional
+- `license` optional
+- `include_obsolete` optional
+
+Returns software components filtered by product and/or a license substring.
 
 `inspect_bom_item_traceability` is the guided entrypoint for BOM trace review.
 It accepts either:

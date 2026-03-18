@@ -193,7 +193,7 @@ and the shared template/report path ignore both tabs entirely in this cut.
 | `Product` | Live-only product declaration row keyed by `full_identifier` for future manufacturing joins | `assembly`, `revision`, `full_identifier`, `description`, `product_status` |
 | `Decomposition` | Live-only requirement refinement rows that create `REFINED_BY` edges between Requirement nodes | `parent_id`, `child_id` |
 | `DesignBOM` | Live-only named hardware or software BOM attached to a Product | `bom_class`, `full_product_identifier`, `bom_name`, `bom_type`, `source_format`, `ingested_at` |
-| `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `requirement_ids`, `test_ids`, `purl`, `license`, `hashes` |
+| `BOMItem` | Live-only component or package node namespaced to one BOM | `part`, `revision`, `description`, `category`, `supplier`, `requirement_ids`, `test_ids`, `purl`, `license`, `hashes`, `safety_class`, `known_anomalies`, `anomaly_evaluation` |
 | `DesignInput` | Formal design input derived from a requirement (FDA/IEC 62304) | `description`, `source_req`, `status` |
 | `DesignOutput` | Design artifact satisfying a design input (drawing, spec, firmware, BOM) | `description`, `type`, `version`, `status` |
 | `SourceFile` | A source code file in the working tree linked to a requirement or design output | `path`, `language`, `last_modified`, `line_count` |

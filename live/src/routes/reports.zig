@@ -9,6 +9,7 @@ const render_pdf = rtmify.render_pdf;
 const graph_live = @import("../graph_live.zig");
 const adapter = @import("../adapter.zig");
 const bom = @import("../bom.zig");
+const soup = @import("../soup.zig");
 const json_util = @import("../json_util.zig");
 const design_history_core = @import("../design_history.zig");
 const design_history_md = @import("../design_history_md.zig");
@@ -93,6 +94,46 @@ pub fn handleReportDesignBomDocx(
     alloc: Allocator,
 ) ![]const u8 {
     const markdown = try buildDesignBomMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(markdown);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try render_docx.renderDocxFromMarkdown(markdown, buf.writer(alloc));
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn handleReportSoupMd(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    return soup.soupRegisterMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
+}
+
+pub fn handleReportSoupPdf(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    const markdown = try soup.soupRegisterMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
+    defer alloc.free(markdown);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try render_pdf.renderPdfFromMarkdown(markdown, buf.writer(alloc));
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn handleReportSoupDocx(
+    db: *graph_live.GraphDb,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+    include_obsolete: bool,
+    alloc: Allocator,
+) ![]const u8 {
+    const markdown = try soup.soupRegisterMarkdown(db, full_product_identifier, bom_name, include_obsolete, alloc);
     defer alloc.free(markdown);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);

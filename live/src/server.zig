@@ -297,6 +297,11 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/soup-sync")) {
+            const resp = try routes.handleGetSoupSyncResponse(ctx.registry, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/license/info")) {
             const resp = try routes.handleLicenseInfo(ctx.license_service, alloc);
             response_status = resp.status;
@@ -356,6 +361,86 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
                 requestHeaderValue(req, "Authorization"),
                 full_product_identifier,
                 bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetSoupListResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup/components")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetSoupComponentsResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup/gaps")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const include_inactive = queryParamBool(target, "include_inactive");
+            const resp = try routes.handleGetSoupGapsResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                bom_name,
+                include_inactive,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup/licenses")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const license_filter = try queryParamDecoded(target, "license", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetSoupLicensesResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                license_filter,
+                include_obsolete,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup/safety-classes")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const safety_class = try queryParamDecoded(target, "safety_class", alloc);
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const resp = try routes.handleGetSoupSafetyClassesResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                full_product_identifier,
+                safety_class,
                 include_obsolete,
                 alloc,
             );
@@ -525,6 +610,51 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = .ok;
             response_bytes = body.len;
             try sendDocxNamed(req, body, "design-bom.docx");
+        } else if (std.mem.eql(u8, path, "/report/soup.md")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            if (full_product_identifier == null) {
+                const err_body = try alloc.dupe(u8, "{\"error\":\"missing_full_product_identifier\"}");
+                response_status = .bad_request;
+                response_bytes = err_body.len;
+                try sendJsonWithStatus(req, err_body, .bad_request);
+                return;
+            }
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const body = try routes.handleReportSoupMd(db.?, full_product_identifier.?, bom_name orelse "SOUP Components", include_obsolete, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendText(req, body, "text/markdown");
+        } else if (std.mem.eql(u8, path, "/report/soup")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            if (full_product_identifier == null) {
+                const err_body = try alloc.dupe(u8, "{\"error\":\"missing_full_product_identifier\"}");
+                response_status = .bad_request;
+                response_bytes = err_body.len;
+                try sendJsonWithStatus(req, err_body, .bad_request);
+                return;
+            }
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const body = try routes.handleReportSoupPdf(db.?, full_product_identifier.?, bom_name orelse "SOUP Components", include_obsolete, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendPdfNamed(req, body, "soup-register.pdf");
+        } else if (std.mem.eql(u8, path, "/report/soup.docx")) {
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            if (full_product_identifier == null) {
+                const err_body = try alloc.dupe(u8, "{\"error\":\"missing_full_product_identifier\"}");
+                response_status = .bad_request;
+                response_bytes = err_body.len;
+                try sendJsonWithStatus(req, err_body, .bad_request);
+                return;
+            }
+            const include_obsolete = queryParamBool(target, "include_obsolete");
+            const body = try routes.handleReportSoupDocx(db.?, full_product_identifier.?, bom_name orelse "SOUP Components", include_obsolete, alloc);
+            response_status = .ok;
+            response_bytes = body.len;
+            try sendDocxNamed(req, body, "soup-register.docx");
         } else if (std.mem.eql(u8, path, "/report/rtm")) {
             const body = try routes.handleReportRtmPdf(db.?, alloc);
             response_status = .ok;
@@ -691,6 +821,12 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/soup-sync/validate")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handleSoupSyncValidateResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/connection")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleConnectionResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
@@ -703,6 +839,15 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         } else if (std.mem.eql(u8, path, "/api/design-bom-sync")) {
             const body_bytes = try readBody(req, alloc);
             const resp = try routes.handleDesignBomSyncResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
+            if (resp.ok) {
+                if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
+            }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/soup-sync")) {
+            const body_bytes = try readBody(req, alloc);
+            const resp = try routes.handleSoupSyncResponse(ctx.registry, ctx.secure_store, body_bytes, alloc);
             if (resp.ok) {
                 if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
             }
@@ -777,6 +922,51 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             response_status = resp.status;
             response_bytes = resp.body.len;
             try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup/xlsx")) {
+            const body_bytes = readBodyLimited(req, alloc, bom_body_limit_bytes) catch |err| switch (err) {
+                error.StreamTooLong => {
+                    response_status = .payload_too_large;
+                    response_bytes = payload_too_large_json.len;
+                    try sendJsonWithStatus(req, payload_too_large_json, .payload_too_large);
+                    return;
+                },
+                else => return err,
+            };
+            const full_product_identifier = try queryParamDecoded(target, "full_product_identifier", alloc);
+            const bom_name = try queryParamDecoded(target, "bom_name", alloc);
+            const resp = try routes.handlePostSoupXlsxResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                requestHeaderValue(req, "Content-Type"),
+                body_bytes,
+                full_product_identifier,
+                bom_name,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/v1/soup")) {
+            const body_bytes = readBodyLimited(req, alloc, bom_body_limit_bytes) catch |err| switch (err) {
+                error.StreamTooLong => {
+                    response_status = .payload_too_large;
+                    response_bytes = payload_too_large_json.len;
+                    try sendJsonWithStatus(req, payload_too_large_json, .payload_too_large);
+                    return;
+                },
+                else => return err,
+            };
+            const resp = try routes.handlePostSoupResponse(
+                db.?,
+                auth.?,
+                requestHeaderValue(req, "Authorization"),
+                body_bytes,
+                alloc,
+            );
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/v1/bom")) {
             const body_bytes = readBodyLimited(req, alloc, bom_body_limit_bytes) catch |err| switch (err) {
                 error.StreamTooLong => {
@@ -844,6 +1034,14 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
             try sendJsonWithStatus(req, resp.body, resp.status);
         } else if (std.mem.eql(u8, path, "/api/design-bom-sync")) {
             const resp = try routes.handleDeleteDesignBomSyncResponse(ctx.registry, ctx.secure_store, alloc);
+            if (resp.ok) {
+                if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
+            }
+            response_status = resp.status;
+            response_bytes = resp.body.len;
+            try sendJsonWithStatus(req, resp.body, resp.status);
+        } else if (std.mem.eql(u8, path, "/api/soup-sync")) {
+            const resp = try routes.handleDeleteSoupSyncResponse(ctx.registry, ctx.secure_store, alloc);
             if (resp.ok) {
                 if (ctx.refresh_active_runtime_fn) |f| f(ctx.registry, ctx.secure_store, ctx.license_service, ctx.alloc);
             }

@@ -77,6 +77,7 @@ pub const SyncConfig = struct {
     profile: internal.profile_mod.ProfileId,
     active: internal.ActiveConnection,
     design_bom_sync: ?DesignBomSyncSource = null,
+    soup_sync: ?SoupSyncSource = null,
     control: *WorkerControl,
     alloc: internal.Allocator,
     db: *internal.GraphDb,
@@ -95,6 +96,45 @@ pub const DesignBomSyncSource = union(enum) {
     }
 
     pub fn deinit(self: *DesignBomSyncSource, alloc: internal.Allocator) void {
+        switch (self.*) {
+            .provider => |*active| active.deinit(alloc),
+            .local_xlsx_path => |path| alloc.free(path),
+        }
+    }
+};
+
+pub const SoupSyncSource = struct {
+    source: SoupSyncPayloadSource,
+    full_product_identifier: []const u8,
+    bom_name: []const u8,
+
+    pub fn clone(self: SoupSyncSource, alloc: internal.Allocator) !SoupSyncSource {
+        return .{
+            .source = try self.source.clone(alloc),
+            .full_product_identifier = try alloc.dupe(u8, self.full_product_identifier),
+            .bom_name = try alloc.dupe(u8, self.bom_name),
+        };
+    }
+
+    pub fn deinit(self: *SoupSyncSource, alloc: internal.Allocator) void {
+        self.source.deinit(alloc);
+        alloc.free(self.full_product_identifier);
+        alloc.free(self.bom_name);
+    }
+};
+
+pub const SoupSyncPayloadSource = union(enum) {
+    provider: internal.ActiveConnection,
+    local_xlsx_path: []const u8,
+
+    pub fn clone(self: SoupSyncPayloadSource, alloc: internal.Allocator) !SoupSyncPayloadSource {
+        return switch (self) {
+            .provider => |active| .{ .provider = try active.clone(alloc) },
+            .local_xlsx_path => |path| .{ .local_xlsx_path = try alloc.dupe(u8, path) },
+        };
+    }
+
+    pub fn deinit(self: *SoupSyncPayloadSource, alloc: internal.Allocator) void {
         switch (self.*) {
             .provider => |*active| active.deinit(alloc),
             .local_xlsx_path => |path| alloc.free(path),

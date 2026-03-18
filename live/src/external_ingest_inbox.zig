@@ -3,9 +3,11 @@ const Allocator = std.mem.Allocator;
 
 const bom = @import("bom.zig");
 const graph_live = @import("graph_live.zig");
+const soup = @import("soup.zig");
 const shared = @import("routes/shared.zig");
 const sync_live = @import("sync_live.zig");
 const test_results = @import("test_results.zig");
+const xlsx = @import("rtmify").xlsx;
 
 pub const InboxCtx = struct {
     db: *graph_live.GraphDb,
@@ -18,6 +20,7 @@ pub const InboxCtx = struct {
 const ArtifactKind = enum {
     test_results,
     bom,
+    soup,
 };
 
 pub fn destroyInboxCtx(ctx: *InboxCtx) void {
@@ -68,10 +71,16 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
     };
     defer alloc.free(bytes);
 
-    const kind = detectArtifactKind(name, bytes, alloc) catch |err| {
-        try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
-        return;
-    };
+    const kind = if (std.mem.endsWith(u8, name, ".xlsx"))
+        detectXlsxArtifactKind(path, alloc) catch |err| {
+            try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+            return;
+        }
+    else
+        detectArtifactKind(name, bytes, alloc) catch |err| {
+            try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+            return;
+        };
 
     switch (kind) {
         .test_results => {
@@ -116,6 +125,22 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
             try recordBomWarnings(db, archived_path, response, alloc);
             return;
         },
+        .soup => {
+            const full_product_identifier = extractSoupInboxProductIdentifier(name) orelse {
+                try rejectFile(db, inbox_dir, name, alloc, "SOUP_NO_PRODUCT_IDENTIFIER");
+                return;
+            };
+            var response = soup.ingestXlsxInboxPath(db, path, full_product_identifier, alloc) catch |err| {
+                try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+                return;
+            };
+            defer response.deinit(alloc);
+
+            const archived_path = try archiveFile(inbox_dir, "processed", name, alloc);
+            defer alloc.free(archived_path);
+            try recordSoupWarnings(db, archived_path, response, alloc);
+            return;
+        },
     }
 
     const archived_path = try archiveFile(inbox_dir, "processed", name, alloc);
@@ -123,7 +148,6 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
 }
 
 fn detectArtifactKind(name: []const u8, body: []const u8, alloc: Allocator) !ArtifactKind {
-    if (std.mem.endsWith(u8, name, ".xlsx")) return .bom;
     if (std.mem.endsWith(u8, name, ".csv")) {
         return if (looksLikeBomCsv(body)) .bom else error.UnsupportedFormat;
     }
@@ -138,6 +162,16 @@ fn detectArtifactKind(name: []const u8, body: []const u8, alloc: Allocator) !Art
         if (value == .string and std.mem.eql(u8, value.string, "CycloneDX")) return .bom;
     }
     if (parsed.value.object.get("spdxVersion") != null) return .bom;
+    if (parsed.value.object.get("components") != null) return .soup;
+    return error.UnsupportedFormat;
+}
+
+fn detectXlsxArtifactKind(path: []const u8, alloc: Allocator) !ArtifactKind {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const sheets = try xlsx.parse(arena.allocator(), path);
+    if (sheetExists(sheets, "SOUP Components")) return .soup;
+    if (sheetExists(sheets, "Design BOM")) return .bom;
     return error.UnsupportedFormat;
 }
 
@@ -147,6 +181,19 @@ fn looksLikeBomCsv(body: []const u8) bool {
     return std.mem.indexOf(u8, header, "bom_name") != null and
         std.mem.indexOf(u8, header, "full_identifier") != null and
         std.mem.indexOf(u8, header, "child_part") != null;
+}
+
+fn sheetExists(sheets: []const xlsx.SheetData, want: []const u8) bool {
+    for (sheets) |sheet| {
+        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, sheet.name, " \r\n\t"), want)) return true;
+    }
+    return false;
+}
+
+fn extractSoupInboxProductIdentifier(name: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, name, "SOUP__")) return null;
+    if (!std.mem.endsWith(u8, name, ".xlsx")) return null;
+    return name["SOUP__".len .. name.len - ".xlsx".len];
 }
 
 fn rejectFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const u8, alloc: Allocator, reason: []const u8) !void {
@@ -253,6 +300,47 @@ fn recordGroupedBomWarnings(db: *graph_live.GraphDb, archived_path: []const u8, 
                 details.items,
             );
         }
+    }
+}
+
+fn recordSoupWarnings(db: *graph_live.GraphDb, archived_path: []const u8, response: soup.SoupIngestResponse, alloc: Allocator) !void {
+    for (response.warnings) |warning| {
+        var details: std.ArrayList(u8) = .empty;
+        defer details.deinit(alloc);
+        try details.appendSlice(alloc, "{\"warning_code\":");
+        try shared.appendJsonStr(&details, warning.code, alloc);
+        try details.appendSlice(alloc, ",\"warning_subject\":");
+        try shared.appendJsonStrOpt(&details, warning.subject, alloc);
+        try details.appendSlice(alloc, ",\"full_product_identifier\":");
+        try shared.appendJsonStr(&details, response.full_product_identifier, alloc);
+        try details.appendSlice(alloc, ",\"bom_name\":");
+        try shared.appendJsonStr(&details, response.bom_name, alloc);
+        try details.appendSlice(alloc, ",\"bom_type\":\"software\"}");
+
+        const message = try std.fmt.allocPrint(
+            alloc,
+            "Ingested SOUP file with warning {s}: {s}",
+            .{ warning.code, warning.message },
+        );
+        defer alloc.free(message);
+        const subject = try alloc.dupe(u8, archived_path);
+        defer alloc.free(subject);
+        const dedupe_key = try std.fmt.allocPrint(
+            alloc,
+            "external_ingest_inbox:{s}:{s}:{s}",
+            .{ archived_path, warning.code, warning.subject orelse "" },
+        );
+        defer alloc.free(dedupe_key);
+        try db.upsertRuntimeDiagnostic(
+            dedupe_key,
+            9502,
+            "warn",
+            "External SOUP ingested with warnings",
+            message,
+            "external_ingest_inbox",
+            subject,
+            details.items,
+        );
     }
 }
 
