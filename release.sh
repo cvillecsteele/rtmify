@@ -107,7 +107,9 @@ MANIFEST_ARTIFACTS="${TMP_DIR}/artifacts.jsonl"
 MANIFEST_SMOKES="${TMP_DIR}/smokes.jsonl"
 CHECKSUMS_FILE="${OUT_DIR}/checksums.txt"
 SMOKE_HOME="${TMP_DIR}/home"
-export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-/tmp/zig-cache}"
+# Use an isolated cache per release run by default so stale or partially
+# evicted shared cache entries do not break cross-target packaging builds.
+export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-${TMP_DIR}/zig-global-cache}"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-${HOME}/Library/Caches/ms-playwright}"
 mkdir -p "${SMOKE_HOME}"
 mkdir -p "${ZIG_GLOBAL_CACHE_DIR}"
