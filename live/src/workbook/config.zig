@@ -556,6 +556,8 @@ fn applyBootstrapOverrides(cfg: *LiveConfig, options: BootstrapOptions, alloc: A
     if (options.db_path_override) |path| {
         alloc.free(workbook.db_path);
         workbook.db_path = try alloc.dupe(u8, path);
+        alloc.free(workbook.display_name);
+        workbook.display_name = try alloc.dupe(u8, std.fs.path.basename(path));
     }
     if (options.inbox_dir_override) |path| {
         alloc.free(workbook.inbox_dir);
@@ -1008,6 +1010,7 @@ test "applyBootstrapOverrides updates active workbook paths in memory" {
 
     try testing.expectEqualStrings("/tmp/demo.sqlite", cfg.workbooks[0].db_path);
     try testing.expectEqualStrings("/tmp/demo-inbox", cfg.workbooks[0].inbox_dir);
+    try testing.expectEqualStrings("demo.sqlite", cfg.workbooks[0].display_name);
 }
 
 test "save and load roundtrip" {

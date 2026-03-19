@@ -14,6 +14,51 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
     const body = if (std.mem.eql(u8, name, "trace_requirement")) blk: {
         const id = try tools.requireStringArg(args, "id");
         break :blk try std.fmt.allocPrint(alloc, "Trace requirement {s} using RTMify. Read requirement://{s} and design-history://{s}. If needed, call commit_history with req_id={s} and code_traceability. Produce sections: Overview, Upstream Need, Verification, Risks, Code & Commits, Chain Gaps, and Open Questions. Keep the output concise and call out any missing links explicitly.", .{ id, id, id, id });
+    } else if (std.mem.eql(u8, name, "trace_user_need")) blk: {
+        const id = try tools.requireStringArg(args, "id");
+        break :blk try std.fmt.allocPrint(alloc, "Trace user need {s} using RTMify. Read user-need://{s} and impact://{s}. If needed, call get_user_needs, chain_gaps, and get_rtm to confirm downstream requirement and verification coverage. Produce sections: Overview, Derived Requirements, Verification Coverage, Risks, Chain Gaps, and Open Questions. Answer directly which requirements hang off this user need before adding extra commentary.", .{ id, id, id });
+    } else if (std.mem.eql(u8, name, "trace_test")) blk: {
+        const id = try tools.requireStringArg(args, "id");
+        break :blk try std.fmt.allocPrint(alloc, "Trace test artifact {s} using RTMify. Read test://{s}; if that is not found, read test-group://{s}. Call get_tests to confirm linked requirements. If {s} looks like a concrete test case, also call get_test_results with test_case_ref={s}. Return sections: Overview, Linked Requirements, Latest Execution Evidence, Coverage Concerns, and Open Questions. Answer directly what this test verifies before adding detail.", .{ id, id, id, id, id });
+    } else if (std.mem.eql(u8, name, "trace_risk")) blk: {
+        const id = try tools.requireStringArg(args, "id");
+        break :blk try std.fmt.allocPrint(alloc, "Trace risk {s} using RTMify. Read risk://{s} and impact://{s}. Call get_risks for structured fields if needed. Return sections: Overview, Linked Requirements, Mitigations and Verification Evidence, Residual Exposure, and Open Questions. Make it explicit whether the graph shows the risk as open, mitigated, or only partially evidenced.", .{ id, id, id });
+    } else if (std.mem.eql(u8, name, "trace_unit")) blk: {
+        const serial_number = try tools.requireStringArg(args, "serial_number");
+        break :blk try std.fmt.allocPrint(alloc, "Trace production unit {s} using RTMify. First call get_unit_history with serial_number={s}. If execution IDs are returned, call get_execution for the most important one. Return sections: Overview, Product, Execution Timeline, Failed or Notable Tests, and Recommended Next Checks. Answer directly whether this unit passed or failed before adding detail.", .{ serial_number, serial_number });
+    } else if (std.mem.eql(u8, name, "which_requirements_for_user_need")) blk: {
+        const id = try tools.requireStringArg(args, "id");
+        break :blk try std.fmt.allocPrint(alloc, "Answer which requirements derive from user need {s}. Read user-need://{s} first. If needed, call get_user_needs or get_rtm to confirm exact requirement IDs. Return the derived requirements first as a direct answer, then add a short note on coverage or gaps only if relevant.", .{ id, id });
+    } else if (std.mem.eql(u8, name, "which_tests_for_requirement")) blk: {
+        const id = try tools.requireStringArg(args, "id");
+        break :blk try std.fmt.allocPrint(alloc, "Summarize verification evidence for requirement {s}. Read requirement://{s} and call get_verification_status with requirement_ref={s}. If needed, call get_test_results for the most important linked tests. Return sections: Requirement, Linked Tests, Latest Results, Verification Gaps, and Confidence. Answer the current verification status first, then explain missing or stale evidence.", .{ id, id, id });
+    } else if (std.mem.eql(u8, name, "product_execution_summary")) blk: {
+        const full_product_identifier = try tools.requireStringArg(args, "full_product_identifier");
+        break :blk try std.fmt.allocPrint(alloc, "Summarize known serial-bearing execution history for product {s}. Read serials://{s} and call get_product_serials with full_product_identifier={s}. Return sections: Known Serials, Latest Status Pattern, Failed Units, and Suggested Drill-Downs. Answer directly how many serial-bearing executions are known before adding detail.", .{ full_product_identifier, full_product_identifier, full_product_identifier });
+    } else if (std.mem.eql(u8, name, "open_risk_summary")) blk: {
+        break :blk try alloc.dupe(u8, "Summarize risks that remain open in RTMify. Call get_risks and focus on risks whose status is open or not fully mitigated. If needed, read risk://<id> and impact://<id> for the highest-risk items. Return sections: Open Risks, Residual Severity/Likelihood, Verification Exposure, and Recommended Next Checks. Answer directly how many open risks exist before adding detail.");
+    } else if (std.mem.eql(u8, name, "part_blast_radius")) blk: {
+        const part = try tools.requireStringArg(args, "part");
+        break :blk try std.fmt.allocPrint(alloc, "Assess blast radius for part {s}. First call find_part_usage with part={s}. Then call bom_impact_analysis or get_bom_item for the most important affected BOMs/items, and read design-bom resources when available. Return sections: Where Used, What Breaks or Needs Review, Requirement/Test Exposure, and Recommended Next Checks. Treat this as broader operational impact, not just formal EOL status.", .{ part, part });
+    } else if (std.mem.eql(u8, name, "soup_component_review")) blk: {
+        const full_product_identifier = try tools.requireStringArg(args, "full_product_identifier");
+        const part = try tools.requireStringArg(args, "part");
+        const bom_name = if (args) |a| internal.json_util.getString(a, "bom_name") else null;
+        const revision = if (args) |a| internal.json_util.getString(a, "revision") else null;
+        break :blk try std.fmt.allocPrint(alloc, "Review SOUP component {s} for product {s}. Call get_soup_components with full_product_identifier={s} bom_name={s}. If revision={s} is provided, prefer the matching component version. If you can construct an exact resource, read soup-component://{s}/{s}/{s}@{s}. Return sections: Component Overview, Version and License, Known Anomalies and Evaluation, Requirement/Test Links, and Audit Concerns. Answer directly whether the component looks adequately documented before adding detail.", .{
+            part,
+            full_product_identifier,
+            full_product_identifier,
+            bom_name orelse internal.soup.default_bom_name,
+            revision orelse "*",
+            full_product_identifier,
+            bom_name orelse internal.soup.default_bom_name,
+            part,
+            revision orelse "*",
+        });
+    } else if (std.mem.eql(u8, name, "requirement_change_review")) blk: {
+        const id = try tools.requireStringArg(args, "id");
+        break :blk try std.fmt.allocPrint(alloc, "Review fallout from a requirement change for {s}. Read requirement://{s}, design-history://{s}, and impact://{s}. Call get_verification_status with requirement_ref={s}; if the node is suspect or has recent test evidence, call chain_gaps and get_test_results as needed. Return sections: Change Summary, Impacted Items, Potentially Stale Verification, Open Gaps, and Recommended Next Checks. Answer directly what appears stale or newly suspect before adding detail.", .{ id, id, id, id, id });
     } else if (std.mem.eql(u8, name, "impact_of_change")) blk: {
         const id = try tools.requireStringArg(args, "id");
         break :blk try std.fmt.allocPrint(alloc, "Analyze the downstream impact of changing node {s}. Read impact://{s}. If the node is a requirement, also read requirement://{s}. Return: Summary, Directly Impacted Items, Likely Verification Fallout, and Suggested Next Checks. Distinguish real traceability impact from missing-data uncertainty.", .{ id, id, id });
