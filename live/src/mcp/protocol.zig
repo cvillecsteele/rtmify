@@ -11,6 +11,10 @@ pub const resources_json =
     \\{"uri":"risks://","name":"Risks","description":"Risk inventory with linked requirements and mitigation status. Exact risk://<id> resources are available for all risk nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
     \\{"uri":"suspects://","name":"Suspects","description":"Nodes currently marked suspect and needing review. Exact suspect://<id> resources are available for all current suspect nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
     \\{"uri":"serials://","name":"Known Product Serials","description":"Serial-bearing execution history grouped by product. Exact serials://<full_product_identifier> resources are available for all products with serial-bearing executions even though the catalog lists only a small sample.","mimeType":"text/markdown"},
+    \\{"uri":"units://","name":"Known Units","description":"Known serial-numbered units with execution history. Exact unit://<serial_number>, serial://<serial_number>, and execution://<execution_id> resources are available for matching records even though the catalog lists only a small sample.","mimeType":"text/markdown"},
+    \\{"uri":"code-files://","name":"Code Files","description":"Source and test files ranked by traceability linkage. Exact source-file://<path> and test-file://<path> resources are available for matching nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
+    \\{"uri":"mcp-tools://","name":"MCP Tools","description":"Resource-readable catalog of callable MCP tools exposed by this server.","mimeType":"text/markdown"},
+    \\{"uri":"mcp-prompts://","name":"MCP Prompts","description":"Resource-readable catalog of MCP prompts exposed by this server.","mimeType":"text/markdown"},
     \\{"uri":"report://code-traceability","name":"Code Traceability Summary","description":"Summary of source and test file traceability.","mimeType":"text/markdown"},
     \\{"uri":"report://review","name":"Review Summary","description":"Summary of suspect items requiring review.","mimeType":"text/markdown"}
     \\]

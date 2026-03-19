@@ -130,7 +130,7 @@ const std = @import("std");
 const testing = std.testing;
 
 test "index_html smoke covers onboarding and external js bootstrap" {
-    try testing.expect(std.mem.indexOf(u8, index_html, ">Guide<") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, ">Guide / Help<") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Error Codes Explained") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "MCP &amp; AI") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, ">Info<") != null);

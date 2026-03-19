@@ -151,6 +151,58 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
         }
     }
 
+    const code_trace_json = internal.routes.handleCodeTraceability(db, arena) catch null;
+    if (code_trace_json) |ctjson| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, arena, ctjson, .{});
+        defer parsed.deinit();
+        const source_files = internal.json_util.getObjectField(parsed.value, "source_files");
+        const test_files = internal.json_util.getObjectField(parsed.value, "test_files");
+        if ((source_files != null and source_files.? == .array and source_files.?.array.items.len > 0) or
+            (test_files != null and test_files.? == .array and test_files.?.array.items.len > 0))
+        {
+            _ = buf.pop();
+            try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"uri\":\"code-files://\",\"name\":\"Code Files\",\"description\":\"Source and test files ranked by traceability linkage.\",\"mimeType\":\"text/markdown\"}");
+
+            if (source_files) |files| {
+                if (files == .array) {
+                    for (files.array.items, 0..) |item, idx| {
+                        if (idx >= 3) break;
+                        const file_id = internal.json_util.getString(item, "id") orelse continue;
+                        try buf.append(alloc, ',');
+                        try buf.appendSlice(alloc, "{\"uri\":");
+                        const file_uri = try std.fmt.allocPrint(arena, "source-file://{s}", .{file_id});
+                        try internal.json_util.appendJsonQuoted(&buf, file_uri, alloc);
+                        try buf.appendSlice(alloc, ",\"name\":");
+                        try internal.json_util.appendJsonQuoted(&buf, file_id, alloc);
+                        try buf.appendSlice(alloc, ",\"description\":");
+                        try internal.json_util.appendJsonQuoted(&buf, "Source file trace record. This is a sampled entry; exact source-file://<path> works for matching source files.", alloc);
+                        try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+                    }
+                }
+            }
+
+            if (test_files) |files| {
+                if (files == .array) {
+                    for (files.array.items, 0..) |item, idx| {
+                        if (idx >= 3) break;
+                        const file_id = internal.json_util.getString(item, "id") orelse continue;
+                        try buf.append(alloc, ',');
+                        try buf.appendSlice(alloc, "{\"uri\":");
+                        const file_uri = try std.fmt.allocPrint(arena, "test-file://{s}", .{file_id});
+                        try internal.json_util.appendJsonQuoted(&buf, file_uri, alloc);
+                        try buf.appendSlice(alloc, ",\"name\":");
+                        try internal.json_util.appendJsonQuoted(&buf, file_id, alloc);
+                        try buf.appendSlice(alloc, ",\"description\":");
+                        try internal.json_util.appendJsonQuoted(&buf, "Test file trace record. This is a sampled entry; exact test-file://<path> works for matching test files.", alloc);
+                        try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+                    }
+                }
+            }
+            try buf.append(alloc, ']');
+        }
+    }
+
     const suspects_json = internal.routes.handleSuspects(db, arena) catch null;
     if (suspects_json) |sjson| {
         var parsed = try std.json.parseFromSlice(std.json.Value, arena, sjson, .{});
@@ -259,6 +311,50 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
             try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
             if (idx >= 4) break;
         }
+        try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"uri\":\"units://\",\"name\":\"Known Units\",\"description\":\"Serial-numbered units with execution history.\",\"mimeType\":\"text/markdown\"}");
+        var added_units: usize = 0;
+        var added_executions: usize = 0;
+        for (serial_products) |full_product_identifier| {
+            if (added_units >= 3 and added_executions >= 3) break;
+            const serials_json = try internal.bom.getProductSerialsJson(db, full_product_identifier, alloc);
+            defer alloc.free(serials_json);
+
+            var parsed = try std.json.parseFromSlice(std.json.Value, arena, serials_json, .{});
+            defer parsed.deinit();
+            const executions = internal.json_util.getObjectField(parsed.value, "executions") orelse continue;
+            if (executions != .array) continue;
+
+            for (executions.array.items) |row| {
+                if (added_units < 3) {
+                    const serial_number = internal.json_util.getString(row, "serial_number") orelse continue;
+                    try buf.append(alloc, ',');
+                    try buf.appendSlice(alloc, "{\"uri\":");
+                    const unit_uri = try std.fmt.allocPrint(arena, "unit://{s}", .{serial_number});
+                    try internal.json_util.appendJsonQuoted(&buf, unit_uri, alloc);
+                    try buf.appendSlice(alloc, ",\"name\":");
+                    try internal.json_util.appendJsonQuoted(&buf, serial_number, alloc);
+                    try buf.appendSlice(alloc, ",\"description\":");
+                    try internal.json_util.appendJsonQuoted(&buf, "Unit execution history. This is a sampled entry; exact unit://<serial_number> and serial://<serial_number> work for matching units.", alloc);
+                    try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+                    added_units += 1;
+                }
+                if (added_executions < 3) {
+                    const execution_id = internal.json_util.getString(row, "execution_id") orelse continue;
+                    try buf.append(alloc, ',');
+                    try buf.appendSlice(alloc, "{\"uri\":");
+                    const execution_uri = try std.fmt.allocPrint(arena, "execution://{s}", .{execution_id});
+                    try internal.json_util.appendJsonQuoted(&buf, execution_uri, alloc);
+                    try buf.appendSlice(alloc, ",\"name\":");
+                    try internal.json_util.appendJsonQuoted(&buf, execution_id, alloc);
+                    try buf.appendSlice(alloc, ",\"description\":");
+                    try internal.json_util.appendJsonQuoted(&buf, "Test execution drill-down with unit, test-case, requirement, and risk context. This is a sampled entry; exact execution://<execution_id> works for matching executions.", alloc);
+                    try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+                    added_executions += 1;
+                }
+                if (added_units >= 3 and added_executions >= 3) break;
+            }
+        }
         try buf.append(alloc, ']');
     }
 
@@ -334,8 +430,26 @@ pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestConte
         try markdown.suspectsIndexMarkdown(runtime_ctx.db, alloc)
     else if (std.mem.eql(u8, uri, "serials://"))
         try productSerialIndexMarkdown(runtime_ctx.db, alloc)
+    else if (std.mem.eql(u8, uri, "units://"))
+        try unitsIndexMarkdown(runtime_ctx.db, alloc)
+    else if (std.mem.eql(u8, uri, "code-files://"))
+        try markdown.codeFilesIndexMarkdown(runtime_ctx.db, alloc)
+    else if (std.mem.eql(u8, uri, "mcp-tools://"))
+        try markdown.mcpToolsIndexMarkdown(alloc)
+    else if (std.mem.eql(u8, uri, "mcp-prompts://"))
+        try markdown.mcpPromptsIndexMarkdown(alloc)
     else if (std.mem.startsWith(u8, uri, "serials://"))
         try productSerialsMarkdown(uri["serials://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "unit://"))
+        try markdown.unitHistoryMarkdown(uri["unit://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "serial://"))
+        try markdown.unitHistoryMarkdown(uri["serial://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "execution://"))
+        try markdown.executionMarkdown(uri["execution://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "source-file://"))
+        try markdown.codeFileMarkdown(uri["source-file://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.startsWith(u8, uri, "test-file://"))
+        try markdown.codeFileMarkdown(uri["test-file://".len..], runtime_ctx.db, alloc)
     else if (std.mem.eql(u8, uri, "software-boms://"))
         try softwareBomsMarkdown(runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "soup-components://"))
@@ -351,9 +465,9 @@ pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestConte
     else if (std.mem.startsWith(u8, uri, "risk://"))
         try markdown.nodeMarkdown(uri[7..], runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "test://"))
-        try markdown.nodeMarkdown(uri[7..], runtime_ctx.db, alloc)
+        try markdown.testTraceMarkdown(uri[7..], runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "test-group://"))
-        try markdown.nodeMarkdown(uri[13..], runtime_ctx.db, alloc)
+        try markdown.testTraceMarkdown(uri[13..], runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "suspect://"))
         try markdown.nodeMarkdown(uri[10..], runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "node://"))
@@ -563,6 +677,49 @@ fn productSerialIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.
         const executions = internal.json_util.getObjectField(parsed.value, "executions") orelse continue;
         if (executions != .array) continue;
         try std.fmt.format(buf.writer(alloc), "- `{s}` — {d} serials\n", .{ full_product_identifier, executions.array.items.len });
+    }
+    return alloc.dupe(u8, buf.items);
+}
+
+fn unitsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const products = try serialBearingProducts(db, alloc);
+    defer {
+        for (products) |value| alloc.free(value);
+        alloc.free(products);
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "# Known Units\n\n");
+    if (products.len == 0) {
+        try buf.appendSlice(alloc, "- None\n");
+        return alloc.dupe(u8, buf.items);
+    }
+
+    for (products) |full_product_identifier| {
+        const serials_json = try internal.bom.getProductSerialsJson(db, full_product_identifier, alloc);
+        defer alloc.free(serials_json);
+
+        var arena_state = std.heap.ArenaAllocator.init(alloc);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+        var parsed = try std.json.parseFromSlice(std.json.Value, arena, serials_json, .{});
+        defer parsed.deinit();
+        const executions = internal.json_util.getObjectField(parsed.value, "executions") orelse continue;
+        if (executions != .array or executions.array.items.len == 0) continue;
+
+        try std.fmt.format(buf.writer(alloc), "## {s}\n", .{full_product_identifier});
+        for (executions.array.items) |row| {
+            const serial_number = internal.json_util.getString(row, "serial_number") orelse continue;
+            const execution_id = internal.json_util.getString(row, "execution_id") orelse "unknown";
+            const status = internal.json_util.getString(row, "computed_status") orelse "unknown";
+            try std.fmt.format(buf.writer(alloc), "- `unit://{s}` — {s} — latest execution `execution://{s}`\n", .{
+                serial_number,
+                status,
+                execution_id,
+            });
+        }
+        try buf.append(alloc, '\n');
     }
     return alloc.dupe(u8, buf.items);
 }

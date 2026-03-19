@@ -1,5 +1,6 @@
 const std = @import("std");
 const internal = @import("internal.zig");
+const protocol = @import("protocol.zig");
 
 pub fn nodeMarkdown(node_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
     const data = try internal.routes.handleNode(db, node_id, alloc);
@@ -492,6 +493,361 @@ pub fn codeTraceabilitySummaryMarkdown(db: *internal.graph_live.GraphDb, alloc: 
     return alloc.dupe(u8, buf.items);
 }
 
+const CodeFileSummary = struct {
+    id: []const u8,
+    annotation_count: i64,
+    design_control_links: usize,
+    requirement_links: usize,
+    design_output_links: usize,
+    linked_test_files: usize,
+};
+
+fn codeFileSummaryLessThan(_: void, lhs: CodeFileSummary, rhs: CodeFileSummary) bool {
+    if (lhs.design_control_links != rhs.design_control_links) return lhs.design_control_links > rhs.design_control_links;
+    if (lhs.annotation_count != rhs.annotation_count) return lhs.annotation_count > rhs.annotation_count;
+    if (lhs.linked_test_files != rhs.linked_test_files) return lhs.linked_test_files > rhs.linked_test_files;
+    return std.mem.lessThan(u8, lhs.id, rhs.id);
+}
+
+pub fn codeFilesIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const data = try internal.routes.handleCodeTraceability(db, arena);
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
+    defer parsed.deinit();
+
+    const source_files = internal.json_util.getObjectField(parsed.value, "source_files");
+    const test_files = internal.json_util.getObjectField(parsed.value, "test_files");
+
+    var source_summaries: std.ArrayList(CodeFileSummary) = .empty;
+    defer source_summaries.deinit(alloc);
+
+    if (source_files) |files| {
+        if (files == .array) {
+            for (files.array.items) |item| {
+                const file_id = internal.json_util.getString(item, "id") orelse continue;
+                const detail_json = try internal.routes.handleNode(db, file_id, arena);
+                var detail_parsed = try std.json.parseFromSlice(std.json.Value, arena, detail_json, .{});
+                defer detail_parsed.deinit();
+
+                const node = internal.json_util.getObjectField(detail_parsed.value, "node") orelse continue;
+                const edges_in = internal.json_util.getObjectField(detail_parsed.value, "edges_in");
+                const edges_out = internal.json_util.getObjectField(detail_parsed.value, "edges_out");
+                const props = internal.json_util.getObjectField(node, "properties");
+                const annotation_count = if (props) |p| getIntField(p, "annotation_count") orelse 0 else 0;
+                const requirement_links = countFilteredEdges(edges_in, "IMPLEMENTED_IN", "Requirement");
+                const design_output_links = countFilteredEdges(edges_in, "IMPLEMENTED_IN", "DesignOutput");
+                const linked_test_files = countFilteredEdges(edges_out, "VERIFIED_BY_CODE", "TestFile");
+
+                try source_summaries.append(alloc, .{
+                    .id = try alloc.dupe(u8, file_id),
+                    .annotation_count = annotation_count,
+                    .design_control_links = requirement_links + design_output_links,
+                    .requirement_links = requirement_links,
+                    .design_output_links = design_output_links,
+                    .linked_test_files = linked_test_files,
+                });
+            }
+        }
+    }
+    defer {
+        for (source_summaries.items) |item| alloc.free(item.id);
+    }
+
+    std.mem.sort(CodeFileSummary, source_summaries.items, {}, codeFileSummaryLessThan);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "# Code Files\n\n");
+    try std.fmt.format(buf.writer(alloc), "- Source files: {d}\n- Test files: {d}\n\n", .{
+        if (source_files != null and source_files.? == .array) source_files.?.array.items.len else 0,
+        if (test_files != null and test_files.? == .array) test_files.?.array.items.len else 0,
+    });
+
+    try buf.appendSlice(alloc, "## Top Source Files by Design-Control Linkage\n");
+    if (source_summaries.items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+    } else {
+        for (source_summaries.items) |item| {
+            try std.fmt.format(buf.writer(alloc), "- `source-file://{s}` — design_controls: {d}, requirements: {d}, design_outputs: {d}, annotations: {d}, linked_tests: {d}\n", .{
+                item.id,
+                item.design_control_links,
+                item.requirement_links,
+                item.design_output_links,
+                item.annotation_count,
+                item.linked_test_files,
+            });
+        }
+        try buf.append(alloc, '\n');
+    }
+
+    try buf.appendSlice(alloc, "## Test File Inventory\n");
+    if (test_files == null or test_files.? != .array or test_files.?.array.items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+    } else {
+        for (test_files.?.array.items) |item| {
+            const file_id = internal.json_util.getString(item, "id") orelse continue;
+            const props = internal.json_util.getObjectField(item, "properties");
+            const annotation_count = if (props) |p| getIntField(p, "annotation_count") orelse 0 else 0;
+            try std.fmt.format(buf.writer(alloc), "- `test-file://{s}` — annotations: {d}\n", .{
+                file_id,
+                annotation_count,
+            });
+        }
+        try buf.append(alloc, '\n');
+    }
+
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn codeFileMarkdown(node_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const data = try internal.routes.handleNode(db, node_id, alloc);
+    defer alloc.free(data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
+    defer parsed.deinit();
+
+    const node = internal.json_util.getObjectField(parsed.value, "node") orelse return error.NotFound;
+    const node_type = internal.json_util.getString(node, "type") orelse return error.NotFound;
+    const edges_out = internal.json_util.getObjectField(parsed.value, "edges_out");
+    const edges_in = internal.json_util.getObjectField(parsed.value, "edges_in");
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    if (std.mem.eql(u8, node_type, "SourceFile")) {
+        try std.fmt.format(buf.writer(alloc), "# Source File {s}\n\n", .{node_id});
+        try appendNodeCoreMarkdown(&buf, node, alloc);
+        try appendFilteredEdgeNodeSection(&buf, "Linked Requirements", edges_in, "IMPLEMENTED_IN", "Requirement", alloc);
+        try appendFilteredEdgeNodeSection(&buf, "Linked Design Outputs", edges_in, "IMPLEMENTED_IN", "DesignOutput", alloc);
+        try appendFilteredEdgeNodeSection(&buf, "Verified By Test Files", edges_out, "VERIFIED_BY_CODE", "TestFile", alloc);
+        try appendNonMatchingEdgeSection(&buf, "Other Incoming Links", edges_in, "IMPLEMENTED_IN", "Requirement", alloc);
+        try appendNonMatchingEdgeSection(&buf, "Other Outgoing Links", edges_out, "VERIFIED_BY_CODE", "TestFile", alloc);
+    } else if (std.mem.eql(u8, node_type, "TestFile")) {
+        try std.fmt.format(buf.writer(alloc), "# Test File {s}\n\n", .{node_id});
+        try appendNodeCoreMarkdown(&buf, node, alloc);
+        try appendFilteredEdgeNodeSection(&buf, "Verifies Source Files", edges_in, "VERIFIED_BY_CODE", "SourceFile", alloc);
+        try appendFilteredEdgeNodeSection(&buf, "Verifies Requirements", edges_in, "VERIFIED_BY_CODE", "Requirement", alloc);
+        try appendEdgeSection(&buf, "Outgoing Links", edges_out, alloc);
+        try appendNonMatchingEdgeSection(&buf, "Other Incoming Links", edges_in, "VERIFIED_BY_CODE", "SourceFile", alloc);
+    } else {
+        return error.NotFound;
+    }
+
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn mcpToolsIndexMarkdown(alloc: internal.Allocator) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, protocol.tools_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array) return error.InvalidArgument;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "# MCP Tools\n\n");
+    try std.fmt.format(buf.writer(alloc), "- Callable tools exposed by this server: {d}\n\n", .{parsed.value.array.items.len});
+    try buf.appendSlice(alloc, "## Tool Catalog\n");
+    for (parsed.value.array.items) |item| {
+        const name = internal.json_util.getString(item, "name") orelse continue;
+        const description = internal.json_util.getString(item, "description") orelse "";
+        const input_schema = internal.json_util.getObjectField(item, "inputSchema");
+        const required_count: usize = if (input_schema) |schema|
+            if (internal.json_util.getObjectField(schema, "required")) |required|
+                if (required == .array) required.array.items.len else 0
+            else 0
+        else 0;
+        try std.fmt.format(buf.writer(alloc), "- `{s}` — {s} [required_args={d}]\n", .{
+            name,
+            description,
+            required_count,
+        });
+    }
+    try buf.append(alloc, '\n');
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn mcpPromptsIndexMarkdown(alloc: internal.Allocator) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, protocol.prompts_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array) return error.InvalidArgument;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "# MCP Prompts\n\n");
+    try std.fmt.format(buf.writer(alloc), "- Prompts exposed by this server: {d}\n\n", .{parsed.value.array.items.len});
+    try buf.appendSlice(alloc, "## Prompt Catalog\n");
+    for (parsed.value.array.items) |item| {
+        const name = internal.json_util.getString(item, "name") orelse continue;
+        const description = internal.json_util.getString(item, "description") orelse "";
+        const arguments = internal.json_util.getObjectField(item, "arguments");
+        const arg_count: usize = if (arguments) |args| if (args == .array) args.array.items.len else 0 else 0;
+        try std.fmt.format(buf.writer(alloc), "- `{s}` — {s} [arguments={d}]\n", .{
+            name,
+            description,
+            arg_count,
+        });
+    }
+    try buf.append(alloc, '\n');
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn unitHistoryMarkdown(serial_number: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const data = try internal.test_results.unitHistoryJson(db, serial_number, alloc);
+    defer alloc.free(data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
+    defer parsed.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try std.fmt.format(buf.writer(alloc), "# Unit {s}\n\n", .{serial_number});
+
+    const executions = internal.json_util.getObjectField(parsed.value, "executions") orelse {
+        try buf.appendSlice(alloc, "- No execution history\n");
+        return alloc.dupe(u8, buf.items);
+    };
+    if (executions != .array or executions.array.items.len == 0) {
+        try buf.appendSlice(alloc, "- No execution history\n");
+        return alloc.dupe(u8, buf.items);
+    }
+
+    try std.fmt.format(buf.writer(alloc), "- Executions: {d}\n\n", .{executions.array.items.len});
+    try buf.appendSlice(alloc, "## Execution History\n");
+    for (executions.array.items) |row| {
+        const execution_id = internal.json_util.getString(row, "execution_id") orelse continue;
+        const status = internal.json_util.getString(row, "computed_status") orelse "unknown";
+        const executed_at = internal.json_util.getString(row, "executed_at") orelse "unknown";
+        try std.fmt.format(buf.writer(alloc), "- `execution://{s}` — {s} — {s}\n", .{ execution_id, status, executed_at });
+    }
+    try buf.append(alloc, '\n');
+    return alloc.dupe(u8, buf.items);
+}
+
+const TestTraceInfo = struct {
+    node_type: []const u8,
+    parent_groups: std.ArrayList([]const u8),
+    child_tests: std.ArrayList([]const u8),
+    direct_requirements: std.ArrayList([]const u8),
+    inherited_requirements: std.ArrayList([]const u8),
+    effective_requirements: std.ArrayList([]const u8),
+    linked_risks: std.ArrayList([]const u8),
+
+    fn init() TestTraceInfo {
+        return .{
+            .node_type = "",
+            .parent_groups = .empty,
+            .child_tests = .empty,
+            .direct_requirements = .empty,
+            .inherited_requirements = .empty,
+            .effective_requirements = .empty,
+            .linked_risks = .empty,
+        };
+    }
+
+    fn deinit(self: *TestTraceInfo, alloc: internal.Allocator) void {
+        for (self.parent_groups.items) |value| alloc.free(value);
+        self.parent_groups.deinit(alloc);
+        for (self.child_tests.items) |value| alloc.free(value);
+        self.child_tests.deinit(alloc);
+        for (self.direct_requirements.items) |value| alloc.free(value);
+        self.direct_requirements.deinit(alloc);
+        for (self.inherited_requirements.items) |value| alloc.free(value);
+        self.inherited_requirements.deinit(alloc);
+        for (self.effective_requirements.items) |value| alloc.free(value);
+        self.effective_requirements.deinit(alloc);
+        for (self.linked_risks.items) |value| alloc.free(value);
+        self.linked_risks.deinit(alloc);
+    }
+};
+
+pub fn testTraceMarkdown(node_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const data = try internal.routes.handleNode(db, node_id, alloc);
+    defer alloc.free(data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
+    defer parsed.deinit();
+
+    const node = internal.json_util.getObjectField(parsed.value, "node") orelse return error.NotFound;
+    const node_type = internal.json_util.getString(node, "type") orelse return error.NotFound;
+    const edges_out = internal.json_util.getObjectField(parsed.value, "edges_out");
+    const edges_in = internal.json_util.getObjectField(parsed.value, "edges_in");
+
+    var trace = try collectTestTraceInfo(node_id, db, alloc);
+    defer trace.deinit(alloc);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try std.fmt.format(buf.writer(alloc), "# {s} {s}\n\n", .{ node_type, node_id });
+    try appendNodeCoreMarkdown(&buf, node, alloc);
+
+    if (std.mem.eql(u8, node_type, "Test")) {
+        try appendStringListSection(&buf, "Parent Test Groups", trace.parent_groups.items, "test-group://", alloc);
+        try appendStringListSection(&buf, "Direct Linked Requirements", trace.direct_requirements.items, "requirement://", alloc);
+        try appendStringListSection(&buf, "Inherited Group Requirements", trace.inherited_requirements.items, "requirement://", alloc);
+        try appendStringListSection(&buf, "Effective Linked Requirements", trace.effective_requirements.items, "requirement://", alloc);
+        try appendStringListSection(&buf, "Linked Risks", trace.linked_risks.items, "risk://", alloc);
+        try appendEdgeSection(&buf, "Other Outgoing Links", edges_out, alloc);
+        try appendNonMatchingEdgeSection(&buf, "Other Incoming Links", edges_in, "HAS_TEST", "TestGroup", alloc);
+    } else if (std.mem.eql(u8, node_type, "TestGroup")) {
+        try appendStringListSection(&buf, "Child Tests", trace.child_tests.items, "test://", alloc);
+        try appendStringListSection(&buf, "Linked Requirements", trace.direct_requirements.items, "requirement://", alloc);
+        try appendStringListSection(&buf, "Linked Risks", trace.linked_risks.items, "risk://", alloc);
+        try appendNonMatchingEdgeSection(&buf, "Other Outgoing Links", edges_out, "HAS_TEST", "Test", alloc);
+        try appendNonMatchingEdgeSection(&buf, "Other Incoming Links", edges_in, "TESTED_BY", "Requirement", alloc);
+    } else {
+        return markdownFromNodeDetail(node, edges_out, edges_in, alloc);
+    }
+
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn executionMarkdown(execution_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    const data = (try internal.test_results.getExecutionJson(db, execution_id, alloc)) orelse return error.NotFound;
+    defer alloc.free(data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
+    defer parsed.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try std.fmt.format(buf.writer(alloc), "# Execution {s}\n\n", .{execution_id});
+    try std.fmt.format(buf.writer(alloc), "- Executed At: {s}\n", .{internal.json_util.getString(parsed.value, "executed_at") orelse "unknown"});
+    try std.fmt.format(buf.writer(alloc), "- Status: {s}\n", .{internal.json_util.getString(parsed.value, "computed_status") orelse "unknown"});
+    if (internal.json_util.getString(parsed.value, "serial_number")) |serial_number|
+        try std.fmt.format(buf.writer(alloc), "- Unit: `unit://{s}`\n", .{serial_number});
+    if (internal.json_util.getString(parsed.value, "full_product_identifier")) |full_product_identifier|
+        try std.fmt.format(buf.writer(alloc), "- Product: `{s}`\n", .{full_product_identifier});
+    try buf.append(alloc, '\n');
+
+    try buf.appendSlice(alloc, "## Test Cases\n");
+    const test_cases = internal.json_util.getObjectField(parsed.value, "test_cases") orelse {
+        try buf.appendSlice(alloc, "- None\n\n");
+        return alloc.dupe(u8, buf.items);
+    };
+    if (test_cases != .array or test_cases.array.items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+        return alloc.dupe(u8, buf.items);
+    }
+
+    for (test_cases.array.items) |row| {
+        const test_case_ref = internal.json_util.getString(row, "test_case_ref") orelse continue;
+        const status = internal.json_util.getString(row, "status") orelse "unknown";
+        try std.fmt.format(buf.writer(alloc), "### `{s}` — {s}\n", .{ test_case_ref, status });
+        if (internal.json_util.getString(row, "result_id")) |result_id|
+            try std.fmt.format(buf.writer(alloc), "- Result ID: `{s}`\n", .{result_id});
+        if (internal.json_util.getString(row, "resolution_state")) |resolution_state|
+            try std.fmt.format(buf.writer(alloc), "- Resolution State: {s}\n", .{resolution_state});
+        var trace = collectTestTraceInfo(test_case_ref, db, alloc) catch {
+            try buf.appendSlice(alloc, "- Parent Test Groups: none visible\n- Linked Requirements: none visible\n- Linked Risks: none visible\n\n");
+            continue;
+        };
+        defer trace.deinit(alloc);
+        try appendInlineStringList(&buf, "Parent Test Groups", trace.parent_groups.items, "test-group://", alloc);
+        try appendInlineStringList(&buf, "Linked Requirements", trace.effective_requirements.items, "requirement://", alloc);
+        try appendInlineStringList(&buf, "Linked Risks", trace.linked_risks.items, "risk://", alloc);
+        try buf.append(alloc, '\n');
+    }
+
+    return alloc.dupe(u8, buf.items);
+}
+
 pub fn reviewSummaryMarkdown(db: *internal.graph_live.GraphDb, profile_name: []const u8, state: *internal.sync_live.SyncState, alloc: internal.Allocator) ![]u8 {
     _ = state;
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -728,6 +1084,149 @@ fn appendUserNeedGapSummary(buf: *std.ArrayList(u8), arr: ?std.json.Value, alloc
     }
     if (matched == 0) try buf.appendSlice(alloc, "- None\n");
     try buf.append(alloc, '\n');
+}
+
+fn appendStringListSection(buf: *std.ArrayList(u8), title: []const u8, items: []const []const u8, uri_prefix: []const u8, alloc: internal.Allocator) !void {
+    try std.fmt.format(buf.writer(alloc), "## {s}\n", .{title});
+    if (items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+        return;
+    }
+    for (items) |item| {
+        try std.fmt.format(buf.writer(alloc), "- `{s}{s}`\n", .{ uri_prefix, item });
+    }
+    try buf.append(alloc, '\n');
+}
+
+fn appendInlineStringList(buf: *std.ArrayList(u8), label: []const u8, items: []const []const u8, uri_prefix: []const u8, alloc: internal.Allocator) !void {
+    try std.fmt.format(buf.writer(alloc), "- {s}: ", .{label});
+    if (items.len == 0) {
+        try buf.appendSlice(alloc, "none visible\n");
+        return;
+    }
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try buf.appendSlice(alloc, ", ");
+        try std.fmt.format(buf.writer(alloc), "`{s}{s}`", .{ uri_prefix, item });
+    }
+    try buf.append(alloc, '\n');
+}
+
+fn appendUniqueString(list: *std.ArrayList([]const u8), value: []const u8, alloc: internal.Allocator) !void {
+    for (list.items) |existing| {
+        if (std.mem.eql(u8, existing, value)) return;
+    }
+    try list.append(alloc, try alloc.dupe(u8, value));
+}
+
+fn collectRequirementAndRiskLinks(trace: *TestTraceInfo, requirement_ids: []const []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) !void {
+    for (requirement_ids) |req_id| {
+        try appendUniqueString(&trace.effective_requirements, req_id, alloc);
+        const req_data = internal.routes.handleNode(db, req_id, alloc) catch continue;
+        defer alloc.free(req_data);
+        var req_parsed = try std.json.parseFromSlice(std.json.Value, alloc, req_data, .{});
+        defer req_parsed.deinit();
+        const req_edges_in = internal.json_util.getObjectField(req_parsed.value, "edges_in");
+        if (req_edges_in == null or req_edges_in.? != .array) continue;
+        for (req_edges_in.?.array.items) |req_edge| {
+            const req_label = internal.json_util.getString(req_edge, "label") orelse continue;
+            if (!std.mem.eql(u8, req_label, "MITIGATED_BY")) continue;
+            const risk_node = internal.json_util.getObjectField(req_edge, "node") orelse continue;
+            const risk_ty = internal.json_util.getString(risk_node, "type") orelse continue;
+            if (!std.mem.eql(u8, risk_ty, "Risk")) continue;
+            const risk_id = internal.json_util.getString(risk_node, "id") orelse continue;
+            try appendUniqueString(&trace.linked_risks, risk_id, alloc);
+        }
+    }
+}
+
+fn collectGroupRequirements(group_id: []const u8, trace: *TestTraceInfo, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) !void {
+    const group_data = internal.routes.handleNode(db, group_id, alloc) catch return;
+    defer alloc.free(group_data);
+    var group_parsed = try std.json.parseFromSlice(std.json.Value, alloc, group_data, .{});
+    defer group_parsed.deinit();
+    const group_edges_in = internal.json_util.getObjectField(group_parsed.value, "edges_in");
+    if (group_edges_in == null or group_edges_in.? != .array) return;
+
+    var req_ids: std.ArrayList([]const u8) = .empty;
+    defer req_ids.deinit(alloc);
+    for (group_edges_in.?.array.items) |item| {
+        const label = internal.json_util.getString(item, "label") orelse continue;
+        if (!std.mem.eql(u8, label, "TESTED_BY")) continue;
+        const node = internal.json_util.getObjectField(item, "node") orelse continue;
+        const ty = internal.json_util.getString(node, "type") orelse continue;
+        if (!std.mem.eql(u8, ty, "Requirement")) continue;
+        const req_id = internal.json_util.getString(node, "id") orelse continue;
+        try appendUniqueString(&trace.inherited_requirements, req_id, alloc);
+        try req_ids.append(alloc, req_id);
+    }
+    try collectRequirementAndRiskLinks(trace, req_ids.items, db, alloc);
+}
+
+fn collectTestTraceInfo(node_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) !TestTraceInfo {
+    const data = try internal.routes.handleNode(db, node_id, alloc);
+    defer alloc.free(data);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, data, .{});
+    defer parsed.deinit();
+
+    const node = internal.json_util.getObjectField(parsed.value, "node") orelse return error.NotFound;
+    const node_type = internal.json_util.getString(node, "type") orelse return error.NotFound;
+    const edges_in = internal.json_util.getObjectField(parsed.value, "edges_in");
+    const edges_out = internal.json_util.getObjectField(parsed.value, "edges_out");
+
+    var trace = TestTraceInfo.init();
+    trace.node_type = node_type;
+
+    if (std.mem.eql(u8, node_type, "Test")) {
+        var direct_req_ids: std.ArrayList([]const u8) = .empty;
+        defer direct_req_ids.deinit(alloc);
+        if (edges_in != null and edges_in.? == .array) {
+            for (edges_in.?.array.items) |item| {
+                const label = internal.json_util.getString(item, "label") orelse continue;
+                const edge_node = internal.json_util.getObjectField(item, "node") orelse continue;
+                const edge_type = internal.json_util.getString(edge_node, "type") orelse continue;
+                const edge_id = internal.json_util.getString(edge_node, "id") orelse continue;
+                if (std.mem.eql(u8, label, "TESTED_BY") and std.mem.eql(u8, edge_type, "Requirement")) {
+                    try appendUniqueString(&trace.direct_requirements, edge_id, alloc);
+                    try direct_req_ids.append(alloc, edge_id);
+                } else if (std.mem.eql(u8, label, "HAS_TEST") and std.mem.eql(u8, edge_type, "TestGroup")) {
+                    try appendUniqueString(&trace.parent_groups, edge_id, alloc);
+                }
+            }
+        }
+        try collectRequirementAndRiskLinks(&trace, direct_req_ids.items, db, alloc);
+        for (trace.parent_groups.items) |group_id| try collectGroupRequirements(group_id, &trace, db, alloc);
+    } else if (std.mem.eql(u8, node_type, "TestGroup")) {
+        var direct_req_ids: std.ArrayList([]const u8) = .empty;
+        defer direct_req_ids.deinit(alloc);
+        if (edges_in != null and edges_in.? == .array) {
+            for (edges_in.?.array.items) |item| {
+                const label = internal.json_util.getString(item, "label") orelse continue;
+                if (!std.mem.eql(u8, label, "TESTED_BY")) continue;
+                const edge_node = internal.json_util.getObjectField(item, "node") orelse continue;
+                const edge_type = internal.json_util.getString(edge_node, "type") orelse continue;
+                if (!std.mem.eql(u8, edge_type, "Requirement")) continue;
+                const edge_id = internal.json_util.getString(edge_node, "id") orelse continue;
+                try appendUniqueString(&trace.direct_requirements, edge_id, alloc);
+                try direct_req_ids.append(alloc, edge_id);
+            }
+        }
+        if (edges_out != null and edges_out.? == .array) {
+            for (edges_out.?.array.items) |item| {
+                const label = internal.json_util.getString(item, "label") orelse continue;
+                if (!std.mem.eql(u8, label, "HAS_TEST")) continue;
+                const edge_node = internal.json_util.getObjectField(item, "node") orelse continue;
+                const edge_type = internal.json_util.getString(edge_node, "type") orelse continue;
+                if (!std.mem.eql(u8, edge_type, "Test")) continue;
+                const edge_id = internal.json_util.getString(edge_node, "id") orelse continue;
+                try appendUniqueString(&trace.child_tests, edge_id, alloc);
+            }
+        }
+        try collectRequirementAndRiskLinks(&trace, direct_req_ids.items, db, alloc);
+    } else {
+        return error.NotFound;
+    }
+
+    return trace;
 }
 
 fn edgePropertyPriority(key: []const u8) usize {
