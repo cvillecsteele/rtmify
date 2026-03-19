@@ -97,6 +97,11 @@ pub const ImplementationChangeEvidence = struct {
     commit_message: ?[]const u8,
 };
 
+pub const GraphCounts = struct {
+    nodes: i64,
+    edges: i64,
+};
+
 // ---------------------------------------------------------------------------
 // Suspect propagation rules (mirrors graph.py)
 // ---------------------------------------------------------------------------
@@ -158,6 +163,27 @@ pub const GraphDb = struct {
 
     pub fn deinit(g: *GraphDb) void {
         g.db.close();
+    }
+
+    pub fn countGraph(g: *GraphDb) !GraphCounts {
+        var node_count: i64 = 0;
+        var edge_count: i64 = 0;
+
+        {
+            var st = try g.db.prepare("SELECT COUNT(*) FROM nodes");
+            defer st.finalize();
+            if (try st.step()) node_count = st.columnInt(0);
+        }
+        {
+            var st = try g.db.prepare("SELECT COUNT(*) FROM edges");
+            defer st.finalize();
+            if (try st.step()) edge_count = st.columnInt(0);
+        }
+
+        return .{
+            .nodes = node_count,
+            .edges = edge_count,
+        };
     }
 
     // -----------------------------------------------------------------------

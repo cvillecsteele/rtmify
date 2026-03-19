@@ -199,7 +199,7 @@ pub fn loadOrInit(alloc: Allocator, options: BootstrapOptions) !LiveConfig {
         error.FileNotFound => {
             var cfg = try bootstrapConfig(alloc, options);
             errdefer cfg.deinit(alloc);
-            try save(&cfg, alloc);
+            if (!hasBootstrapOverrides(options)) try save(&cfg, alloc);
             return cfg;
         },
         else => return err,
@@ -209,7 +209,8 @@ pub fn loadOrInit(alloc: Allocator, options: BootstrapOptions) !LiveConfig {
     var cfg = try loadFromSlice(bytes, alloc);
     errdefer cfg.deinit(alloc);
     const changed = try normalizeAndValidate(&cfg, alloc);
-    if (changed) try save(&cfg, alloc);
+    if (changed and !hasBootstrapOverrides(options)) try save(&cfg, alloc);
+    try applyBootstrapOverrides(&cfg, options, alloc);
     return cfg;
 }
 
@@ -544,6 +545,22 @@ pub fn bootstrapConfig(alloc: Allocator, options: BootstrapOptions) !LiveConfig 
         .active_workbook_id = try alloc.dupe(u8, id),
         .workbooks = workbooks,
     };
+}
+
+fn hasBootstrapOverrides(options: BootstrapOptions) bool {
+    return options.db_path_override != null or options.inbox_dir_override != null;
+}
+
+fn applyBootstrapOverrides(cfg: *LiveConfig, options: BootstrapOptions, alloc: Allocator) !void {
+    const workbook = activeWorkbook(cfg) orelse return;
+    if (options.db_path_override) |path| {
+        alloc.free(workbook.db_path);
+        workbook.db_path = try alloc.dupe(u8, path);
+    }
+    if (options.inbox_dir_override) |path| {
+        alloc.free(workbook.inbox_dir);
+        workbook.inbox_dir = try alloc.dupe(u8, path);
+    }
 }
 
 fn loadFromSlice(bytes: []const u8, alloc: Allocator) !LiveConfig {
@@ -978,6 +995,19 @@ test "bootstrapConfig creates single workbook entry" {
     try testing.expect(cfg.workbooks[0].db_path.len > 0);
     try testing.expect(cfg.workbooks[0].inbox_dir.len > 0);
     try testing.expectEqual(@as(?i64, null), cfg.workbooks[0].removed_at);
+}
+
+test "applyBootstrapOverrides updates active workbook paths in memory" {
+    var cfg = try bootstrapConfig(testing.allocator, .{});
+    defer cfg.deinit(testing.allocator);
+
+    try applyBootstrapOverrides(&cfg, .{
+        .db_path_override = "/tmp/demo.sqlite",
+        .inbox_dir_override = "/tmp/demo-inbox",
+    }, testing.allocator);
+
+    try testing.expectEqualStrings("/tmp/demo.sqlite", cfg.workbooks[0].db_path);
+    try testing.expectEqualStrings("/tmp/demo-inbox", cfg.workbooks[0].inbox_dir);
 }
 
 test "save and load roundtrip" {

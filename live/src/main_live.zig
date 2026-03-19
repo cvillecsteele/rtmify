@@ -243,6 +243,7 @@ pub fn main() !void {
     }
 
     std.log.info("rtmify-live {s} — db={s} port={d}", .{ build_options.version, db_path, port });
+    const has_runtime_path_override = !std.mem.eql(u8, db_path, "graph.db") or inbox_dir_override != null;
 
     var tray_app_version: []u8 = undefined;
     if (std.process.getEnvVarOwned(gpa, "RTMIFY_TRAY_APP_VERSION")) |tray_version| {
@@ -286,7 +287,7 @@ pub fn main() !void {
         }
         try registry.syncRuntimeConfigFromActive(gpa);
     } else |_| {}
-    try registry.save(gpa);
+    if (!has_runtime_path_override) try registry.save(gpa);
 
     refreshActiveRuntimeCallback(&registry, &secure_store, &license_service, gpa);
 
@@ -462,6 +463,25 @@ fn refreshActiveRuntimeCallback(
             return;
         },
     };
+    const runtime = registry.active() catch {
+        startActiveWorkers(registry, secure_store, license_service, alloc) catch |start_err| {
+            std.log.warn("active workers start failed: {s}", .{@errorName(start_err)});
+        };
+        return;
+    };
+    {
+        const counts = runtime.db.countGraph() catch |err| {
+            std.log.warn("graph load summary unavailable db={s}: {s}", .{ runtime.config.db_path, @errorName(err) });
+            startActiveWorkers(registry, secure_store, license_service, alloc) catch |start_err| {
+                std.log.warn("active workers start failed: {s}", .{@errorName(start_err)});
+            };
+            return;
+        };
+        std.log.info(
+            "graph loaded workbook={s} db={s} nodes={d} edges={d}",
+            .{ runtime.config.display_name, runtime.config.db_path, counts.nodes, counts.edges },
+        );
+    }
     startActiveWorkers(registry, secure_store, license_service, alloc) catch |err| {
         std.log.warn("active workers start failed: {s}", .{@errorName(err)});
     };

@@ -84,27 +84,32 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
     const path = stripQuery(target);
     const method_name = @tagName(req.head.method);
     const started_ns = std.time.nanoTimestamp();
+    const log_http_request = shouldLogHttpRequest(req.head.method, path);
     var response_status: ?std.http.Status = null;
     var response_bytes: usize = 0;
     defer {
-        const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - started_ns, std.time.ns_per_ms);
-        if (response_status) |status| {
-            std.log.info("http done {s} {s} status={d} bytes={d} elapsed_ms={d}", .{
-                method_name,
-                target,
-                @intFromEnum(status),
-                response_bytes,
-                elapsed_ms,
-            });
-        } else {
-            std.log.warn("http unfinished {s} {s} elapsed_ms={d}", .{
-                method_name,
-                target,
-                elapsed_ms,
-            });
+        if (log_http_request) {
+            const elapsed_ms = @divTrunc(std.time.nanoTimestamp() - started_ns, std.time.ns_per_ms);
+            if (response_status) |status| {
+                std.log.info("http done {s} {s} status={d} bytes={d} elapsed_ms={d}", .{
+                    method_name,
+                    target,
+                    @intFromEnum(status),
+                    response_bytes,
+                    elapsed_ms,
+                });
+            } else {
+                std.log.warn("http unfinished {s} {s} elapsed_ms={d}", .{
+                    method_name,
+                    target,
+                    elapsed_ms,
+                });
+            }
         }
     }
-    std.log.info("http {s} {s}", .{ method_name, target });
+    if (log_http_request) {
+        std.log.info("http {s} {s}", .{ method_name, target });
+    }
 
     validateLocalRequest(req) catch |e| switch (e) {
         error.ForbiddenHost => {
@@ -1074,6 +1079,12 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         response_bytes = "{\"error\":\"not found\"}".len;
         try send404(req);
     }
+}
+
+fn shouldLogHttpRequest(method: std.http.Method, path: []const u8) bool {
+    // Streamable HTTP MCP clients poll GET /mcp frequently; keep the access log
+    // useful by suppressing that one high-volume path.
+    return !(method == .GET and std.mem.eql(u8, path, "/mcp"));
 }
 
 fn isLicenseExempt(method: std.http.Method, path: []const u8) bool {
