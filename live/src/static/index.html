@@ -77,10 +77,11 @@
     header {
       background: var(--brand-navy);
       color: oklch(92% 0.012 258);
-      padding: 0 28px;
-      height: 52px;
-      display: flex;
-      align-items: center;
+      padding: 8px 28px;
+      min-height: 52px;
+      display: grid;
+      grid-template-columns: auto minmax(280px, 420px) auto;
+      align-items: start;
       gap: 20px;
       border-bottom: 2px solid var(--amber);
     }
@@ -94,6 +95,7 @@
       align-items: baseline;
       gap: 16px;
       font-family: inherit;
+      align-self: center;
     }
     .header-home-btn:focus-visible {
       outline: 2px solid var(--amber);
@@ -102,10 +104,10 @@
     }
     .header-title { font-size: 16px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(96% 0.010 258); }
     .header-subtitle { font-size: 11px; color: oklch(62% 0.018 258); letter-spacing: 0.05em; text-transform: uppercase; }
-    .header-workbook { display: flex; flex-direction: column; gap: 2px; min-width: 280px; margin-left: auto; }
+    .header-workbook { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
     .header-workbook-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(70% 0.02 258); }
     .header-workbook-select { width: 100%; background: oklch(24% 0.05 258); color: oklch(96% 0.01 258); border: 1px solid oklch(34% 0.04 258); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
-    .header-workbook-meta { font-size: 11px; color: oklch(74% 0.016 258); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .header-workbook-meta { font-size: 11px; color: oklch(74% 0.016 258); white-space: normal; overflow-wrap: anywhere; line-height: 1.3; min-height: 1.3em; }
 
     /* Primary nav */
     nav.nav-primary {
@@ -947,7 +949,7 @@
     .label-bold        { font-weight: 600; margin-bottom: 6px; font-size: 13px; color: var(--text-1); }
     .info-label        { font-weight: 600; color: var(--text-3); font-size: 13px; }
     .mcp-card-body     { margin-bottom: 10px; color: var(--text-2); line-height: 1.55; font-size: 13px; }
-    .header-badge      { margin-left: auto; font-size: 11.5px; background: var(--amber); color: oklch(100% 0 0); border-radius: 3px; padding: 3px 10px; cursor: pointer; font-weight: 700; letter-spacing: 0.02em; }
+    .header-badge      { justify-self: end; align-self: center; font-size: 11.5px; background: var(--amber); color: oklch(100% 0 0); border-radius: 3px; padding: 3px 10px; cursor: pointer; font-weight: 700; letter-spacing: 0.02em; }
     .lobby-input--no-mb { margin-bottom: 0; }
     .w-input           { max-width: 280px; }
     .lobby-label       { font-size: 13.5px; font-weight: 500; color: var(--text-2); margin-bottom: 8px; }
@@ -1178,6 +1180,13 @@
           <div class="provider-tile-name">Excel Online</div>
           <div class="provider-tile-sub">Microsoft 365</div>
         </div>
+        <div class="provider-tile" id="tile-local" onclick="selectProvider('local')" style="display:none">
+          <div class="provider-tile-logo">
+            <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#4A5568"/><ellipse cx="24" cy="13" rx="12" ry="5" fill="#E2E8F0"/><path d="M12 13v16c0 2.8 5.4 5 12 5s12-2.2 12-5V13" fill="none" stroke="#E2E8F0" stroke-width="2"/><path d="M12 21c0 2.8 5.4 5 12 5s12-2.2 12-5M12 29c0 2.8 5.4 5 12 5s12-2.2 12-5" fill="none" stroke="#E2E8F0" stroke-width="2"/></svg>
+          </div>
+          <div class="provider-tile-name">Existing Local DB</div>
+          <div class="provider-tile-sub">Opened with `--db`</div>
+        </div>
       </div>
       <button class="authorize-btn" onclick="lobbyNext(2)">
         <span class="authorize-btn-label">Continue →</span>
@@ -1222,10 +1231,17 @@
         </div>
         <div style="margin-bottom:16px"></div>
       </div>
-      <input id="lobby-url" class="lobby-input" type="text"
-             aria-label="Workbook URL"
-             oninput="lobbyStateFromInputs()"
-             placeholder="https://docs.google.com/spreadsheets/d/…" />
+      <div id="s3-local" style="display:none">
+        <div class="text-hint mb-12">
+          This workspace was launched from an existing local SQLite graph database. No Google Sheets or Excel Online connection is required.
+        </div>
+      </div>
+      <div id="lobby-url-wrap">
+        <input id="lobby-url" class="lobby-input" type="text"
+               aria-label="Workbook URL"
+               oninput="lobbyStateFromInputs()"
+               placeholder="https://docs.google.com/spreadsheets/d/…" />
+      </div>
       <button class="authorize-btn" id="s3-continue-btn" onclick="lobbyNext(3)">
         <span class="authorize-btn-label">Review →</span>
       </button>
@@ -1300,15 +1316,15 @@
 
 <!-- Primary nav -->
 <nav class="nav-primary">
-  <button class="active" data-group="data" onclick="showGroup('data')">Data</button>
-  <button data-group="bom" onclick="showGroup('bom')">BOM</button>
-  <button data-group="soup" onclick="showGroup('soup')">Software / SOUP</button>
+  <button class="active" data-group="data" onclick="showGroup('data')">Design Controls</button>
   <button data-group="analysis" onclick="showGroup('analysis')">
     Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
   </button>
-  <button data-group="guide" onclick="showGroup('guide')">Guide</button>
   <button data-group="code" onclick="showGroup('code')">Code</button>
+  <button data-group="bom" onclick="showGroup('bom')">BOM</button>
+  <button data-group="soup" onclick="showGroup('soup')">Software / SOUP</button>
   <button data-group="reports" onclick="showGroup('reports')">Reports</button>
+  <button data-group="guide" onclick="showGroup('guide')">Guide / Help</button>
   <div class="nav-settings-wrap">
     <button class="nav-settings-btn" title="Settings" onclick="toggleSettings(event)">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1327,8 +1343,8 @@
 
 <!-- Data sub-nav -->
 <div class="nav-sub active" data-group="data">
-  <button class="active" data-tab="requirements" onclick="showTab('requirements')">Requirements</button>
-  <button data-tab="user-needs" onclick="showTab('user-needs')">User Needs</button>
+  <button class="active" data-tab="user-needs" onclick="showTab('user-needs')">User Needs</button>
+  <button data-tab="requirements" onclick="showTab('requirements')">Requirements</button>
   <button data-tab="tests" onclick="showTab('tests')">Tests</button>
   <button data-tab="risks" onclick="showTab('risks')">Risks</button>
   <button data-tab="rtm" onclick="showTab('rtm')">RTM</button>

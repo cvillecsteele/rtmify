@@ -2509,11 +2509,17 @@
       resetLobbyScreens(1);
       lobbyCurrentScreen = 1;
       updateLobbyNav();
+      if (status.connection_block_reason && status.workbook_url && status.platform && lobbyState.profileId) {
+        lobbyCurrentScreen = 1;
+        showScreen(3, 'forward');
+        return;
+      }
       if (!status.connection_block_reason && status.workbook_url && status.platform && lobbyState.profileId) {
         lobbyCurrentScreen = 1;
         showScreen(4, 'forward');
         return;
       }
+      return;
     } catch (_) {}
     lobbyState.displayName = '';
     document.getElementById('lobby-display-name').value = '';
@@ -2539,6 +2545,7 @@
   }
 
   function applyStatus(status) {
+    lobbyState.localWorkspace = Boolean(status.active_workbook && !status.platform && !status.workbook_url);
     if (status.active_workbook && status.active_workbook.display_name) {
       lobbyState.displayName = status.active_workbook.display_name;
       const displayNameEl = document.getElementById('lobby-display-name');
@@ -2547,6 +2554,9 @@
     if (status.platform) {
       lobbyState.provider = status.platform;
       selectProvider(status.platform);
+    } else if (lobbyState.localWorkspace) {
+      lobbyState.provider = 'local';
+      selectProvider('local');
     }
     if (status.workbook_url) {
       lobbyState.workbookUrl = status.workbook_url;
@@ -2582,14 +2592,20 @@
   function connectionBlockMessage(status) {
     switch (status?.connection_block_reason) {
       case 'legacy_plaintext_credentials':
-        return 'This workspace was configured before secure credential storage. Reconnect to store provider credentials outside SQLite.';
+        return status?.platform === 'excel'
+          ? 'This workspace was configured before secure credential storage. Reconnect on Step 3 by entering the Excel Online tenant ID, client ID, and client secret again.'
+          : 'This workspace was configured before secure credential storage. Reconnect on Step 3 by uploading the Google service-account JSON again.';
       case 'secure_storage_unsupported':
         return 'Secure credential storage is not available on this platform. RTMify Live cannot save provider credentials here.';
       case 'secret_not_found':
       case 'secret_store_error':
-        return 'Stored provider credentials are unavailable. Reconnect to restore access.';
+        return status?.platform === 'excel'
+          ? 'Stored Excel Online credentials are unavailable. Reconnect on Step 3 by entering the tenant ID, client ID, and client secret again.'
+          : 'Stored Google Sheets credentials are unavailable. Reconnect on Step 3 by uploading the service-account JSON again.';
       case 'credential_ref_missing':
-        return 'Stored provider credentials are incomplete. Reconnect to restore access.';
+        return status?.platform === 'excel'
+          ? 'Stored Excel Online credentials are incomplete. Reconnect on Step 3 by entering the tenant ID, client ID, and client secret again.'
+          : 'Stored Google Sheets credentials are incomplete. Reconnect on Step 3 by uploading the service-account JSON again.';
       default:
         return '';
     }
@@ -2603,12 +2619,18 @@
     errEl.style.display = msg ? 'block' : 'none';
   }
 
-  function connectionErrorMessage(code) {
+  function connectionErrorMessage(code, platform) {
     switch (code) {
       case 'secure_storage_unavailable':
         return 'Secure credential storage is not available on this platform.';
       case 'failed to persist secure credentials':
         return 'Provider credentials could not be saved securely.';
+      case 'failed to connect: InvalidCredential':
+      case 'failed to validate connection: InvalidCredential':
+      case 'InvalidCredential':
+        return platform === 'excel'
+          ? 'Those Excel Online credentials are invalid or incomplete.'
+          : 'That file is not a valid Google service-account credential.';
       default:
         return '';
     }
@@ -2825,29 +2847,62 @@
     let text;
     try {
       text = await file.text();
-      JSON.parse(text);
     } catch {
-      errEl.textContent = 'Invalid JSON file.';
+      errEl.textContent = 'Could not read that file.';
       errEl.style.display = 'block';
       return;
     }
 
-    let parsed;
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      errEl.textContent = 'Invalid Google service-account JSON.';
+      const parsed = parseGoogleServiceAccountJson(text);
+      lobbyState.googleCredentialEmail = parsed.client_email;
+      lobbyState.googleCredentialJson = text;
+    } catch (err) {
+      errEl.textContent = err.message || 'Invalid Google service-account JSON.';
       errEl.style.display = 'block';
       return;
     }
-
-    lobbyState.googleCredentialEmail = parsed.client_email || 'Loaded service account';
-    lobbyState.googleCredentialJson  = text;
 
     document.getElementById('sa-loaded-email').textContent = lobbyState.googleCredentialEmail;
     document.getElementById('sa-upload-zone').style.display = 'none';
     document.getElementById('sa-loaded-chip').style.display = '';
     document.getElementById('lobby-share-hint').style.display = 'block';
+  }
+
+  function parseGoogleServiceAccountJson(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('Invalid JSON file.');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('That file is JSON, but it is not a Google service-account credential.');
+    }
+    if (parsed.type !== 'service_account') {
+      throw new Error('That file is JSON, but it is not a Google service-account credential.');
+    }
+    if (typeof parsed.client_email !== 'string' || !parsed.client_email.trim()) {
+      throw new Error('Google service-account JSON is missing client_email.');
+    }
+    if (typeof parsed.private_key !== 'string' || !parsed.private_key.trim()) {
+      throw new Error('Google service-account JSON is missing private_key.');
+    }
+    return parsed;
+  }
+
+  function validateExcelCredentials(tenantId, clientId, clientSecret) {
+    if (!tenantId || !clientId || !clientSecret) {
+      throw new Error('Enter all Azure credentials to continue.');
+    }
+    if (!tenantId.trim() || !clientId.trim() || !clientSecret.trim()) {
+      throw new Error('Excel Online credentials cannot be blank.');
+    }
+    return {
+      tenantId: tenantId.trim(),
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+    };
   }
 
   document.getElementById('sa-file-input').addEventListener('change', function() {
@@ -3242,6 +3297,7 @@
     displayName: '',
     profileId: null,
     provider: 'google',
+    localWorkspace: false,
     googleCredentialJson: '',
     googleCredentialEmail: '',
     excelTenantId: '',
@@ -3305,8 +3361,12 @@
     lobbyState.prefilledConnection = false;
     document.getElementById('tile-google').classList.toggle('selected', provider === 'google');
     document.getElementById('tile-excel').classList.toggle('selected', provider === 'excel');
+    document.getElementById('tile-local').classList.toggle('selected', provider === 'local');
+    document.getElementById('tile-local').style.display = lobbyState.localWorkspace ? '' : 'none';
     document.getElementById('s3-google').style.display = provider === 'google' ? '' : 'none';
     document.getElementById('s3-excel').style.display = provider === 'excel' ? '' : 'none';
+    document.getElementById('s3-local').style.display = provider === 'local' ? '' : 'none';
+    document.getElementById('lobby-url-wrap').style.display = provider === 'local' ? 'none' : '';
     document.getElementById('lobby-url').placeholder = provider === 'excel'
       ? 'https://tenant.sharepoint.com/:x:/r/sites/…'
       : 'https://docs.google.com/spreadsheets/d/…';
@@ -3374,14 +3434,16 @@
           errEl.style.display = 'block';
           return;
         }
-      } else {
-        if (!lobbyState.excelTenantId || !lobbyState.excelClientId || !lobbyState.excelClientSecret) {
-          errEl.textContent = 'Enter all Azure credentials to continue.';
+      } else if (lobbyState.provider === 'excel') {
+        try {
+          validateExcelCredentials(lobbyState.excelTenantId, lobbyState.excelClientId, lobbyState.excelClientSecret);
+        } catch (err) {
+          errEl.textContent = err.message || 'Enter all Azure credentials to continue.';
           errEl.style.display = 'block';
           return;
         }
       }
-      if (!lobbyState.workbookUrl) {
+      if (lobbyState.provider !== 'local' && !lobbyState.workbookUrl) {
         errEl.textContent = 'Enter a workbook URL to continue.';
         errEl.style.display = 'block';
         return;
@@ -3423,29 +3485,41 @@
   function renderMissionBrief() {
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
     if (!profile) return;
+    const authorizeLabel = document.getElementById('authorize-label');
+    const authorizeFill = document.getElementById('authorize-fill');
+    const authorizeBtn = document.getElementById('authorize-btn');
+    if (authorizeLabel) authorizeLabel.textContent = lobbyState.provider === 'local' ? 'Open Workspace' : 'Authorize & Connect';
+    if (authorizeFill) authorizeFill.style.width = '0%';
+    if (authorizeBtn) authorizeBtn.disabled = false;
     document.getElementById('brief-headline').textContent = profile.tagline;
     const urlDisplay = lobbyState.workbookUrl.length > 44
       ? '…' + lobbyState.workbookUrl.slice(-42) : lobbyState.workbookUrl;
     const accountDisplay = lobbyState.provider === 'google'
       ? (lobbyState.googleCredentialEmail || '—')
-      : (lobbyState.excelTenantId || '—');
-    const providerLabel = lobbyState.provider === 'google' ? 'Google Sheets' : 'Excel Online';
+      : lobbyState.provider === 'excel'
+        ? (lobbyState.excelTenantId || '—')
+        : 'Not applicable';
+    const providerLabel = lobbyState.provider === 'google'
+      ? 'Google Sheets'
+      : lobbyState.provider === 'excel'
+        ? 'Excel Online'
+        : 'Existing Local DB';
     document.getElementById('mission-brief').innerHTML = `
       <div class="brief-row"><span class="brief-key">Profile</span><span class="brief-val plain">${profile.label}</span></div>
       <div class="brief-row"><span class="brief-key">Standard</span><span class="brief-val plain">${profile.standards}</span></div>
       <div class="brief-row"><span class="brief-key">Provider</span><span class="brief-val plain">${providerLabel}</span></div>
       <div class="brief-row"><span class="brief-key">Account</span><span class="brief-val">${esc(accountDisplay)}</span></div>
-      <div class="brief-row"><span class="brief-key">Workbook</span><span class="brief-val">${esc(urlDisplay)}</span></div>`;
+      <div class="brief-row"><span class="brief-key">${lobbyState.provider === 'local' ? 'Workspace' : 'Workbook'}</span><span class="brief-val">${esc(lobbyState.provider === 'local' ? lobbyState.displayName : urlDisplay)}</span></div>`;
   }
 
   function showSuccess() {
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId) || { label: '—', standards: '—' };
     document.getElementById('success-sub').textContent =
-      `${profile.label} · ${lobbyState.provider === 'google' ? 'Google Sheets' : 'Excel Online'}`;
+      `${profile.label} · ${lobbyState.provider === 'google' ? 'Google Sheets' : lobbyState.provider === 'excel' ? 'Excel Online' : 'Existing Local DB'}`;
     document.getElementById('success-detail').innerHTML = `
       <div class="success-detail-row"><span class="success-detail-key">Standard</span><span class="success-detail-val">${esc(profile.standards)}</span></div>
-      <div class="success-detail-row"><span class="success-detail-key">Account</span><span class="success-detail-val">${esc(lobbyState.googleCredentialEmail || lobbyState.excelTenantId || '—')}</span></div>
-      <div class="success-detail-row"><span class="success-detail-key">Sync</span><span class="success-detail-val">Starting…</span></div>`;
+      <div class="success-detail-row"><span class="success-detail-key">${lobbyState.provider === 'local' ? 'Workspace' : 'Account'}</span><span class="success-detail-val">${esc(lobbyState.provider === 'google' ? (lobbyState.googleCredentialEmail || '—') : lobbyState.provider === 'excel' ? (lobbyState.excelTenantId || '—') : (lobbyState.displayName || '—'))}</span></div>
+      <div class="success-detail-row"><span class="success-detail-key">${lobbyState.provider === 'local' ? 'State' : 'Sync'}</span><span class="success-detail-val">${lobbyState.provider === 'local' ? 'Ready' : 'Starting…'}</span></div>`;
     showScreen(5, 'forward');
   }
 
@@ -3531,6 +3605,7 @@
   function buildDraftConnection() {
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
     if (!profile) return null;
+    if (lobbyState.provider === 'local') return null;
     const draft = {
       display_name: lobbyState.displayName,
       platform: lobbyState.provider,
@@ -3542,10 +3617,15 @@
       if (!lobbyState.googleCredentialJson) return null;
       draft.credentials.service_account_json = lobbyState.googleCredentialJson;
     } else {
-      if (!lobbyState.excelTenantId || !lobbyState.excelClientId || !lobbyState.excelClientSecret) return null;
-      draft.credentials.tenant_id     = lobbyState.excelTenantId;
-      draft.credentials.client_id     = lobbyState.excelClientId;
-      draft.credentials.client_secret = lobbyState.excelClientSecret;
+      let parsed;
+      try {
+        parsed = validateExcelCredentials(lobbyState.excelTenantId, lobbyState.excelClientId, lobbyState.excelClientSecret);
+      } catch {
+        return null;
+      }
+      draft.credentials.tenant_id = parsed.tenantId;
+      draft.credentials.client_id = parsed.clientId;
+      draft.credentials.client_secret = parsed.clientSecret;
     }
     if (!lobbyState.workbookUrl) return null;
     return draft;
@@ -3557,6 +3637,26 @@
     const label  = document.getElementById('authorize-label');
     const errEl  = document.getElementById('lobby-error');
     const draft  = buildDraftConnection();
+
+    if (lobbyState.provider === 'local' && lobbyState.localWorkspace) {
+      errEl.style.display = 'none';
+      btn.disabled = true;
+      fill.style.width = '100%';
+      label.textContent = 'Opening workspace…';
+      try {
+        await loadWorkbooksState();
+        await loadData();
+        await handleGuideHash();
+        openWorkspace();
+      } catch (e) {
+        errEl.textContent = 'Failed to open workspace: ' + e.message;
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        fill.style.width = '0%';
+        label.textContent = 'Open Workspace';
+      }
+      return;
+    }
 
     if (!draft && lobbyState.prefilledConnection && lobbyState.profileId && lobbyState.provider && lobbyState.workbookUrl) {
       errEl.style.display = 'none';
@@ -3591,7 +3691,7 @@
       label.textContent = 'Reading workbook…';
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
-        throw new Error(formatDiagnosticsError(data) || connectionErrorMessage(data.error) || data.detail || data.error || `HTTP ${res.status}`);
+        throw new Error(formatDiagnosticsError(data) || connectionErrorMessage(data.error, draft?.platform) || data.detail || data.error || `HTTP ${res.status}`);
       }
     } catch (e) {
       errEl.textContent = 'Failed to connect: ' + e.message;

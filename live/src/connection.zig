@@ -30,9 +30,9 @@ pub fn parseDraftFromJson(body: []const u8, alloc: Allocator) !common.DraftConne
             break :blk try normalizeGoogleCredentialJson(raw, alloc);
         },
         .excel => blk: {
-            const tenant_id = getString(credentials, "tenant_id") orelse return error.InvalidJson;
-            const client_id = getString(credentials, "client_id") orelse return error.InvalidJson;
-            const client_secret = getString(credentials, "client_secret") orelse return error.InvalidJson;
+            const tenant_id = getNonEmptyString(credentials, "tenant_id") orelse return error.InvalidCredential;
+            const client_id = getNonEmptyString(credentials, "client_id") orelse return error.InvalidCredential;
+            const client_secret = getNonEmptyString(credentials, "client_secret") orelse return error.InvalidCredential;
             var buf: std.ArrayList(u8) = .empty;
             defer buf.deinit(alloc);
             try buf.appendSlice(alloc, "{\"platform\":\"excel\",\"tenant_id\":");
@@ -169,6 +169,7 @@ fn validateGoogleDraft(draft: common.DraftConnection, alloc: Allocator) !common.
 }
 
 fn validateExcelDraft(draft: common.DraftConnection, alloc: Allocator) !common.ValidatedDraft {
+    try validateExcelCredentialJsonShape(draft.credentials_json, alloc);
     const tenant_id = json_util.extractJsonFieldStatic(draft.credentials_json, "tenant_id") orelse return error.InvalidCredential;
     const client_id = json_util.extractJsonFieldStatic(draft.credentials_json, "client_id") orelse return error.InvalidCredential;
     const client_secret = json_util.extractJsonFieldStatic(draft.credentials_json, "client_secret") orelse return error.InvalidCredential;
@@ -213,7 +214,14 @@ fn getString(value: std.json.Value, key: []const u8) ?[]const u8 {
     return field.string;
 }
 
+fn getNonEmptyString(value: std.json.Value, key: []const u8) ?[]const u8 {
+    const raw = getString(value, key) orelse return null;
+    if (std.mem.trim(u8, raw, " \t\r\n").len == 0) return null;
+    return raw;
+}
+
 fn normalizeGoogleCredentialJson(raw_json: []const u8, alloc: Allocator) ![]u8 {
+    try validateGoogleCredentialJsonShape(raw_json, alloc);
     var trimmed = std.mem.trim(u8, raw_json, " \t\r\n");
     if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') return error.InvalidCredential;
     trimmed = trimmed[1 .. trimmed.len - 1];
@@ -230,6 +238,32 @@ fn extractGoogleSheetId(url: []const u8) ?[]const u8 {
     const end = std.mem.indexOfScalarPos(u8, url, start, '/') orelse url.len;
     if (end <= start) return null;
     return url[start..end];
+}
+
+fn validateGoogleCredentialJsonShape(raw_json: []const u8, alloc: Allocator) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, raw_json, .{});
+    defer parsed.deinit();
+    const root = parsed.value;
+    if (root != .object) return error.InvalidCredential;
+    const ty = getString(root, "type") orelse return error.InvalidCredential;
+    if (!std.mem.eql(u8, ty, "service_account")) return error.InvalidCredential;
+    const client_email = getString(root, "client_email") orelse return error.InvalidCredential;
+    if (std.mem.trim(u8, client_email, " \t\r\n").len == 0) return error.InvalidCredential;
+    const private_key = getString(root, "private_key") orelse return error.InvalidCredential;
+    if (std.mem.trim(u8, private_key, " \t\r\n").len == 0) return error.InvalidCredential;
+}
+
+fn validateExcelCredentialJsonShape(raw_json: []const u8, alloc: Allocator) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, raw_json, .{});
+    defer parsed.deinit();
+    const root = parsed.value;
+    if (root != .object) return error.InvalidCredential;
+    const tenant_id = getString(root, "tenant_id") orelse return error.InvalidCredential;
+    if (std.mem.trim(u8, tenant_id, " \t\r\n").len == 0) return error.InvalidCredential;
+    const client_id = getString(root, "client_id") orelse return error.InvalidCredential;
+    if (std.mem.trim(u8, client_id, " \t\r\n").len == 0) return error.InvalidCredential;
+    const client_secret = getString(root, "client_secret") orelse return error.InvalidCredential;
+    if (std.mem.trim(u8, client_secret, " \t\r\n").len == 0) return error.InvalidCredential;
 }
 
 const testing = std.testing;
@@ -250,7 +284,7 @@ test "parseDraftFromJson handles google payload" {
     const alloc = arena.allocator();
 
     const body =
-        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"client_email\\\":\\\"svc@example.com\\\",\\\"private_key\\\":\\\"pem\\\"}\"}}";
+        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"type\\\":\\\"service_account\\\",\\\"client_email\\\":\\\"svc@example.com\\\",\\\"private_key\\\":\\\"pem\\\"}\"}}";
     var draft = try parseDraftFromJson(body, alloc);
     defer draft.deinit(alloc);
     try testing.expectEqual(common.ProviderId.google, draft.platform);
@@ -268,6 +302,26 @@ test "parseDraftFromJson preserves pretty printed google credential fields" {
     defer draft.deinit(alloc);
     try testing.expectEqualStrings("svc@example.com", json_util.extractJsonFieldStatic(draft.credentials_json, "client_email").?);
     try testing.expectEqualStrings("pem", json_util.extractJsonFieldStatic(draft.credentials_json, "private_key").?);
+}
+
+test "parseDraftFromJson rejects non service-account google json" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const body =
+        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"payload\\\":{\\\"schema\\\":1},\\\"sig\\\":\\\"abc\\\"}\"}}";
+    try testing.expectError(error.InvalidCredential, parseDraftFromJson(body, alloc));
+}
+
+test "parseDraftFromJson rejects google json missing private key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const body =
+        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"type\\\":\\\"service_account\\\",\\\"client_email\\\":\\\"svc@example.com\\\"}\"}}";
+    try testing.expectError(error.InvalidCredential, parseDraftFromJson(body, alloc));
 }
 
 test "parseDraftFromJson handles excel payload" {
@@ -296,6 +350,16 @@ test "parseDraftFromJson preserves excel client_secret containing quote and back
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, draft.credentials_json, .{});
     defer parsed.deinit();
     try testing.expectEqualStrings("s3cr\"et\\with\nchars", json_util.getString(parsed.value, "client_secret").?);
+}
+
+test "parseDraftFromJson rejects blank excel credential fields" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const body =
+        "{\"platform\":\"excel\",\"workbook_url\":\"https://tenant.sharepoint.com/x\",\"credentials\":{\"tenant_id\":\" \",\"client_id\":\"c\",\"client_secret\":\"s\"}}";
+    try testing.expectError(error.InvalidCredential, parseDraftFromJson(body, alloc));
 }
 
 test "persistActive and loadActive roundtrip excel escaped credential content" {

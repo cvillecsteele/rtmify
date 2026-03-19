@@ -558,6 +558,14 @@ fn applyBootstrapOverrides(cfg: *LiveConfig, options: BootstrapOptions, alloc: A
         workbook.db_path = try alloc.dupe(u8, path);
         alloc.free(workbook.display_name);
         workbook.display_name = try alloc.dupe(u8, std.fs.path.basename(path));
+        workbook.platform = null;
+        clearOptionalString(&workbook.workbook_url, alloc);
+        clearOptionalString(&workbook.workbook_label, alloc);
+        clearOptionalString(&workbook.credential_ref, alloc);
+        clearOptionalString(&workbook.credential_display, alloc);
+        clearOptionalString(&workbook.google_sheet_id, alloc);
+        clearOptionalString(&workbook.excel_drive_id, alloc);
+        clearOptionalString(&workbook.excel_item_id, alloc);
     }
     if (options.inbox_dir_override) |path| {
         alloc.free(workbook.inbox_dir);
@@ -1002,6 +1010,12 @@ test "bootstrapConfig creates single workbook entry" {
 test "applyBootstrapOverrides updates active workbook paths in memory" {
     var cfg = try bootstrapConfig(testing.allocator, .{});
     defer cfg.deinit(testing.allocator);
+    cfg.workbooks[0].platform = .google;
+    cfg.workbooks[0].workbook_url = try testing.allocator.dupe(u8, "https://docs.google.com/spreadsheets/d/abc/edit");
+    cfg.workbooks[0].workbook_label = try testing.allocator.dupe(u8, "abc");
+    cfg.workbooks[0].credential_ref = try testing.allocator.dupe(u8, "cred_demo");
+    cfg.workbooks[0].credential_display = try testing.allocator.dupe(u8, "svc@example.com");
+    cfg.workbooks[0].google_sheet_id = try testing.allocator.dupe(u8, "abc");
 
     try applyBootstrapOverrides(&cfg, .{
         .db_path_override = "/tmp/demo.sqlite",
@@ -1011,6 +1025,14 @@ test "applyBootstrapOverrides updates active workbook paths in memory" {
     try testing.expectEqualStrings("/tmp/demo.sqlite", cfg.workbooks[0].db_path);
     try testing.expectEqualStrings("/tmp/demo-inbox", cfg.workbooks[0].inbox_dir);
     try testing.expectEqualStrings("demo.sqlite", cfg.workbooks[0].display_name);
+    try testing.expectEqual(@as(?provider_common.ProviderId, null), cfg.workbooks[0].platform);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].workbook_url);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].workbook_label);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].credential_ref);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].credential_display);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].google_sheet_id);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].excel_drive_id);
+    try testing.expectEqual(@as(?[]const u8, null), cfg.workbooks[0].excel_item_id);
 }
 
 test "save and load roundtrip" {

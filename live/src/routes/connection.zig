@@ -943,7 +943,7 @@ test "handleConnectionValidateResponse rejects unsupported secure store" {
     defer store.deinit(alloc);
 
     const body =
-        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"client_email\\\":\\\"svc@example.com\\\",\\\"private_key\\\":\\\"pem\\\"}\"}}";
+        "{\"platform\":\"google\",\"profile\":\"medical\",\"workbook_url\":\"https://docs.google.com/spreadsheets/d/abc/edit\",\"credentials\":{\"service_account_json\":\"{\\\"type\\\":\\\"service_account\\\",\\\"client_email\\\":\\\"svc@example.com\\\",\\\"private_key\\\":\\\"pem\\\"}\"}}";
     const resp = try handleConnectionValidateResponse(&store, body, alloc);
     try testing.expectEqual(std.http.Status.bad_request, resp.status);
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"error\":\"secure_storage_unavailable\"") != null);
