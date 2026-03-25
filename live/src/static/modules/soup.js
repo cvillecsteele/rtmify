@@ -1,6 +1,7 @@
 import { createSyncSettingsController } from '/modules/sync-settings.js';
 import { esc, formatUnixTimestamp, propsObj } from '/modules/helpers.js';
 import { soupState } from '/modules/state.js';
+import { authenticatedApiFetch } from '/modules/uploads.js';
 
 export async function loadSoupWorkspace(force = false) {
   const errEl = document.getElementById('software-boms-error');
@@ -9,7 +10,7 @@ export async function loadSoupWorkspace(force = false) {
   try {
     const params = new URLSearchParams();
     if (includeObsolete) params.set('include_obsolete', 'true');
-    const res = await fetch(`/api/v1/soup?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/soup?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     soupState.softwareBoms = Array.isArray(data.software_boms) ? data.software_boms : [];
@@ -111,7 +112,7 @@ export async function loadSelectedSoupDetail() {
       bom_name: soupState.selectedBomName,
     });
     if (includeObsolete) query.set('include_obsolete', 'true');
-    const res = await fetch(`/api/v1/soup/components?${query.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/soup/components?${query.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const components = Array.isArray(data.components) ? data.components : [];
@@ -181,7 +182,7 @@ export async function loadSoupComponents() {
   if (includeObsolete) params.set('include_obsolete', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading SOUP components…</div>';
   try {
-    const res = await fetch(`/api/v1/soup/components?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/soup/components?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const q = searchEl.value.trim().toLowerCase();
@@ -236,7 +237,7 @@ export async function loadSoupGaps() {
   if (includeInactive) params.set('include_inactive', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading SOUP gaps…</div>';
   try {
-    const res = await fetch(`/api/v1/soup/gaps?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/soup/gaps?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const gaps = Array.isArray(data.gaps) ? data.gaps : [];
@@ -281,7 +282,7 @@ export async function loadSoupLicenses() {
   if (includeObsolete) params.set('include_obsolete', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading SOUP licenses…</div>';
   try {
-    const res = await fetch(`/api/v1/soup/licenses?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/soup/licenses?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const rows = Array.isArray(data.components) ? data.components : [];
@@ -331,7 +332,7 @@ export async function loadSoupSafetyClasses() {
   if (includeObsolete) params.set('include_obsolete', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading SOUP safety classes…</div>';
   try {
-    const res = await fetch(`/api/v1/soup/safety-classes?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/soup/safety-classes?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const rows = Array.isArray(data.components) ? data.components : [];

@@ -2,6 +2,7 @@ import { createSyncSettingsController } from '/modules/sync-settings.js';
 import { esc, formatUnixTimestamp, propsObj } from '/modules/helpers.js';
 import { bomState } from '/modules/state.js';
 import { runBomPartUsage } from '/modules/bom-queries.js';
+import { authenticatedApiFetch } from '/modules/uploads.js';
 
 let showTabHook = null;
 
@@ -16,7 +17,7 @@ export async function loadDesignBomWorkspace(force = false) {
   try {
     const params = new URLSearchParams();
     if (includeObsolete) params.set('include_obsolete', 'true');
-    const res = await fetch(`/api/v1/bom/design?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/bom/design?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     bomState.designBoms = Array.isArray(data.design_boms) ? data.design_boms : [];
@@ -118,8 +119,8 @@ async function loadSelectedDesignBomDetail() {
     const bomName = encodeURIComponent(bomState.selectedBomName);
     const query = includeObsolete ? `full_product_identifier=${product}&include_obsolete=true` : `full_product_identifier=${product}`;
     const [treeRes, itemsRes] = await Promise.all([
-      fetch(`/api/v1/bom/design/${bomName}?${query}`, { cache: 'no-store' }),
-      fetch(`/api/v1/bom/design/${bomName}/items?${query}`, { cache: 'no-store' }),
+      authenticatedApiFetch(`/api/v1/bom/design/${bomName}?${query}`, { cache: 'no-store' }),
+      authenticatedApiFetch(`/api/v1/bom/design/${bomName}/items?${query}`, { cache: 'no-store' }),
     ]);
     if (!treeRes.ok) throw new Error(`tree HTTP ${treeRes.status}`);
     if (!itemsRes.ok) throw new Error(`items HTTP ${itemsRes.status}`);
@@ -236,7 +237,7 @@ export async function loadBomComponents() {
   if (includeObsolete) params.set('include_obsolete', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading components…</div>';
   try {
-    const res = await fetch(`/api/v1/bom/components?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/bom/components?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const q = searchEl.value.trim().toLowerCase();
@@ -304,7 +305,7 @@ export async function loadBomCoverage() {
   if (includeObsolete) params.set('include_obsolete', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading BOM coverage…</div>';
   try {
-    const res = await fetch(`/api/v1/bom/coverage?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/bom/coverage?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const summary = data.summary || {};

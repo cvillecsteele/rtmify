@@ -1,5 +1,6 @@
 import { esc, propsObj } from '/modules/helpers.js';
 import { bomState } from '/modules/state.js';
+import { authenticatedApiFetch } from '/modules/uploads.js';
 
 export async function runBomPartUsage() {
   const errEl = document.getElementById('bom-usage-error');
@@ -22,7 +23,7 @@ export async function runBomPartUsage() {
     const query = includeObsolete
       ? `part=${encodeURIComponent(part)}&include_obsolete=true`
       : `part=${encodeURIComponent(part)}`;
-    const res = await fetch(`/api/v1/bom/part-usage?${query}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/bom/part-usage?${query}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const usages = Array.isArray(data.usages) ? data.usages : [];
@@ -67,7 +68,7 @@ export async function loadBomGaps() {
   if (includeInactive) params.set('include_inactive', 'true');
   resultEl.innerHTML = '<div class="empty-state">Loading BOM gaps…</div>';
   try {
-    const res = await fetch(`/api/v1/bom/gaps?${params.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/bom/gaps?${params.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const gaps = Array.isArray(data.gaps) ? data.gaps : [];
@@ -121,7 +122,7 @@ export async function loadBomImpactAnalysis() {
       bom_name: nameEl.value.trim(),
     });
     if (includeObsolete) query.set('include_obsolete', 'true');
-    const res = await fetch(`/api/v1/bom/impact-analysis?${query.toString()}`, { cache: 'no-store' });
+    const res = await authenticatedApiFetch(`/api/v1/bom/impact-analysis?${query.toString()}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const items = Array.isArray(data.items) ? data.items : [];

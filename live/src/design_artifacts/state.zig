@@ -139,8 +139,91 @@ pub fn rebuildConflictEdgesForRequirement(db: *graph_live.GraphDb, req_id: []con
             const right_text = right.normalized_text orelse right.text orelse "";
             if (left_text.len == 0 or right_text.len == 0) continue;
             if (std.mem.eql(u8, left_text, right_text)) continue;
-            try db.addEdge(left.text_id, right.text_id, "CONFLICTS_WITH");
-            try db.addEdge(right.text_id, left.text_id, "CONFLICTS_WITH");
+            try addEdgeLocked(db, left.text_id, right.text_id, "CONFLICTS_WITH");
+            try addEdgeLocked(db, right.text_id, left.text_id, "CONFLICTS_WITH");
         }
     }
+}
+
+fn addEdgeLocked(db: *graph_live.GraphDb, from_id: []const u8, to_id: []const u8, label: []const u8) !void {
+    var chk = try db.db.prepare("SELECT 1 FROM edges WHERE from_id=? AND to_id=? AND label=?");
+    defer chk.finalize();
+    try chk.bindText(1, from_id);
+    try chk.bindText(2, to_id);
+    try chk.bindText(3, label);
+    if (try chk.step()) return;
+
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(from_id);
+    h.update("|");
+    h.update(to_id);
+    h.update("|");
+    h.update(label);
+    var digest: [32]u8 = undefined;
+    h.final(&digest);
+    const edge_id = std.fmt.bytesToHex(digest, .lower);
+
+    var st = try db.db.prepare(
+        "INSERT INTO edges (id, from_id, to_id, label, properties, created_at) VALUES (?, ?, ?, ?, NULL, ?)"
+    );
+    defer st.finalize();
+    try st.bindText(1, &edge_id);
+    try st.bindText(2, from_id);
+    try st.bindText(3, to_id);
+    try st.bindText(4, label);
+    try st.bindInt(5, std.time.timestamp());
+    _ = try st.step();
+}
+
+const testing = std.testing;
+
+test "rebuildConflictEdgesForRequirement inserts conflict edges without relocking" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try db.addNode("requirement://REQ-001", "Requirement", "{\"text_status\":\"no_source\"}", null);
+    try db.addNode("artifact://srs_docx/demo", "Artifact", "{\"kind\":\"srs_docx\"}", null);
+    try db.addNode("artifact://sysrd_docx/demo", "Artifact", "{\"kind\":\"sysrd_docx\"}", null);
+    try db.addNode(
+        "artifact://srs_docx/demo:REQ-001",
+        "RequirementText",
+        "{\"req_id\":\"requirement://REQ-001\",\"source_kind\":\"srs_docx\",\"text\":\"one\",\"normalized_text\":\"one\"}",
+        null,
+    );
+    try db.addNode(
+        "artifact://sysrd_docx/demo:REQ-001",
+        "RequirementText",
+        "{\"req_id\":\"requirement://REQ-001\",\"source_kind\":\"sysrd_docx\",\"text\":\"two\",\"normalized_text\":\"two\"}",
+        null,
+    );
+    try db.addEdge("artifact://srs_docx/demo", "artifact://srs_docx/demo:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://sysrd_docx/demo", "artifact://sysrd_docx/demo:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://srs_docx/demo:REQ-001", "requirement://REQ-001", "ASSERTS");
+    try db.addEdge("artifact://sysrd_docx/demo:REQ-001", "requirement://REQ-001", "ASSERTS");
+
+    try rebuildConflictEdgesForRequirement(&db, "requirement://REQ-001", testing.allocator);
+
+    var edges: std.ArrayList(graph_live.Edge) = .empty;
+    defer {
+        for (edges.items) |edge| {
+            testing.allocator.free(edge.id);
+            testing.allocator.free(edge.from_id);
+            testing.allocator.free(edge.to_id);
+            testing.allocator.free(edge.label);
+            if (edge.properties) |value| testing.allocator.free(value);
+        }
+        edges.deinit(testing.allocator);
+    }
+    try db.edgesFrom("artifact://srs_docx/demo:REQ-001", testing.allocator, &edges);
+
+    var found = false;
+    for (edges.items) |edge| {
+        if (std.mem.eql(u8, edge.to_id, "artifact://sysrd_docx/demo:REQ-001") and
+            std.mem.eql(u8, edge.label, "CONFLICTS_WITH"))
+        {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
 }

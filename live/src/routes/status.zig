@@ -35,8 +35,10 @@ pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store:
         var loaded = try connection_mod.loadWorkbookConnection(workbook_cfg.*, secure_store, alloc);
         defer loaded.deinit(alloc);
         const configured = loaded == .active;
-        const workspace_ready = try workspace_state.readWorkspaceReady(&active_runtime.db, configured, alloc);
-        const source_of_truth = (try workspace_state.readSourceOfTruth(&active_runtime.db, alloc)) orelse if (configured) workspace_state.SourceOfTruth.workbook_first else null;
+        const graph_counts = try active_runtime.db.countGraph();
+        const inferred_local_workspace = !configured and graph_counts.nodes > 0;
+        const workspace_ready = try workspace_state.readWorkspaceReady(&active_runtime.db, configured or inferred_local_workspace, alloc);
+        const source_of_truth = (try workspace_state.readSourceOfTruth(&active_runtime.db, alloc)) orelse if (configured or inferred_local_workspace) workspace_state.SourceOfTruth.workbook_first else null;
         const attach_workbook_prompt_dismissed = try workspace_state.readAttachWorkbookPromptDismissed(&active_runtime.db, alloc);
         const block_reason: ?provider_common.ConnectionBlockReason = if (loaded == .blocked) loaded.blocked else null;
 
@@ -463,6 +465,36 @@ test "handleStatus reports missing secure secret as blocked" {
     const status = try handleStatus(&registry, &store, &state, &license_service, alloc);
     try testing.expect(std.mem.indexOf(u8, status, "\"configured\":false") != null);
     try testing.expect(std.mem.indexOf(u8, status, "\"connection_block_reason\":\"secret_not_found\"") != null);
+}
+
+test "handleStatus treats non-empty local db as workbook-first workspace" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var store = try secure_store_mod.initTestMemory(alloc);
+    defer store.deinit(alloc);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_root);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ tmp_root, "inbox" });
+    defer alloc.free(inbox_dir);
+    var registry = try makeTestRegistry(alloc, &store, "generic", ":memory:", inbox_dir);
+    defer registry.deinit(alloc);
+    var state: sync_live.SyncState = .{};
+    var license_service = try license.initDefaultStub(alloc, .{});
+    defer license_service.deinit(alloc);
+
+    const runtime = try registry.active();
+    try runtime.db.addNode("product://VS-200-REV-C", "Product", "{\"full_identifier\":\"VS-200-REV-C\"}", null);
+
+    const status = try handleStatus(&registry, &store, &state, &license_service, alloc);
+    try testing.expect(std.mem.indexOf(u8, status, "\"configured\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"workspace_ready\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"connection_configured\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"source_of_truth\":\"workbook_first\"") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"platform\":null") != null);
 }
 
 test "handleInfo returns version and path details" {

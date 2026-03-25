@@ -22,6 +22,13 @@ export async function currentIngestToken() {
   return info.test_results_token;
 }
 
+export async function authenticatedApiFetch(input, init = {}) {
+  const token = await currentIngestToken();
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
+
 export async function uploadBomArtifactFile(file) {
   const resultEl = document.getElementById('bom-upload-result');
   const errEl = document.getElementById('design-boms-error');
