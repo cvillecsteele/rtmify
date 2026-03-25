@@ -30,6 +30,7 @@ pub const test_results = @import("test_results.zig");
 pub const test_results_auth = @import("test_results_auth.zig");
 pub const external_ingest_inbox = @import("external_ingest_inbox.zig");
 pub const design_artifacts = @import("design_artifacts.zig");
+pub const design_artifacts_tests = @import("design_artifacts/tests.zig");
 pub const artifact_discriminator = @import("artifact_discriminator.zig");
 pub const artifact_test_files = @import("artifact_test_files.zig");
 pub const artifact_discriminator_test = @import("artifact_discriminator_test.zig");
@@ -69,6 +70,7 @@ test {
     _ = test_results_auth;
     _ = external_ingest_inbox;
     _ = design_artifacts;
+    _ = design_artifacts_tests;
     _ = artifact_discriminator;
     _ = artifact_test_files;
     _ = artifact_discriminator_test;
