@@ -15,6 +15,64 @@ const soup_api = @import("soup_api.zig");
 
 pub const index_html = @embedFile("../static/index.html");
 pub const app_js = @embedFile("../static/app.js");
+pub const init_js = @embedFile("../static/modules/init.js");
+pub const state_js = @embedFile("../static/modules/state.js");
+pub const helpers_js = @embedFile("../static/modules/helpers.js");
+pub const graph_edges_js = @embedFile("../static/modules/graph-edges.js");
+pub const guide_js = @embedFile("../static/modules/guide.js");
+pub const impact_js = @embedFile("../static/modules/impact.js");
+pub const suspects_js = @embedFile("../static/modules/suspects.js");
+pub const bom_queries_js = @embedFile("../static/modules/bom-queries.js");
+pub const sync_settings_js = @embedFile("../static/modules/sync-settings.js");
+pub const rtm_tables_js = @embedFile("../static/modules/rtm-tables.js");
+pub const node_render_js = @embedFile("../static/modules/node-render.js");
+pub const node_drawer_js = @embedFile("../static/modules/node-drawer.js");
+pub const row_expand_js = @embedFile("../static/modules/row-expand.js");
+pub const workbooks_js = @embedFile("../static/modules/workbooks.js");
+pub const artifacts_js = @embedFile("../static/modules/artifacts.js");
+pub const uploads_js = @embedFile("../static/modules/uploads.js");
+pub const design_bom_js = @embedFile("../static/modules/design-bom.js");
+pub const soup_js = @embedFile("../static/modules/soup.js");
+pub const chain_gaps_js = @embedFile("../static/modules/chain-gaps.js");
+pub const code_js = @embedFile("../static/modules/code.js");
+pub const status_js = @embedFile("../static/modules/status.js");
+pub const license_js = @embedFile("../static/modules/license.js");
+pub const lobby_js = @embedFile("../static/modules/lobby.js");
+pub const nav_js = @embedFile("../static/modules/nav.js");
+
+pub const StaticAsset = struct {
+    path: []const u8,
+    content_type: []const u8,
+    body: []const u8,
+};
+
+pub const static_assets = [_]StaticAsset{
+    .{ .path = "/app.js", .content_type = "application/javascript; charset=utf-8", .body = app_js },
+    .{ .path = "/modules/init.js", .content_type = "application/javascript; charset=utf-8", .body = init_js },
+    .{ .path = "/modules/state.js", .content_type = "application/javascript; charset=utf-8", .body = state_js },
+    .{ .path = "/modules/helpers.js", .content_type = "application/javascript; charset=utf-8", .body = helpers_js },
+    .{ .path = "/modules/graph-edges.js", .content_type = "application/javascript; charset=utf-8", .body = graph_edges_js },
+    .{ .path = "/modules/guide.js", .content_type = "application/javascript; charset=utf-8", .body = guide_js },
+    .{ .path = "/modules/impact.js", .content_type = "application/javascript; charset=utf-8", .body = impact_js },
+    .{ .path = "/modules/suspects.js", .content_type = "application/javascript; charset=utf-8", .body = suspects_js },
+    .{ .path = "/modules/bom-queries.js", .content_type = "application/javascript; charset=utf-8", .body = bom_queries_js },
+    .{ .path = "/modules/sync-settings.js", .content_type = "application/javascript; charset=utf-8", .body = sync_settings_js },
+    .{ .path = "/modules/rtm-tables.js", .content_type = "application/javascript; charset=utf-8", .body = rtm_tables_js },
+    .{ .path = "/modules/node-render.js", .content_type = "application/javascript; charset=utf-8", .body = node_render_js },
+    .{ .path = "/modules/node-drawer.js", .content_type = "application/javascript; charset=utf-8", .body = node_drawer_js },
+    .{ .path = "/modules/row-expand.js", .content_type = "application/javascript; charset=utf-8", .body = row_expand_js },
+    .{ .path = "/modules/workbooks.js", .content_type = "application/javascript; charset=utf-8", .body = workbooks_js },
+    .{ .path = "/modules/artifacts.js", .content_type = "application/javascript; charset=utf-8", .body = artifacts_js },
+    .{ .path = "/modules/uploads.js", .content_type = "application/javascript; charset=utf-8", .body = uploads_js },
+    .{ .path = "/modules/design-bom.js", .content_type = "application/javascript; charset=utf-8", .body = design_bom_js },
+    .{ .path = "/modules/soup.js", .content_type = "application/javascript; charset=utf-8", .body = soup_js },
+    .{ .path = "/modules/chain-gaps.js", .content_type = "application/javascript; charset=utf-8", .body = chain_gaps_js },
+    .{ .path = "/modules/code.js", .content_type = "application/javascript; charset=utf-8", .body = code_js },
+    .{ .path = "/modules/status.js", .content_type = "application/javascript; charset=utf-8", .body = status_js },
+    .{ .path = "/modules/license.js", .content_type = "application/javascript; charset=utf-8", .body = license_js },
+    .{ .path = "/modules/lobby.js", .content_type = "application/javascript; charset=utf-8", .body = lobby_js },
+    .{ .path = "/modules/nav.js", .content_type = "application/javascript; charset=utf-8", .body = nav_js },
+};
 pub const JsonRouteResponse = shared.JsonRouteResponse;
 
 pub const handleNodes = query.handleNodes;
@@ -157,6 +215,7 @@ test "index_html smoke covers onboarding and external js bootstrap" {
     try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "sa-upload-zone") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "type=\"module\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "src=\"/app.js\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "function humanEdgeLabel(") == null);
     try testing.expect(std.mem.indexOf(u8, index_html, "openGuideForCode(") == null);
@@ -166,36 +225,21 @@ test "index_html smoke covers onboarding and external js bootstrap" {
 
 test "app_js smoke covers dashboard behavior and moved api bindings" {
     try testing.expect(app_js.len > 0);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/api/profile") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/api/provision") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/query/chain-gaps") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/api/repos") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/api/diagnostics") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/api/guide/errors") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/query/recent-commits") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "/api/info") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "claude mcp add --transport http rtmify-live") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "codex mcp add rtmify-live --url") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "\"httpUrl\":") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "window.location.origin + '/mcp'") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "What RTMify Checked") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "const { node, edges_out, edges_in } = data;") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "function humanEdgeLabel(") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "openGuideForCode(") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "uploadSaFile") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "clearCredential") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"toggle-row\"") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"open-guide\"") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"select-profile\"") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "data-action=\"delete-repo\"") != null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "function explainGap(") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "toggleGapHelp(") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "onclick=") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "onkeydown=") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(f.properties") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(a.properties") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "JSON.parse(c.properties") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "r.test_suspect") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "r.req_suspect") == null);
-    try testing.expect(std.mem.indexOf(u8, app_js, "${arrow} ${esc(e.label)}") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "import { initApp } from '/modules/init.js';") != null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "/api/profile") == null);
+    try testing.expect(std.mem.indexOf(u8, app_js, "function humanEdgeLabel(") == null);
+}
+
+test "static module asset manifest includes representative frontend modules" {
+    try testing.expect(static_assets.len >= 5);
+    var saw_init = false;
+    var saw_helpers = false;
+    for (static_assets) |asset| {
+        if (std.mem.eql(u8, asset.path, "/modules/init.js")) saw_init = true;
+        if (std.mem.eql(u8, asset.path, "/modules/helpers.js")) saw_helpers = true;
+    }
+    try testing.expect(saw_init);
+    try testing.expect(saw_helpers);
+    try testing.expect(std.mem.indexOf(u8, init_js, "createNavigationController") != null);
+    try testing.expect(std.mem.indexOf(u8, helpers_js, "rowSeverity") != null);
 }

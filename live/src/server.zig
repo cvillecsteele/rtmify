@@ -146,10 +146,10 @@ fn handleRequest(req: *std.http.Server.Request, ctx: ServerCtx) !void {
         try sendHtml(req, routes.index_html);
         return;
     }
-    if (std.mem.eql(u8, path, "/app.js")) {
+    if (staticAssetForPath(path)) |asset| {
         response_status = .ok;
-        response_bytes = routes.app_js.len;
-        try sendStaticText(req, routes.app_js, "application/javascript; charset=utf-8");
+        response_bytes = asset.body.len;
+        try sendStaticText(req, asset.body, asset.content_type);
         return;
     }
 
@@ -1167,7 +1167,7 @@ const RouteAccess = enum {
 fn routeAccess(method: std.http.Method, path: []const u8) RouteAccess {
     if (std.mem.eql(u8, path, "/") or
         std.mem.eql(u8, path, "/index.html") or
-        std.mem.eql(u8, path, "/app.js") or
+        staticAssetForPath(path) != null or
         std.mem.eql(u8, path, "/api/status") or
         std.mem.eql(u8, path, "/api/info") or
         std.mem.eql(u8, path, "/api/license/status") or
@@ -1223,7 +1223,7 @@ fn requiresActiveWorkbook(method: std.http.Method, path: []const u8) bool {
     _ = method;
     return !(std.mem.eql(u8, path, "/") or
         std.mem.eql(u8, path, "/index.html") or
-        std.mem.eql(u8, path, "/app.js") or
+        staticAssetForPath(path) != null or
         std.mem.eql(u8, path, "/api/status") or
         std.mem.eql(u8, path, "/api/info") or
         std.mem.eql(u8, path, "/api/license/status") or
@@ -1242,6 +1242,13 @@ fn markActiveWorkspaceWorkbookFirst(registry: *workbook.registry.WorkbookRegistr
     try workspace_state.writeWorkspaceReady(&runtime.db, true);
     try workspace_state.writeSourceOfTruth(&runtime.db, .workbook_first);
     try workspace_state.clearAttachWorkbookPromptDismissed(&runtime.db);
+}
+
+fn staticAssetForPath(path: []const u8) ?routes.StaticAsset {
+    for (routes.static_assets) |asset| {
+        if (std.mem.eql(u8, asset.path, path)) return asset;
+    }
+    return null;
 }
 
 fn reqPathIsWorkbookMutation(path: []const u8) bool {
@@ -1576,14 +1583,28 @@ test "license exemptions include app js bootstrap asset" {
     try testing.expect(isLicenseExempt(.GET, "/"));
     try testing.expect(isLicenseExempt(.GET, "/index.html"));
     try testing.expect(isLicenseExempt(.GET, "/app.js"));
+    try testing.expect(isLicenseExempt(.GET, "/modules/init.js"));
     try testing.expect(isLicenseExempt(.GET, "/query/rtm"));
     try testing.expect(!isLicenseExempt(.GET, "/report/rtm"));
 }
 
 test "server source serves app js with javascript content type" {
     const source = @embedFile("server.zig");
-    try testing.expect(std.mem.indexOf(u8, source, "\"/app.js\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "staticAssetForPath(path)") != null);
     try testing.expect(std.mem.indexOf(u8, source, "application/javascript; charset=utf-8") != null);
+}
+
+test "static asset lookup returns embedded module asset" {
+    const asset = staticAssetForPath("/modules/helpers.js");
+    try testing.expect(asset != null);
+    try testing.expectEqualStrings("/modules/helpers.js", asset.?.path);
+    const init = staticAssetForPath("/modules/init.js");
+    try testing.expect(init != null);
+    try testing.expectEqualStrings("/modules/init.js", init.?.path);
+}
+
+test "static asset lookup rejects unknown module path" {
+    try testing.expect(staticAssetForPath("/modules/does-not-exist.js") == null);
 }
 
 test "hostWithoutPort strips loopback host port and preserves bare host" {

@@ -2,6 +2,8 @@ const mod = @import("routes/mod.zig");
 
 pub const index_html = mod.index_html;
 pub const app_js = mod.app_js;
+pub const StaticAsset = mod.StaticAsset;
+pub const static_assets = mod.static_assets;
 pub const JsonRouteResponse = mod.JsonRouteResponse;
 
 pub const handleNodes = mod.handleNodes;

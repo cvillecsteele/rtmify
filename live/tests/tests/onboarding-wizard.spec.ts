@@ -42,9 +42,9 @@ test('Add Workbook uses workbook-only mode and skips the source-of-truth fork', 
 
   try {
     await page.goto(server.baseUrl);
-    await page.evaluate(() => {
-      (window as Window & { openAddWorkbook?: () => void }).openAddWorkbook?.();
-    });
+    await page.locator('#settings-toggle-btn').click();
+    await page.locator('[data-settings-tab="workbooks"]').click();
+    await page.getByRole('button', { name: 'Add Workbook' }).click();
 
     await expect(page.locator('#lobby')).toHaveClass(/visible/);
     await page.locator('.profile-row[data-profile-id="medical"]').click();

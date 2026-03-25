@@ -1166,11 +1166,11 @@
 </head>
 <body>
 
-<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer-overlay" id="drawer-overlay"></div>
 <div class="node-drawer" id="node-drawer">
   <div class="drawer-toolbar">
-    <button class="drawer-back" id="drawer-back" onclick="drawerBack()">← Back</button>
-    <button class="drawer-close" aria-label="Close" onclick="closeDrawer()">✕</button>
+    <button class="drawer-back" id="drawer-back">← Back</button>
+    <button class="drawer-close" id="drawer-close" aria-label="Close">✕</button>
   </div>
   <div id="drawer-content" tabindex="-1"></div>
 </div>
@@ -1182,7 +1182,7 @@
 
     <!-- Lobby nav: back button + step dots -->
     <div class="lobby-nav">
-      <button class="lobby-back-btn" id="lobby-back-btn" onclick="lobbyBack()" aria-label="Back">
+      <button class="lobby-back-btn" id="lobby-back-btn" aria-label="Back">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="10,3 5,8 10,13"/></svg>
         Back
       </button>
@@ -1196,7 +1196,7 @@
       <p class="screen-label" id="lobby-screen-label-1">Step 1</p>
       <h2 class="screen-headline" id="lobby-headline">What standard governs your work?</h2>
       <div class="profile-list" id="profile-list"></div>
-      <button class="authorize-btn" onclick="lobbyNext(1)">
+      <button class="authorize-btn" id="s1-continue-btn">
         <span class="authorize-btn-label">Continue →</span>
       </button>
     </div>
@@ -1206,14 +1206,14 @@
       <p class="screen-label" id="lobby-screen-label-2">Step 2</p>
       <h2 class="screen-headline" id="source-screen-headline">What is your source of truth?</h2>
       <div class="provider-tiles" id="source-tiles">
-        <div class="provider-tile" id="tile-document-source" onclick="selectSourceOfTruth('document_first')">
+        <div class="provider-tile" id="tile-document-source" data-source-of-truth="document_first">
           <div class="provider-tile-logo">
             <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#1d4ed8"/><path d="M16 10h12l8 8v20H16z" fill="#fff" opacity=".92"/><path d="M28 10v8h8" fill="none" stroke="#1d4ed8" stroke-width="1.7"/><path d="M20 24h12M20 29h12M20 34h8" stroke="#1d4ed8" stroke-width="1.7" stroke-linecap="round"/></svg>
           </div>
           <div class="provider-tile-name">Requirements Document</div>
           <div class="provider-tile-sub">Drop an SRS, SysRD / SRD, or RTM workbook file to seed the workspace.</div>
         </div>
-        <div class="provider-tile" id="tile-workbook-source" onclick="selectSourceOfTruth('workbook_first')">
+        <div class="provider-tile" id="tile-workbook-source" data-source-of-truth="workbook_first">
           <div class="provider-tile-logo">
             <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#0F9D58"/><path d="M12 16h24v16H12z" fill="#fff" opacity=".9"/><path d="M12 20h24M12 24h24M12 28h24M20 16v16M28 16v16" stroke="#0F9D58" stroke-width="1.5"/><path d="M12 16h24v3H12z" fill="#0F9D58"/></svg>
           </div>
@@ -1227,13 +1227,9 @@
             <div class="source-upload-name" id="source-upload-name">No file selected</div>
             <div class="source-upload-meta" id="source-upload-meta">Drop a `.docx` requirements document or `.xlsx` RTM workbook.</div>
           </div>
-          <span class="source-upload-link" onclick="clearSourceArtifact()">Change</span>
+          <span class="source-upload-link" id="source-artifact-change-btn">Change</span>
         </div>
-        <div class="sa-upload-zone" id="source-artifact-zone"
-             onclick="document.getElementById('source-artifact-file-input').click()"
-             ondragover="onSourceArtifactDragOver(event)"
-             ondragleave="onSourceArtifactDragLeave(event)"
-             ondrop="onSourceArtifactDrop(event)">
+        <div class="sa-upload-zone" id="source-artifact-zone">
           <div class="sa-upload-zone-icon">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           </div>
@@ -1241,7 +1237,7 @@
           <div class="sa-upload-zone-secondary">Accepts `.docx` SRS / SysRD files or an `.xlsx` RTM workbook. Classification is content-first and ambiguous files are rejected.</div>
         </div>
       </div>
-      <button class="authorize-btn" id="s2-continue-btn" onclick="lobbyNext(2)">
+      <button class="authorize-btn" id="s2-continue-btn">
         <span class="authorize-btn-label">Continue →</span>
       </button>
     </div>
@@ -1251,36 +1247,32 @@
       <p class="screen-label" id="lobby-screen-label-3">Step 3</p>
       <h2 class="screen-headline">Connect your workbook</h2>
       <div class="provider-tiles" id="connection-provider-tiles">
-        <div class="provider-tile" id="tile-google" onclick="selectProvider('google')">
+        <div class="provider-tile" id="tile-google" data-provider="google">
           <div class="provider-tile-name">Google Sheets</div>
           <div class="provider-tile-sub">Upload a service-account key and point Live at your RTM workbook URL.</div>
         </div>
-        <div class="provider-tile" id="tile-excel" onclick="selectProvider('excel')">
+        <div class="provider-tile" id="tile-excel" data-provider="excel">
           <div class="provider-tile-name">Excel Online</div>
           <div class="provider-tile-sub">Enter Azure app credentials and the workbook URL.</div>
         </div>
-        <div class="provider-tile" id="tile-local" onclick="selectProvider('local')">
+        <div class="provider-tile" id="tile-local" data-provider="local">
           <div class="provider-tile-name">Local DB</div>
           <div class="provider-tile-sub">Use the currently opened local workspace DB. No credentials required.</div>
         </div>
       </div>
       <!-- Google path -->
       <div id="s3-google">
-        <div class="sa-upload-zone" id="sa-upload-zone"
-             onclick="document.getElementById('sa-file-input').click()"
-             ondragover="onSaDragOver(event)"
-             ondragleave="onSaDragLeave(event)"
-             ondrop="onSaDrop(event)">
+        <div class="sa-upload-zone" id="sa-upload-zone">
           <div class="sa-upload-zone-icon">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           </div>
           <div class="sa-upload-zone-primary">Drop service-account.json here</div>
-          <div class="sa-upload-zone-secondary">or click to browse · <a href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer" onclick="event.stopPropagation()">How to create a key</a></div>
+          <div class="sa-upload-zone-secondary">or click to browse · <a id="sa-help-link" href="https://cloud.google.com/iam/docs/keys-create-delete" target="_blank" rel="noreferrer">How to create a key</a></div>
         </div>
         <div class="sa-loaded-chip" id="sa-loaded-chip" style="display:none">
           <span class="sa-loaded-chip-icon"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="7"/><polyline points="5,8.5 7,10.5 11,6"/></svg></span>
           <span class="sa-loaded-email" id="sa-loaded-email"></span>
-          <span class="sa-loaded-change" onclick="clearCredential()">Change</span>
+          <span class="sa-loaded-change" id="sa-loaded-change-btn">Change</span>
         </div>
         <p class="text-hint mb-12" id="lobby-share-hint" style="display:none">
           Share your RTM sheet with this email address to grant read access.
@@ -1288,11 +1280,11 @@
       </div>
       <!-- Excel path -->
       <div id="s3-excel" style="display:none">
-        <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" aria-label="Azure tenant ID" oninput="lobbyStateFromInputs()">
-        <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" aria-label="Azure client ID" oninput="lobbyStateFromInputs()">
+        <input id="excel-tenant-id" class="lobby-input" type="text" placeholder="Azure tenant ID" aria-label="Azure tenant ID">
+        <input id="excel-client-id" class="lobby-input" type="text" placeholder="Azure client ID" aria-label="Azure client ID">
         <div class="password-toggle-wrap">
-          <input id="excel-client-secret" class="lobby-input lobby-input--no-mb" type="password" placeholder="Azure client secret" aria-label="Azure client secret" oninput="lobbyStateFromInputs()" style="padding-right:38px">
-          <button type="button" class="password-toggle" onclick="toggleSecretVisibility()" aria-label="Show or hide client secret">
+          <input id="excel-client-secret" class="lobby-input lobby-input--no-mb" type="password" placeholder="Azure client secret" aria-label="Azure client secret" style="padding-right:38px">
+          <button type="button" id="secret-toggle-btn" class="password-toggle" aria-label="Show or hide client secret">
             <svg id="secret-eye" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
         </div>
@@ -1308,10 +1300,9 @@
       <div id="lobby-url-wrap">
         <input id="lobby-url" class="lobby-input" type="text"
                aria-label="Workbook URL"
-               oninput="lobbyStateFromInputs()"
                placeholder="https://docs.google.com/spreadsheets/d/…" />
       </div>
-      <button class="authorize-btn" id="s3-continue-btn" onclick="lobbyNext(3)">
+      <button class="authorize-btn" id="s3-continue-btn">
         <span class="authorize-btn-label">Review →</span>
       </button>
     </div>
@@ -1326,12 +1317,12 @@
         <div class="brief-row"><span class="brief-key">Locked</span><span class="brief-val" id="license-step-locked">Reports, MCP, repository scanning, code traceability, and background sync</span></div>
       </div>
       <div class="license-gate-actions">
-        <button class="authorize-btn" onclick="showLicenseGate(licenseStatusCache)">
+        <button class="authorize-btn" id="license-gate-open-btn">
           <span class="authorize-btn-label">Install License Now</span>
         </button>
-        <button class="secondary-btn" onclick="refreshLicenseStatus()">Refresh License Status</button>
+        <button class="secondary-btn" id="refresh-license-status-btn">Refresh License Status</button>
       </div>
-      <button class="secondary-btn mt-12" id="preview-continue-btn" onclick="continueInPreviewMode()">Continue in Preview Mode</button>
+      <button class="secondary-btn mt-12" id="preview-continue-btn">Continue in Preview Mode</button>
     </div>
 
     <!-- Screen 5: Success -->
@@ -1346,7 +1337,7 @@
         <div class="success-title" id="success-title">Workspace ready.</div>
         <div class="success-sub" id="success-sub"></div>
         <div class="success-detail" id="success-detail"></div>
-        <button class="open-workspace-btn" onclick="openWorkspace()">Open Workspace</button>
+        <button class="open-workspace-btn" id="open-workspace-btn">Open Workspace</button>
       </div>
     </div>
 
@@ -1360,9 +1351,9 @@
     <div id="license-gate-error" class="lobby-error" style="display:none"></div>
     <input id="license-file-input" type="file" accept=".json,application/json" style="display:none">
     <div class="license-gate-actions">
-      <button class="btn" type="button" onclick="refreshLicenseStatus()">Refresh Status</button>
-      <button id="license-import-btn" class="btn" type="button" onclick="chooseLicenseFile()">Select License File</button>
-      <button id="license-clear-btn" class="btn" type="button" onclick="clearInstalledLicense()" style="display:none">Clear License</button>
+      <button class="btn" id="license-gate-refresh-btn" type="button">Refresh Status</button>
+      <button id="license-import-btn" class="btn" type="button">Select License File</button>
+      <button id="license-clear-btn" class="btn" type="button" style="display:none">Clear License</button>
     </div>
     <div class="license-gate-meta">
       Manual install path: <code>~/.rtmify/license.json</code>
@@ -1375,19 +1366,18 @@
 </div>
 
 <header>
-  <button class="header-home-btn" onclick="showLobby()" aria-label="Back to setup">
+  <button class="header-home-btn" id="header-home-btn" aria-label="Back to setup">
     <span class="header-title">RTMify</span>
     <span class="header-subtitle">Requirements Traceability</span>
   </button>
   <div class="header-workbook">
     <label class="header-workbook-label" for="workbook-switcher">Active Workbook</label>
-    <select id="workbook-switcher" class="header-workbook-select" onchange="switchWorkbookFromHeader()">
+    <select id="workbook-switcher" class="header-workbook-select">
       <option value="">Loading…</option>
     </select>
     <div id="header-workbook-meta" class="header-workbook-meta">Loading workbook context…</div>
   </div>
-  <span id="suspect-header-badge" class="header-badge" style="display:none"
-    onclick="showTab('review')"></span>
+  <span id="suspect-header-badge" class="header-badge" style="display:none"></span>
 </header>
 <div id="preview-banner" class="preview-banner">
   <div>
@@ -1395,8 +1385,8 @@
     <div class="preview-banner-sub" id="preview-banner-sub">Licensed features are currently disabled.</div>
   </div>
   <div class="preview-banner-actions">
-    <button class="preview-chip" onclick="showLicenseGate(licenseStatusCache)">Install License</button>
-    <button class="preview-chip secondary" onclick="showPreviewFeatureHelp()">What is locked?</button>
+    <button class="preview-chip" id="preview-install-license-btn">Install License</button>
+    <button class="preview-chip secondary" id="preview-feature-help-btn">What is locked?</button>
   </div>
 </div>
 <div id="attach-workbook-prompt" class="preview-banner">
@@ -1405,80 +1395,80 @@
     <div class="preview-banner-sub">This workspace was bootstrapped from a requirements artifact. Connect a workbook later from Settings → Workbooks.</div>
   </div>
   <div class="preview-banner-actions">
-    <button class="preview-chip" onclick="openAddWorkbook()">Attach Workbook</button>
-    <button class="preview-chip secondary" onclick="dismissAttachWorkbookPrompt()">Dismiss</button>
+    <button class="preview-chip" id="attach-workbook-btn">Attach Workbook</button>
+    <button class="preview-chip secondary" id="attach-workbook-dismiss-btn">Dismiss</button>
   </div>
 </div>
 
 <!-- Primary nav -->
 <nav class="nav-primary">
-  <button class="active" data-group="data" onclick="showGroup('data')">Design Controls</button>
-  <button data-group="analysis" onclick="showGroup('analysis')">
+  <button class="active" data-group="data">Design Controls</button>
+  <button data-group="analysis">
     Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
   </button>
-  <button data-group="code" onclick="showGroup('code')">Code</button>
-  <button data-group="bom" onclick="showGroup('bom')">BOM</button>
-  <button data-group="soup" onclick="showGroup('soup')">Software / SOUP</button>
-  <button data-group="reports" onclick="showGroup('reports')">Reports</button>
-  <button data-group="guide" onclick="showGroup('guide')">Guide / Help</button>
+  <button data-group="code">Code</button>
+  <button data-group="bom">BOM</button>
+  <button data-group="soup">Software / SOUP</button>
+  <button data-group="reports">Reports</button>
+  <button data-group="guide">Guide / Help</button>
   <div class="nav-settings-wrap">
-    <button class="nav-settings-btn" title="Settings" onclick="toggleSettings(event)">
+    <button class="nav-settings-btn" id="settings-toggle-btn" title="Settings">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <circle cx="8" cy="8" r="2.5"/>
         <path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/>
       </svg>
     </button>
     <div class="settings-dropdown" id="settings-panel" style="display:none">
-      <button onclick="showSettingsTab('workbooks')">Workbooks</button>
-      <button onclick="showSettingsTab('design-bom-sync')">Design BOM Sync</button>
-      <button onclick="showSettingsTab('soup-sync')">SOUP Sync</button>
-      <button onclick="showSettingsTab('info')">System Info</button>
+      <button data-settings-tab="workbooks">Workbooks</button>
+      <button data-settings-tab="design-bom-sync">Design BOM Sync</button>
+      <button data-settings-tab="soup-sync">SOUP Sync</button>
+      <button data-settings-tab="info">System Info</button>
     </div>
   </div>
 </nav>
 
 <!-- Data sub-nav -->
 <div class="nav-sub active" data-group="data">
-  <button class="active" data-tab="user-needs" onclick="showTab('user-needs')">User Needs</button>
-  <button data-tab="requirements" onclick="showTab('requirements')">Requirements</button>
-  <button data-tab="design-artifacts" onclick="showTab('design-artifacts')">Design Artifacts</button>
-  <button data-tab="tests" onclick="showTab('tests')">Tests</button>
-  <button data-tab="risks" onclick="showTab('risks')">Risks</button>
-  <button data-tab="rtm" onclick="showTab('rtm')">RTM</button>
+  <button data-tab="user-needs">User Needs</button>
+  <button class="active" data-tab="requirements">Requirements</button>
+  <button data-tab="design-artifacts">Design Artifacts</button>
+  <button data-tab="tests">Tests</button>
+  <button data-tab="risks">Risks</button>
+  <button data-tab="rtm">RTM</button>
 </div>
 
 <!-- BOM sub-nav -->
 <div class="nav-sub" data-group="bom">
-  <button class="active" data-tab="design-boms" onclick="showTab('design-boms')">Design BOMs</button>
-  <button data-tab="bom-components" onclick="showTab('bom-components')">Components</button>
-  <button data-tab="bom-coverage" onclick="showTab('bom-coverage')">Coverage</button>
-  <button data-tab="bom-usage" onclick="showTab('bom-usage')">Part Usage</button>
-  <button data-tab="bom-gaps" onclick="showTab('bom-gaps')">BOM Gaps</button>
-  <button data-tab="bom-impact" onclick="showTab('bom-impact')">Impact</button>
+  <button class="active" data-tab="design-boms">Design BOMs</button>
+  <button data-tab="bom-components">Components</button>
+  <button data-tab="bom-coverage">Coverage</button>
+  <button data-tab="bom-usage">Part Usage</button>
+  <button data-tab="bom-gaps">BOM Gaps</button>
+  <button data-tab="bom-impact">Impact</button>
 </div>
 
 <!-- SOUP sub-nav -->
 <div class="nav-sub" data-group="soup">
-  <button class="active" data-tab="software-boms" onclick="showTab('software-boms')">SOUP Registers</button>
-  <button data-tab="soup-components" onclick="showTab('soup-components')">Components</button>
-  <button data-tab="soup-gaps" onclick="showTab('soup-gaps')">Gaps</button>
-  <button data-tab="soup-licenses" onclick="showTab('soup-licenses')">Licenses</button>
-  <button data-tab="soup-safety" onclick="showTab('soup-safety')">Safety Classes</button>
+  <button class="active" data-tab="software-boms">SOUP Registers</button>
+  <button data-tab="soup-components">Components</button>
+  <button data-tab="soup-gaps">Gaps</button>
+  <button data-tab="soup-licenses">Licenses</button>
+  <button data-tab="soup-safety">Safety Classes</button>
 </div>
 
 <!-- Analysis sub-nav -->
 <div class="nav-sub" data-group="analysis">
-  <button class="active" data-tab="chain-gaps" onclick="showTab('chain-gaps')">Chain Gaps</button>
-  <button data-tab="impact" onclick="showTab('impact')">Impact</button>
-  <button id="nav-review" data-tab="review" onclick="showTab('review')">
+  <button class="active" data-tab="chain-gaps">Chain Gaps</button>
+  <button data-tab="impact">Impact</button>
+  <button id="nav-review" data-tab="review">
     Suspects <span id="suspect-nav-badge" class="badge" style="display:none"></span>
   </button>
 </div>
 
 <!-- Guide sub-nav -->
 <div class="nav-sub" data-group="guide">
-  <button class="active" data-tab="guide-errors" onclick="showTab('guide-errors')">Error Codes Explained</button>
-  <button data-tab="mcp-ai" onclick="showTab('mcp-ai')">MCP &amp; AI</button>
+  <button class="active" data-tab="guide-errors">Error Codes Explained</button>
+  <button data-tab="mcp-ai">MCP &amp; AI</button>
 </div>
 
 <main>
@@ -1487,7 +1477,7 @@
   <section id="tab-requirements" class="active">
     <div class="toolbar">
       <h2>Requirements <span id="gap-badge" class="badge" style="display:none"></span></h2>
-      <button class="btn" onclick="loadData()">Refresh</button>
+      <button class="btn" id="requirements-refresh-btn">Refresh</button>
     </div>
     <div id="req-error" class="error-banner" style="display:none"></div>
     <div class="card">
@@ -1510,7 +1500,7 @@
   <section id="tab-design-boms">
     <div class="toolbar">
       <h2>Design BOMs</h2>
-      <button class="btn" onclick="loadDesignBomWorkspace(true)">Refresh</button>
+      <button class="btn" id="design-boms-refresh-btn">Refresh</button>
     </div>
     <div id="design-boms-error" class="error-banner" style="display:none"></div>
     <div class="card card--mb card--padded">
@@ -1520,7 +1510,7 @@
           <div class="bom-upload-subtitle">Drop or choose `.csv`, `.json`, or `.xlsx` to ingest into the active workbook.</div>
         </div>
         <div class="bom-inline-actions">
-          <button class="btn" onclick="document.getElementById('bom-upload-input').click()">Choose File</button>
+          <button class="btn" id="bom-upload-browse-btn">Choose File</button>
           <a class="btn" href="/RTMify_Design_BOM_Template.xlsx">Download Template</a>
         </div>
       </div>
@@ -1529,7 +1519,7 @@
     </div>
     <div class="card card--mb card--padded">
       <label class="text-sm-subtle mb-10" style="display:block">
-        <input id="design-boms-include-obsolete" type="checkbox" onchange="loadDesignBomWorkspace(true)">
+        <input id="design-boms-include-obsolete" type="checkbox">
         Include obsolete products
       </label>
       <h3 class="mb-10">Available Design BOMs</h3>
@@ -1563,12 +1553,12 @@
   <section id="tab-bom-components">
     <div class="toolbar">
       <h2>Components</h2>
-      <button class="btn" onclick="loadBomComponents()">Refresh</button>
+      <button class="btn" id="bom-components-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="bom-components-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="Component product filter">
       <input id="bom-components-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name (optional)" aria-label="Component BOM name filter">
-      <input id="bom-components-search" class="lobby-input lobby-input--no-mb" type="text" placeholder="Search part, description, or category" aria-label="Component search" onkeydown="if(event.key==='Enter') loadBomComponents()">
+      <input id="bom-components-search" class="lobby-input lobby-input--no-mb" type="text" placeholder="Search part, description, or category" aria-label="Component search">
     </div>
     <label class="text-sm-subtle mb-12" style="display:block">
       <input id="bom-components-include-obsolete" type="checkbox">
@@ -1582,7 +1572,7 @@
   <section id="tab-bom-coverage">
     <div class="toolbar">
       <h2>Coverage</h2>
-      <button class="btn" onclick="loadBomCoverage()">Refresh</button>
+      <button class="btn" id="bom-coverage-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="bom-coverage-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="Coverage product filter">
@@ -1600,10 +1590,10 @@
   <section id="tab-bom-usage">
     <div class="toolbar">
       <h2>Part Usage</h2>
-      <button class="btn" onclick="runBomPartUsage()">Analyze</button>
+      <button class="btn" id="bom-usage-run-btn">Analyze</button>
     </div>
     <div class="input-row">
-      <input id="bom-usage-part" class="lobby-input lobby-input--no-mb w-input" type="text" placeholder="Part number (e.g. FBRFET-3300)" aria-label="Part number" onkeydown="if(event.key==='Enter') runBomPartUsage()">
+      <input id="bom-usage-part" class="lobby-input lobby-input--no-mb w-input" type="text" placeholder="Part number (e.g. FBRFET-3300)" aria-label="Part number">
     </div>
     <label class="text-sm-subtle mb-12" style="display:block">
       <input id="bom-usage-include-obsolete" type="checkbox">
@@ -1617,7 +1607,7 @@
   <section id="tab-bom-gaps">
     <div class="toolbar">
       <h2>BOM Gaps</h2>
-      <button class="btn" onclick="loadBomGaps()">Refresh</button>
+      <button class="btn" id="bom-gaps-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="bom-gaps-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="Product filter">
@@ -1635,7 +1625,7 @@
   <section id="tab-bom-impact">
     <div class="toolbar">
       <h2>BOM Impact Analysis</h2>
-      <button class="btn" onclick="loadBomImpactAnalysis()">Analyze</button>
+      <button class="btn" id="bom-impact-run-btn">Analyze</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="bom-impact-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier" aria-label="Product identifier">
@@ -1653,7 +1643,7 @@
   <section id="tab-software-boms">
     <div class="toolbar">
       <h2>Software / SOUP</h2>
-      <button class="btn" onclick="loadSoupWorkspace(true)">Refresh</button>
+      <button class="btn" id="software-boms-refresh-btn">Refresh</button>
     </div>
     <div id="software-boms-error" class="error-banner" style="display:none"></div>
     <div class="card card--mb card--padded">
@@ -1663,7 +1653,7 @@
           <div class="bom-upload-subtitle">Drop or choose `.json` or `.xlsx`. SOUP `.xlsx` uploads require a product anchor and use the <code>SOUP Components</code> tab.</div>
         </div>
         <div class="bom-inline-actions">
-          <button class="btn" onclick="document.getElementById('soup-upload-input').click()">Choose File</button>
+          <button class="btn" id="soup-upload-browse-btn">Choose File</button>
           <a class="btn" href="/RTMify_SOUP_Template.xlsx">Download Template</a>
         </div>
       </div>
@@ -1677,7 +1667,7 @@
     </div>
     <div class="card card--mb card--padded">
       <label class="text-sm-subtle mb-10" style="display:block">
-        <input id="software-boms-include-obsolete" type="checkbox" onchange="loadSoupWorkspace(true)">
+        <input id="software-boms-include-obsolete" type="checkbox">
         Include obsolete products
       </label>
       <h3 class="mb-10">Available Software BOMs / SOUP Registers</h3>
@@ -1710,12 +1700,12 @@
   <section id="tab-soup-components">
     <div class="toolbar">
       <h2>SOUP Components</h2>
-      <button class="btn" onclick="loadSoupComponents()">Refresh</button>
+      <button class="btn" id="soup-components-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="soup-components-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier" aria-label="SOUP product filter">
       <input id="soup-components-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (optional)" aria-label="SOUP BOM name filter">
-      <input id="soup-components-search" class="lobby-input lobby-input--no-mb" type="text" placeholder="Search component, license, supplier, or category" aria-label="SOUP search" onkeydown="if(event.key==='Enter') loadSoupComponents()">
+      <input id="soup-components-search" class="lobby-input lobby-input--no-mb" type="text" placeholder="Search component, license, supplier, or category" aria-label="SOUP search">
     </div>
     <label class="text-sm-subtle mb-12" style="display:block">
       <input id="soup-components-include-obsolete" type="checkbox">
@@ -1729,7 +1719,7 @@
   <section id="tab-soup-gaps">
     <div class="toolbar">
       <h2>SOUP Gaps</h2>
-      <button class="btn" onclick="loadSoupGaps()">Refresh</button>
+      <button class="btn" id="soup-gaps-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="soup-gaps-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="SOUP gap product filter">
@@ -1747,11 +1737,11 @@
   <section id="tab-soup-licenses">
     <div class="toolbar">
       <h2>SOUP Licenses</h2>
-      <button class="btn" onclick="loadSoupLicenses()">Refresh</button>
+      <button class="btn" id="soup-licenses-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="soup-licenses-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier (optional)" aria-label="SOUP license product filter">
-      <input id="soup-licenses-license" class="lobby-input lobby-input--no-mb" type="text" placeholder="License substring (optional)" aria-label="SOUP license filter" onkeydown="if(event.key==='Enter') loadSoupLicenses()">
+      <input id="soup-licenses-license" class="lobby-input lobby-input--no-mb" type="text" placeholder="License substring (optional)" aria-label="SOUP license filter">
     </div>
     <label class="text-sm-subtle mb-12" style="display:block">
       <input id="soup-licenses-include-obsolete" type="checkbox">
@@ -1765,11 +1755,11 @@
   <section id="tab-soup-safety">
     <div class="toolbar">
       <h2>SOUP Safety Classes</h2>
-      <button class="btn" onclick="loadSoupSafetyClasses()">Refresh</button>
+      <button class="btn" id="soup-safety-refresh-btn">Refresh</button>
     </div>
     <div class="bom-sync-grid mb-12">
       <input id="soup-safety-product" class="lobby-input lobby-input--no-mb" type="text" placeholder="Product full_identifier" aria-label="SOUP safety-class product filter">
-      <input id="soup-safety-class" class="lobby-input lobby-input--no-mb" type="text" placeholder="Safety class (optional)" aria-label="SOUP safety class filter" onkeydown="if(event.key==='Enter') loadSoupSafetyClasses()">
+      <input id="soup-safety-class" class="lobby-input lobby-input--no-mb" type="text" placeholder="Safety class (optional)" aria-label="SOUP safety class filter">
     </div>
     <label class="text-sm-subtle mb-12" style="display:block">
       <input id="soup-safety-include-obsolete" type="checkbox">
@@ -1802,7 +1792,7 @@
   <section id="tab-design-artifacts">
     <div class="toolbar">
       <h2>Design Artifacts</h2>
-      <button class="btn" onclick="loadDesignArtifacts(true)">Refresh</button>
+      <button class="btn" id="design-artifacts-refresh-btn">Refresh</button>
     </div>
     <div id="design-artifacts-error" class="error-banner" style="display:none"></div>
     <div class="card card--mb card--padded">
@@ -1820,7 +1810,7 @@
           <div class="bom-upload-subtitle">Drop or choose a `.docx` SRS / SysRD file or an `.xlsx` RTM workbook. Filenames are hints only; uploads are classified from contents and rejected if they do not match the selected kind.</div>
         </div>
         <div class="bom-inline-actions">
-          <button class="btn" onclick="document.getElementById('design-artifact-upload-input').click()">Choose File</button>
+          <button class="btn" id="design-artifact-upload-browse-btn">Choose File</button>
         </div>
       </div>
       <input id="design-artifact-upload-input" type="file" accept=".docx,.xlsx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">
@@ -1931,8 +1921,8 @@
     <div class="input-row">
       <input id="impact-input" class="lobby-input lobby-input--no-mb w-input"
         type="text" placeholder="Node ID (e.g. REQ-002)" aria-label="Node ID for impact analysis"
-        onkeydown="if(event.key==='Enter') runImpact()">
-      <button class="btn" onclick="runImpact()">Analyze</button>
+>
+      <button class="btn" id="impact-run-btn">Analyze</button>
     </div>
     <div id="impact-error" class="error-banner" style="display:none"></div>
     <div id="impact-result"></div>
@@ -1942,7 +1932,7 @@
   <section id="tab-review">
     <div class="toolbar">
       <h2>Review Required</h2>
-      <button class="btn" onclick="loadSuspects()">Refresh</button>
+      <button class="btn" id="review-refresh-btn">Refresh</button>
     </div>
     <div id="review-error" class="error-banner" style="display:none"></div>
     <div id="review-result"></div>
@@ -1952,7 +1942,7 @@
   <section id="tab-chain-gaps">
     <div class="toolbar">
       <h2>Chain Gaps</h2>
-      <button class="btn" onclick="loadChainGaps()">Refresh</button>
+      <button class="btn" id="chain-gaps-refresh-btn">Refresh</button>
     </div>
     <div id="gaps-error" class="error-banner" style="display:none"></div>
     <div class="card card--mb">
@@ -1961,13 +1951,13 @@
         <span id="chain-gap-count" class="badge" style="display:none"></span>
       </div>
       <div class="filter-row">
-        <select id="profile-select" class="lobby-input lobby-input--no-mb w-input" aria-label="Industry profile" onchange="changeProfile()">
+        <select id="profile-select" class="lobby-input lobby-input--no-mb w-input" aria-label="Industry profile">
           <option value="generic">Generic</option>
           <option value="medical">Medical</option>
           <option value="aerospace">Aerospace</option>
           <option value="automotive">Automotive</option>
         </select>
-        <button id="profile-provision-btn" class="btn" onclick="provisionMissingTabs()" style="display:none">Create Missing Tabs</button>
+        <button id="profile-provision-btn" class="btn" style="display:none">Create Missing Tabs</button>
       </div>
       <div id="profile-desc" class="text-sm-subtle mb-6"></div>
       <div id="profile-preview" class="text-sm-muted" style="display:none"></div>
@@ -1995,7 +1985,7 @@
   <section id="tab-guide-errors">
     <div class="toolbar">
       <h2>Error Codes Explained</h2>
-      <button class="btn" onclick="loadGuideErrors(true)">Refresh</button>
+      <button class="btn" id="guide-errors-refresh-btn">Refresh</button>
     </div>
     <div id="guide-errors-error" class="error-banner" style="display:none"></div>
     <div class="guide-shell">
@@ -2018,7 +2008,7 @@
       <p class="lobby-label">Add repository path:</p>
       <div class="code-add-row">
         <input id="repo-path-input" class="lobby-input lobby-input--no-mb" type="text" placeholder="/path/to/repository" aria-label="Repository path" />
-        <button class="btn" onclick="addRepo()">Add Repo</button>
+        <button class="btn" id="repo-add-btn">Add Repo</button>
       </div>
       <div id="repo-error" class="text-error-inline" style="display:none"></div>
     </div>
@@ -2052,7 +2042,7 @@
     <div class="card card--mb">
       <div class="toolbar card-toolbar">
         <span class="card-title">Files by Repo</span>
-        <button class="btn" id="code-scan-btn" onclick="scanAndLoadCodeTraceability()">Scan Now</button>
+        <button class="btn" id="code-scan-btn">Scan Now</button>
       </div>
       <div id="code-scan-status" class="text-hint mb-12">Last completed scan: never</div>
       <div id="code-body"><em class="text-hint">Click Scan Now to run a repository scan and load current results.</em></div>
@@ -2106,8 +2096,8 @@
         <div id="test-results-inbox" class="req-id">Loading…</div>
       </div>
       <div class="license-inline-actions">
-        <button class="btn" onclick="copyTestResultsToken()">Copy Token</button>
-        <button class="btn" onclick="regenerateTestResultsToken()">Regenerate Token</button>
+        <button class="btn" id="copy-test-results-token-btn">Copy Token</button>
+        <button class="btn" id="regenerate-test-results-token-btn">Regenerate Token</button>
       </div>
     </div>
     <div class="mcp-grid">
@@ -2172,8 +2162,8 @@ audit_readiness_summary(profile="aerospace")</div>
     <div class="toolbar">
       <h2>Workbooks</h2>
       <div>
-        <button class="btn" onclick="openAddWorkbook()">Add Workbook</button>
-        <button class="btn" onclick="loadWorkbooksView()">Refresh</button>
+        <button class="btn" id="add-workbook-btn">Add Workbook</button>
+        <button class="btn" id="workbooks-refresh-btn">Refresh</button>
       </div>
     </div>
     <div id="workbooks-error" class="error-banner" style="display:none"></div>
@@ -2213,7 +2203,7 @@ audit_readiness_summary(profile="aerospace")</div>
   <section id="tab-design-bom-sync">
     <div class="toolbar">
       <h2>Design BOM Sync</h2>
-      <button class="btn" onclick="loadDesignBomSyncSettings(true)">Refresh</button>
+      <button class="btn" id="design-bom-sync-refresh-btn">Refresh</button>
     </div>
     <div id="design-bom-sync-error" class="error-banner" style="display:none"></div>
     <div class="card card--mb card--padded">
@@ -2227,7 +2217,7 @@ audit_readiness_summary(profile="aerospace")</div>
       <div class="bom-sync-grid">
         <div>
           <label class="lobby-label" for="design-bom-sync-kind">Source Kind</label>
-          <select id="design-bom-sync-kind" class="lobby-input lobby-input--no-mb" onchange="toggleDesignBomSyncKind()">
+          <select id="design-bom-sync-kind" class="lobby-input lobby-input--no-mb">
             <option value="local_xlsx">Local XLSX</option>
             <option value="google">Google Sheets</option>
             <option value="excel">Excel Online</option>
@@ -2258,9 +2248,9 @@ audit_readiness_summary(profile="aerospace")</div>
         </div>
       </div>
       <div class="bom-inline-actions">
-        <button class="btn" onclick="validateDesignBomSync()">Validate</button>
-        <button class="btn" onclick="saveDesignBomSync()">Save</button>
-        <button class="btn-danger" onclick="deleteDesignBomSync()">Remove</button>
+        <button class="btn" id="design-bom-sync-validate-btn">Validate</button>
+        <button class="btn" id="design-bom-sync-save-btn">Save</button>
+        <button class="btn-danger" id="design-bom-sync-delete-btn">Remove</button>
       </div>
       <div class="text-sm-subtle mt-12">Provider credentials are not readable back from secure storage. Re-enter them only when changing the source.</div>
     </div>
@@ -2270,7 +2260,7 @@ audit_readiness_summary(profile="aerospace")</div>
   <section id="tab-soup-sync">
     <div class="toolbar">
       <h2>SOUP Sync</h2>
-      <button class="btn" onclick="loadSoupSyncSettings(true)">Refresh</button>
+      <button class="btn" id="soup-sync-refresh-btn">Refresh</button>
     </div>
     <div id="soup-sync-error" class="error-banner" style="display:none"></div>
     <div class="card card--mb card--padded">
@@ -2284,7 +2274,7 @@ audit_readiness_summary(profile="aerospace")</div>
       <div class="bom-sync-grid">
         <div>
           <label class="lobby-label" for="soup-sync-kind">Source Kind</label>
-          <select id="soup-sync-kind" class="lobby-input lobby-input--no-mb" onchange="toggleSoupSyncKind()">
+          <select id="soup-sync-kind" class="lobby-input lobby-input--no-mb">
             <option value="local_xlsx">Local XLSX</option>
             <option value="google">Google Sheets</option>
             <option value="excel">Excel Online</option>
@@ -2323,9 +2313,9 @@ audit_readiness_summary(profile="aerospace")</div>
         </div>
       </div>
       <div class="bom-inline-actions">
-        <button class="btn" onclick="validateSoupSync()">Validate</button>
-        <button class="btn" onclick="saveSoupSync()">Save</button>
-        <button class="btn-danger" onclick="deleteSoupSync()">Remove</button>
+        <button class="btn" id="soup-sync-validate-btn">Validate</button>
+        <button class="btn" id="soup-sync-save-btn">Save</button>
+        <button class="btn-danger" id="soup-sync-delete-btn">Remove</button>
       </div>
       <div class="text-sm-subtle mt-12">SOUP sync is read-only. The product anchor is stored in config and the workbook is never written back.</div>
     </div>
@@ -2335,7 +2325,7 @@ audit_readiness_summary(profile="aerospace")</div>
   <section id="tab-info">
     <div class="toolbar">
       <h2>Info</h2>
-      <button class="btn" onclick="loadInfo()">Refresh</button>
+      <button class="btn" id="info-refresh-btn">Refresh</button>
     </div>
     <div id="info-error" class="error-banner" style="display:none"></div>
     <div class="card card--padded">
@@ -2368,9 +2358,9 @@ audit_readiness_summary(profile="aerospace")</div>
         <div id="info-log-path" class="req-id">Loading…</div>
       </div>
       <div class="license-inline-actions">
-        <button id="info-license-refresh" class="btn" onclick="refreshLicenseStatus()">Refresh License Status</button>
-        <button id="info-license-import" class="btn" onclick="chooseLicenseFile()">Import License File</button>
-        <button id="info-license-clear" class="btn" onclick="clearInstalledLicense()" style="display:none">Clear License</button>
+        <button id="info-license-refresh" class="btn">Refresh License Status</button>
+        <button id="info-license-import" class="btn">Import License File</button>
+        <button id="info-license-clear" class="btn" style="display:none">Clear License</button>
       </div>
     </div>
   </section>
@@ -2423,9 +2413,9 @@ audit_readiness_summary(profile="aerospace")</div>
           <input id="report-design-bom-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name">
         </div>
         <div class="btn-group">
-          <button class="btn" onclick="downloadDesignBomReport('pdf')">PDF</button>
-          <button class="btn" onclick="downloadDesignBomReport()">Markdown</button>
-          <button class="btn" onclick="downloadDesignBomReport('docx')">Word (.docx)</button>
+          <button class="btn" id="report-design-bom-pdf-btn">PDF</button>
+          <button class="btn" id="report-design-bom-md-btn">Markdown</button>
+          <button class="btn" id="report-design-bom-docx-btn">Word (.docx)</button>
         </div>
       </div>
       <div class="report-card">
@@ -2439,9 +2429,9 @@ audit_readiness_summary(profile="aerospace")</div>
           <input id="report-soup-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (defaults to SOUP Components)">
         </div>
         <div class="btn-group">
-          <button class="btn" onclick="downloadSoupReport('pdf')">PDF</button>
-          <button class="btn" onclick="downloadSoupReport()">Markdown</button>
-          <button class="btn" onclick="downloadSoupReport('docx')">Word (.docx)</button>
+          <button class="btn" id="report-soup-pdf-btn">PDF</button>
+          <button class="btn" id="report-soup-md-btn">Markdown</button>
+          <button class="btn" id="report-soup-docx-btn">Word (.docx)</button>
         </div>
       </div>
     </div>
@@ -2449,7 +2439,7 @@ audit_readiness_summary(profile="aerospace")</div>
 
 </main>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 
 </body>
 </html>
