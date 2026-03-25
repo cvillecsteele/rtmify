@@ -37,6 +37,7 @@ pub const artifact_discriminator_test = @import("artifact_discriminator_test.zig
 pub const bom = @import("bom.zig");
 pub const bom_tests = @import("bom/tests.zig");
 pub const soup = @import("soup.zig");
+pub const soup_tests = @import("soup/tests.zig");
 pub const adapter = @import("adapter.zig");
 pub const server = @import("server.zig");
 pub const server_tests = @import("server/tests.zig");
@@ -78,6 +79,7 @@ test {
     _ = bom;
     _ = bom_tests;
     _ = soup;
+    _ = soup_tests;
     _ = adapter;
     _ = server;
     _ = server_tests;
