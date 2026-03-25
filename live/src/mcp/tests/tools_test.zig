@@ -96,6 +96,27 @@ test "design artifact tools expose artifact inventory and detail" {
     try testing.expect(std.mem.indexOf(u8, get_payload.text, "\"kind\":\"srs_docx\"") != null);
 }
 
+test "retired design artifact reingest tool is not exposed by dispatch" {
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("artifact_id", .{ .string = "artifact://srs_docx/core" });
+
+    const dispatch = try support.buildToolPayloadForTest("reingest_design_artifact", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer dispatch.deinit(testing.allocator);
+    switch (dispatch) {
+        .not_found => {},
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "get_bom_item invalid selector returns specific message" {
     var db = try internal.graph_live.GraphDb.init(":memory:");
     defer db.deinit();

@@ -73,14 +73,6 @@ pub fn buildToolPayload(
             else => return err,
         };
         return .{ .payload = jsonPayloadOwned(data) };
-    } else if (std.mem.eql(u8, name, "reingest_design_artifact")) {
-        const artifact_id = try requireStringArg(args, "artifact_id");
-        var result = internal.design_artifacts.reingestArtifact(db, artifact_id, alloc) catch |err| switch (err) {
-            error.NotFound => return .{ .payload = jsonPayloadOwned(try alloc.dupe(u8, "{\"error\":\"not_found\"}")) },
-            else => return err,
-        };
-        defer result.deinit(alloc);
-        return .{ .payload = jsonPayloadOwned(try alloc.dupe(u8, "{\"ok\":true}")) };
     } else if (toolRequiresActiveWorkbook(name) and registry.active_runtime == null) {
         return invalidArgumentsDispatch("No active workbook", alloc);
     } else if (std.mem.eql(u8, name, "get_rtm")) {

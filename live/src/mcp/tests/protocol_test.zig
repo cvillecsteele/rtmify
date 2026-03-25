@@ -8,6 +8,8 @@ test "tools list exposes truthful schemas for structured and narrative tools" {
     var parsed = try support.parseToolsJsonForTest(testing.allocator);
     defer parsed.deinit();
 
+    try testing.expect(support.findToolForTest(parsed.value, "reingest_design_artifact") == null);
+
     const get_rtm = support.findToolForTest(parsed.value, "get_rtm") orelse return error.TestUnexpectedResult;
     try testing.expect(internal.json_util.getObjectField(get_rtm, "outputSchema") != null);
     try testing.expectEqualStrings("array", internal.json_util.getString(internal.json_util.getObjectField(get_rtm, "outputSchema").?, "type").?);
