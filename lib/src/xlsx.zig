@@ -736,7 +736,7 @@ fn parseRow(row_xml: []const u8, shared: []const []const u8, allocator: Allocato
                 const t_abs = is_start + t_start;
                 const t_end = std.mem.indexOf(u8, cell_content[t_abs..], "</t>") orelse break :blk "";
                 const raw = cell_content[t_abs + 3 .. t_abs + t_end];
-                break :blk try allocator.dupe(u8, raw);
+                break :blk try xmlUnescape(raw, allocator);
             }
 
             const v_start = std.mem.indexOf(u8, cell_content, "<v>") orelse break :blk "";
@@ -971,6 +971,20 @@ test "parseRow inline string t=inlineStr" {
     const row = try parseRow(row_xml, &shared, alloc);
     try testing.expectEqual(@as(usize, 1), row.len);
     try testing.expectEqualStrings("inline value", row[0]);
+}
+
+test "parseRow inline string t=inlineStr unescapes XML entities" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const shared = [_][]const u8{};
+    const row_xml =
+        \\<c r="A1" t="inlineStr"><is><t>The system shall operate continuously for &gt;= 8 hours</t></is></c>
+    ;
+    const row = try parseRow(row_xml, &shared, alloc);
+    try testing.expectEqual(@as(usize, 1), row.len);
+    try testing.expectEqualStrings("The system shall operate continuously for >= 8 hours", row[0]);
 }
 
 test "parseRow formula string t=str" {
