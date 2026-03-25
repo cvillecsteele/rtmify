@@ -42,7 +42,7 @@ export function renderDesignArtifactList() {
     const selected = item.artifact_id === artifactState.selectedArtifactId;
     const canReingest = !!item.reingestable;
     const reingestLabel = canReingest ? 'Re-ingest' : ((item.kind === 'rtm_workbook' && (item.ingest_source || '') === 'workbook_sync') ? 'Provider-managed' : 'Read-only');
-    return `<tr${selected ? ' class="warning"' : ''}>
+    return `<tr${selected ? ' class="warning"' : ''} data-action="select-design-artifact" data-artifact-id="${esc(item.artifact_id || '')}">
       <td>${esc(formatDesignArtifactKind(item.kind))}</td>
       <td>${esc(item.display_name || '—')}</td>
       <td><span class="req-id">${esc(item.logical_key || '—')}</span></td>
@@ -84,7 +84,9 @@ export async function loadSelectedDesignArtifactDetail() {
     const assertions = Array.isArray(data.assertions) ? data.assertions : [];
     const extractionSummary = data.extraction_summary || {};
     const conflictRows = Array.isArray(data.conflicts) ? data.conflicts : [];
+    const conflictRequirementIds = new Set(conflictRows.map((item) => item.req_id).filter(Boolean));
     const nullTextRows = assertions.filter((item) => !item.text || item.parse_status === 'null_text');
+    const ambiguousRows = assertions.filter((item) => item.parse_status === 'ambiguous_within_artifact');
     const lowConfidenceRows = assertions.filter((item) => String(item.parse_status || '').startsWith('low_confidence_'));
     const newIds = Array.isArray(data.new_since_last_ingest) ? data.new_since_last_ingest : [];
     const ingestSummary = data.ingest_summary || null;
@@ -95,8 +97,9 @@ export async function loadSelectedDesignArtifactDetail() {
       <div class="bom-metrics">
         <div class="bom-metric"><div class="bom-metric-label">Kind</div><div class="bom-metric-value">${esc(formatDesignArtifactKind(props.kind || ''))}</div></div>
         <div class="bom-metric"><div class="bom-metric-label">Requirements</div><div class="bom-metric-value">${esc(String(assertions.length))}</div></div>
-        <div class="bom-metric"><div class="bom-metric-label">Conflicts</div><div class="bom-metric-value">${esc(String(conflictRows.length))}</div></div>
+        <div class="bom-metric"><div class="bom-metric-label">Conflicts</div><div class="bom-metric-value">${esc(String(conflictRequirementIds.size))}</div></div>
         <div class="bom-metric"><div class="bom-metric-label">Null Text</div><div class="bom-metric-value">${esc(String(nullTextRows.length))}</div></div>
+        <div class="bom-metric"><div class="bom-metric-label">Ambiguous</div><div class="bom-metric-value">${esc(String(extractionSummary.ambiguous_within_artifact_count || ambiguousRows.length || 0))}</div></div>
         <div class="bom-metric"><div class="bom-metric-label">Low Confidence</div><div class="bom-metric-value">${esc(String(extractionSummary.low_confidence_count || lowConfidenceRows.length || 0))}</div></div>
       </div>
       <div class="repo-row repo-row--block">
@@ -105,8 +108,9 @@ export async function loadSelectedDesignArtifactDetail() {
       </div>
       ${ingestSummary ? `<div class="repo-row repo-row--block"><div><strong>Last Ingest</strong> ${esc(String(ingestSummary.disposition || ''))}</div><div class="text-sm-subtle">seen ${esc(String(ingestSummary.requirements_seen || 0))} · added ${esc(String(ingestSummary.nodes_added || 0))} · updated ${esc(String(ingestSummary.nodes_updated || 0))} · deleted ${esc(String(ingestSummary.nodes_deleted || 0))} · unchanged ${esc(String(ingestSummary.unchanged || 0))}</div></div>` : ''}
       ${newIds.length ? `<div class="repo-row repo-row--block"><div><strong>New Since Last Ingest</strong></div><div class="text-sm-subtle">${newIds.map((id) => `<span class="req-id">${esc(id)}</span>`).join(' ')}</div></div>` : ''}
-      ${conflictRows.length ? `<div class="table-scroll mb-12"><table><thead><tr><th>Requirement</th><th>Other Artifact</th><th>Kind</th><th>Other Text</th></tr></thead><tbody>${conflictRows.map((item) => `<tr><td><span class="req-id">${esc(item.req_id || '—')}</span></td><td>${esc(item.other_artifact_id || '—')}</td><td>${esc(formatDesignArtifactKind(item.other_source_kind || ''))}</td><td>${esc(item.other_text || '—')}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${conflictRows.length ? `<div class="repo-row repo-row--block"><div><strong>Cross-Source Conflicts</strong></div><div class="text-sm-subtle">${esc(String(conflictRequirementIds.size))} requirement${conflictRequirementIds.size === 1 ? '' : 's'} conflict with another artifact source.</div></div><div class="table-scroll mb-12"><table><thead><tr><th>Requirement</th><th>Other Artifact</th><th>Kind</th><th>Other Text</th></tr></thead><tbody>${conflictRows.map((item) => `<tr><td><span class="req-id">${esc(item.req_id || '—')}</span></td><td>${esc(item.other_artifact_id || '—')}</td><td>${esc(formatDesignArtifactKind(item.other_source_kind || ''))}</td><td>${esc(item.other_text || '—')}</td></tr>`).join('')}</tbody></table></div>` : ''}
       ${nullTextRows.length ? `<div class="repo-row repo-row--block"><div><strong>Null Text Rows</strong></div><div class="text-sm-subtle">${nullTextRows.map((item) => `<span class="req-id">${esc(item.req_id || '—')}</span>`).join(' ')}</div></div>` : ''}
+      ${ambiguousRows.length ? `<div class="repo-row repo-row--block"><div><strong>Ambiguous Rows</strong></div><div class="text-sm-subtle">${ambiguousRows.map((item) => `<span class="req-id">${esc(item.req_id || '—')}</span>`).join(' ')}</div></div>` : ''}
       ${lowConfidenceRows.length ? `<div class="repo-row repo-row--block"><div><strong>Low Confidence Rows</strong></div><div class="text-sm-subtle">${lowConfidenceRows.map((item) => `<span class="req-id">${esc(item.req_id || '—')}</span> (${esc(item.parse_status || '')})`).join(' · ')}</div></div>` : ''}
       ${assertions.length ? `<div class="table-scroll"><table>
         <thead>
