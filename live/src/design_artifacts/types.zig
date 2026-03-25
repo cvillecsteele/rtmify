@@ -4,12 +4,18 @@ const Allocator = std.mem.Allocator;
 
 pub const ArtifactKind = enum {
     rtm_workbook,
+    urs_docx,
     srs_docx,
+    swrs_docx,
+    hrs_docx,
     sysrd_docx,
 
     pub fn fromString(value: []const u8) ?ArtifactKind {
         if (std.mem.eql(u8, value, "rtm_workbook")) return .rtm_workbook;
+        if (std.mem.eql(u8, value, "urs_docx")) return .urs_docx;
         if (std.mem.eql(u8, value, "srs_docx")) return .srs_docx;
+        if (std.mem.eql(u8, value, "swrs_docx")) return .swrs_docx;
+        if (std.mem.eql(u8, value, "hrs_docx")) return .hrs_docx;
         if (std.mem.eql(u8, value, "sysrd_docx")) return .sysrd_docx;
         return null;
     }
@@ -17,8 +23,18 @@ pub const ArtifactKind = enum {
     pub fn toString(self: ArtifactKind) []const u8 {
         return switch (self) {
             .rtm_workbook => "rtm_workbook",
+            .urs_docx => "urs_docx",
             .srs_docx => "srs_docx",
+            .swrs_docx => "swrs_docx",
+            .hrs_docx => "hrs_docx",
             .sysrd_docx => "sysrd_docx",
+        };
+    }
+
+    pub fn isRequirementDocKind(self: ArtifactKind) bool {
+        return switch (self) {
+            .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => true,
+            .rtm_workbook => false,
         };
     }
 };

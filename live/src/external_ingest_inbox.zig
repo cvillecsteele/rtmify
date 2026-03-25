@@ -139,7 +139,7 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
             try recordSoupWarnings(db, archived_path, response, alloc);
             return;
         },
-        .rtm_workbook, .srs_docx, .sysrd_docx => {
+        .rtm_workbook, .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => {
             const kind_enum = artifact_discriminator.candidateKindToDesignArtifactKind(discrimination.kind.?) orelse unreachable;
             const logical_key = try alloc.dupe(u8, discrimination.filename_stem_slug);
             defer alloc.free(logical_key);
@@ -153,7 +153,7 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
                     };
                     defer ingest_result.deinit(alloc);
                 },
-                .srs_docx, .sysrd_docx => {
+                .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => {
                     var ingest_result = design_artifacts.ingestDocxPath(db, archived_path, kind_enum, logical_key, std.fs.path.basename(archived_path), "external_inbox", alloc) catch |err| {
                         try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
                         return;
@@ -432,7 +432,7 @@ fn archiveDesignArtifactFile(
     try ensureDirPath(target_dir_path);
     const extension = switch (kind) {
         .rtm_workbook => ".xlsx",
-        .srs_docx, .sysrd_docx => ".docx",
+        .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => ".docx",
     };
     const target_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ logical_key, extension });
     defer alloc.free(target_name);

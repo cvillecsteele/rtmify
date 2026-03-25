@@ -11,6 +11,20 @@ test "artifact id uses kind namespace" {
     try std.testing.expectEqualStrings("artifact://srs_docx/core", value);
 }
 
+test "new docx artifact kinds use kind namespace" {
+    const urs = try design_artifacts.artifactIdFor(.urs_docx, "core-urs", std.testing.allocator);
+    defer std.testing.allocator.free(urs);
+    try std.testing.expectEqualStrings("artifact://urs_docx/core-urs", urs);
+
+    const swrs = try design_artifacts.artifactIdFor(.swrs_docx, "core-swrs", std.testing.allocator);
+    defer std.testing.allocator.free(swrs);
+    try std.testing.expectEqualStrings("artifact://swrs_docx/core-swrs", swrs);
+
+    const hrs = try design_artifacts.artifactIdFor(.hrs_docx, "core-hrs", std.testing.allocator);
+    defer std.testing.allocator.free(hrs);
+    try std.testing.expectEqualStrings("artifact://hrs_docx/core-hrs", hrs);
+}
+
 test "rtm workbook artifact id uses rtm namespace" {
     const value = try design_artifacts.artifactIdFor(.rtm_workbook, "demo", std.testing.allocator);
     defer std.testing.allocator.free(value);

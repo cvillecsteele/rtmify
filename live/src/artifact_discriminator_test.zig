@@ -26,10 +26,40 @@ fn makeTmpPath(tmp: anytype, suffix: []const u8, alloc: std.mem.Allocator) ![]co
 
 fn writeSrsDocx(path: []const u8, alloc: std.mem.Allocator) !void {
     const paragraphs = [_][]const u8{
-        "Software Requirements Specification",
+        "System Requirements Specification",
         "SRS-001 - Device shall display heart rate.",
         "SRS-002 - Device shall display SpO2.",
         "SRS-003 - Device shall display battery level.",
+    };
+    try artifact_test_files.writeMinimalDocx(path, &paragraphs, alloc);
+}
+
+fn writeUrsDocx(path: []const u8, alloc: std.mem.Allocator) !void {
+    const paragraphs = [_][]const u8{
+        "User Requirements Specification",
+        "URS-001 - The operator shall be able to start a spot-check workflow in under 10 seconds.",
+        "URS-002 - The monitor shall be usable in ambulatory and bedside environments.",
+        "URS-003 - Clinical alarms shall be visible and audible to the operator.",
+    };
+    try artifact_test_files.writeMinimalDocx(path, &paragraphs, alloc);
+}
+
+fn writeSwrsDocx(path: []const u8, alloc: std.mem.Allocator) !void {
+    const paragraphs = [_][]const u8{
+        "Software Requirements Specification",
+        "SWRS-001 - The software shall authenticate API clients before exporting patient data.",
+        "SWRS-002 - The software shall log error handling outcomes for failed device connections.",
+        "SWRS-003 - The software shall expose a software interface for alarm review history.",
+    };
+    try artifact_test_files.writeMinimalDocx(path, &paragraphs, alloc);
+}
+
+fn writeHrsDocx(path: []const u8, alloc: std.mem.Allocator) !void {
+    const paragraphs = [_][]const u8{
+        "Hardware Requirements Specification",
+        "HRS-001 - The enclosure material shall withstand repeated cleaning cycles.",
+        "HRS-002 - The assembly shall tolerate vibration during ambulance transport.",
+        "HRS-003 - The hardware shall maintain EMC performance during normal operation.",
     };
     try artifact_test_files.writeMinimalDocx(path, &paragraphs, alloc);
 }
@@ -133,6 +163,48 @@ test "docx discriminator accepts loosely named SRS docx" {
 
     try testing.expect(result.accepted);
     try testing.expectEqual(artifact_discriminator.CandidateKind.srs_docx, result.kind.?);
+}
+
+test "docx discriminator accepts clearly labeled URS docx" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try makeTmpPath(tmp, "operator-urs.docx", testing.allocator);
+    defer testing.allocator.free(path);
+    try writeUrsDocx(path, testing.allocator);
+
+    var result = try artifact_discriminator.discriminateInboxPath(path, "operator-urs.docx", testing.allocator);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.accepted);
+    try testing.expectEqual(artifact_discriminator.CandidateKind.urs_docx, result.kind.?);
+}
+
+test "docx discriminator accepts clearly labeled SwRS docx" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try makeTmpPath(tmp, "software-requirements.docx", testing.allocator);
+    defer testing.allocator.free(path);
+    try writeSwrsDocx(path, testing.allocator);
+
+    var result = try artifact_discriminator.discriminateInboxPath(path, "software-requirements.docx", testing.allocator);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.accepted);
+    try testing.expectEqual(artifact_discriminator.CandidateKind.swrs_docx, result.kind.?);
+}
+
+test "docx discriminator accepts clearly labeled HRS docx" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try makeTmpPath(tmp, "hardware-requirements.docx", testing.allocator);
+    defer testing.allocator.free(path);
+    try writeHrsDocx(path, testing.allocator);
+
+    var result = try artifact_discriminator.discriminateInboxPath(path, "hardware-requirements.docx", testing.allocator);
+    defer result.deinit(testing.allocator);
+
+    try testing.expect(result.accepted);
+    try testing.expectEqual(artifact_discriminator.CandidateKind.hrs_docx, result.kind.?);
 }
 
 test "docx discriminator accepts loosely named SysRD docx" {
@@ -366,6 +438,88 @@ test "upload accepts valid RTM workbook" {
     defer testing.allocator.free(response.body);
     try testing.expectEqual(std.http.Status.ok, response.status);
     try testing.expect(std.mem.indexOf(u8, response.body, "\"artifact_id\"") != null);
+}
+
+test "upload accepts valid SwRS docx" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const inbox_dir = try makeTmpPath(tmp, "inbox", testing.allocator);
+    defer testing.allocator.free(inbox_dir);
+    try std.fs.cwd().makePath(inbox_dir);
+
+    const token_path = try makeTmpPath(tmp, "api-token", testing.allocator);
+    defer testing.allocator.free(token_path);
+    var auth = try test_results_auth.AuthState.initForPath(token_path, testing.allocator);
+    defer auth.deinit(testing.allocator);
+    const token = try auth.currentToken(testing.allocator);
+    defer testing.allocator.free(token);
+    const authorization = try std.fmt.allocPrint(testing.allocator, "Bearer {s}", .{token});
+    defer testing.allocator.free(authorization);
+
+    const file_path = try makeTmpPath(tmp, "software-requirements.docx", testing.allocator);
+    defer testing.allocator.free(file_path);
+    try writeSwrsDocx(file_path, testing.allocator);
+    const bytes = try std.fs.cwd().readFileAlloc(testing.allocator, file_path, 1_000_000);
+    defer testing.allocator.free(bytes);
+
+    var upload = try buildUploadRequest("software-requirements.docx", "swrs_docx", null, bytes, testing.allocator);
+    defer upload.deinit(testing.allocator);
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    const response = try design_artifacts_api.handlePostUploadResponse(
+        &db,
+        &auth,
+        authorization,
+        upload.content_type,
+        upload.body,
+        inbox_dir,
+        testing.allocator,
+    );
+    defer testing.allocator.free(response.body);
+    try testing.expectEqual(std.http.Status.ok, response.status);
+    try testing.expect(std.mem.indexOf(u8, response.body, "\"kind\":\"swrs_docx\"") != null);
+}
+
+test "onboarding upload maps HRS docx to document_first" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const inbox_dir = try makeTmpPath(tmp, "inbox", testing.allocator);
+    defer testing.allocator.free(inbox_dir);
+    try std.fs.cwd().makePath(inbox_dir);
+
+    const file_path = try makeTmpPath(tmp, "hardware-requirements.docx", testing.allocator);
+    defer testing.allocator.free(file_path);
+    try writeHrsDocx(file_path, testing.allocator);
+    const bytes = try std.fs.cwd().readFileAlloc(testing.allocator, file_path, 1_000_000);
+    defer testing.allocator.free(bytes);
+
+    const boundary = "----RTMIFY-ONBOARDING-TEST";
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(testing.allocator);
+    try std.fmt.format(body.writer(testing.allocator), "--{s}\r\n", .{boundary});
+    try body.appendSlice(testing.allocator, "Content-Disposition: form-data; name=\"file\"; filename=\"hardware-requirements.docx\"\r\n");
+    try body.appendSlice(testing.allocator, "Content-Type: application/octet-stream\r\n\r\n");
+    try body.appendSlice(testing.allocator, bytes);
+    try body.appendSlice(testing.allocator, "\r\n");
+    try std.fmt.format(body.writer(testing.allocator), "--{s}--\r\n", .{boundary});
+
+    const content_type = try std.fmt.allocPrint(testing.allocator, "multipart/form-data; boundary={s}", .{boundary});
+    defer testing.allocator.free(content_type);
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    const response = try design_artifacts_api.handlePostOnboardingSourceArtifactResponse(
+        &db,
+        content_type,
+        body.items,
+        inbox_dir,
+        testing.allocator,
+    );
+    defer testing.allocator.free(response.body);
+    try testing.expectEqual(std.http.Status.ok, response.status);
+    try testing.expect(std.mem.indexOf(u8, response.body, "\"kind\":\"hrs_docx\"") != null);
+    try testing.expect(std.mem.indexOf(u8, response.body, "\"source_of_truth\":\"document_first\"") != null);
 }
 
 test "inbox accepts loosely named RTM workbook without prefix" {

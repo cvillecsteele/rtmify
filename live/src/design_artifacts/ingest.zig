@@ -171,7 +171,7 @@ pub fn reingestArtifact(db: *graph_live.GraphDb, artifact_id: []const u8, alloc:
     const logical_key = if (st.columnIsNull(3)) std.fs.path.stem(std.fs.path.basename(path)) else st.columnText(3);
     const kind = types.ArtifactKind.fromString(kind_str) orelse return error.NotFound;
     return switch (kind) {
-        .srs_docx, .sysrd_docx => ingestDocxPath(db, path, kind, logical_key, display_name, "reingest", alloc),
+        .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => ingestDocxPath(db, path, kind, logical_key, display_name, "reingest", alloc),
         .rtm_workbook => ingestRtmWorkbookPath(db, path, logical_key, display_name, "reingest", alloc),
     };
 }

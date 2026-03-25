@@ -1211,7 +1211,7 @@
             <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#1d4ed8"/><path d="M16 10h12l8 8v20H16z" fill="#fff" opacity=".92"/><path d="M28 10v8h8" fill="none" stroke="#1d4ed8" stroke-width="1.7"/><path d="M20 24h12M20 29h12M20 34h8" stroke="#1d4ed8" stroke-width="1.7" stroke-linecap="round"/></svg>
           </div>
           <div class="provider-tile-name">Requirements Document</div>
-          <div class="provider-tile-sub">Drop an SRS, SysRD / SRD, or RTM workbook file to seed the workspace.</div>
+          <div class="provider-tile-sub">Drop a requirements document (URS, SRS, SwRS, HRS, or SysRD / SRD) or an RTM workbook file to seed the workspace.</div>
         </div>
         <div class="provider-tile" id="tile-workbook-source" data-source-of-truth="workbook_first">
           <div class="provider-tile-logo">
@@ -1234,7 +1234,7 @@
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
           </div>
           <div class="sa-upload-zone-primary">Drop a requirements artifact here</div>
-          <div class="sa-upload-zone-secondary">Accepts `.docx` SRS / SysRD files or an `.xlsx` RTM workbook. Classification is content-first and ambiguous files are rejected.</div>
+          <div class="sa-upload-zone-secondary">Accepts `.docx` requirement documents (URS, SRS, SwRS, HRS, or SysRD / SRD) or an `.xlsx` RTM workbook. Classification is content-first and ambiguous files are rejected.</div>
         </div>
       </div>
       <button class="authorize-btn" id="s2-continue-btn">
@@ -1798,7 +1798,10 @@
     <div class="card card--mb card--padded">
       <div class="bom-sync-grid mb-12">
         <select id="design-artifact-kind" class="lobby-input lobby-input--no-mb" aria-label="Design artifact kind">
+          <option value="urs_docx">URS</option>
           <option value="srs_docx">SRS</option>
+          <option value="swrs_docx">SwRS</option>
+          <option value="hrs_docx">HRS</option>
           <option value="sysrd_docx">SysRD / SRD</option>
           <option value="rtm_workbook">RTM Workbook (.xlsx)</option>
         </select>
@@ -1807,7 +1810,7 @@
       <div class="bom-upload-zone" id="design-artifact-upload-zone">
         <div>
           <div class="bom-upload-title">Upload design artifact</div>
-          <div class="bom-upload-subtitle">Drop or choose a `.docx` SRS / SysRD file or an `.xlsx` RTM workbook. Filenames are hints only; uploads are classified from contents and rejected if they do not match the selected kind.</div>
+          <div class="bom-upload-subtitle">Drop or choose a `.docx` requirement document (URS, SRS, SwRS, HRS, or SysRD / SRD) or an `.xlsx` RTM workbook. Filenames are hints only; uploads are classified from contents and rejected if they do not match the selected kind.</div>
         </div>
         <div class="bom-inline-actions">
           <button class="btn" id="design-artifact-upload-browse-btn">Choose File</button>

@@ -242,7 +242,13 @@ VALUES (${sqlQuote(edgeId(fromId, toId, label))}, ${sqlQuote(fromId)}, ${sqlQuot
 `);
 }
 
-type DesignArtifactKind = 'rtm_workbook' | 'srs_docx' | 'sysrd_docx';
+type DesignArtifactKind =
+  | 'rtm_workbook'
+  | 'urs_docx'
+  | 'srs_docx'
+  | 'swrs_docx'
+  | 'hrs_docx'
+  | 'sysrd_docx';
 
 function artifactIdFor(kind: DesignArtifactKind, logicalKey: string): string {
   if (kind === 'rtm_workbook') return `artifact://rtm/${logicalKey}`;

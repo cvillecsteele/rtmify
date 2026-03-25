@@ -210,7 +210,10 @@ export async function reingestDesignArtifact(artifactId) {
 
 export function formatDesignArtifactKind(kind) {
   if (kind === 'rtm_workbook') return 'RTM Workbook';
+  if (kind === 'urs_docx') return 'URS';
   if (kind === 'srs_docx') return 'SRS';
+  if (kind === 'swrs_docx') return 'SwRS';
+  if (kind === 'hrs_docx') return 'HRS';
   if (kind === 'sysrd_docx') return 'SysRD / SRD';
   return kind || '—';
 }

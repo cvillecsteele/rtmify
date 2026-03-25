@@ -76,18 +76,11 @@ pub fn handlePostUploadResponse(
     };
     defer upload.deinit(alloc);
 
-    const kind = if (std.mem.eql(u8, upload.kind, "srs_docx"))
-        design_artifacts.ArtifactKind.srs_docx
-    else if (std.mem.eql(u8, upload.kind, "sysrd_docx"))
-        design_artifacts.ArtifactKind.sysrd_docx
-    else if (std.mem.eql(u8, upload.kind, "rtm_workbook"))
-        design_artifacts.ArtifactKind.rtm_workbook
-    else
-        {
+    const kind = design_artifacts.ArtifactKind.fromString(upload.kind) orelse {
             std.log.warn("design artifact upload rejected filename={s} kind={s} reason=invalid_kind", .{ upload.filename, upload.kind });
             return shared.jsonRouteResponse(
                 .bad_request,
-                try validationErrorJson("invalid_kind", "kind must be srs_docx, sysrd_docx, or rtm_workbook.", alloc),
+                try validationErrorJson("invalid_kind", "kind must be urs_docx, srs_docx, swrs_docx, hrs_docx, sysrd_docx, or rtm_workbook.", alloc),
                 false,
             );
         };
@@ -96,9 +89,9 @@ pub fn handlePostUploadResponse(
     defer alloc.free(logical_key);
     const display_name = upload.display_name orelse upload.filename;
     if (std.mem.endsWith(u8, upload.filename, ".docx")) {
-        if (!(kind == .srs_docx or kind == .sysrd_docx)) {
+        if (!kind.isRequirementDocKind()) {
             std.log.warn("design artifact upload rejected filename={s} kind={s} reason=invalid_kind_for_extension", .{ upload.filename, upload.kind });
-            return shared.jsonRouteResponse(.bad_request, try validationErrorJson("invalid_kind", ".docx uploads require kind srs_docx or sysrd_docx.", alloc), false);
+            return shared.jsonRouteResponse(.bad_request, try validationErrorJson("invalid_kind", ".docx uploads require a requirement-document kind (urs_docx, srs_docx, swrs_docx, hrs_docx, or sysrd_docx).", alloc), false);
         }
     } else if (std.mem.endsWith(u8, upload.filename, ".xlsx")) {
         if (kind != .rtm_workbook) {
@@ -126,7 +119,7 @@ pub fn handlePostUploadResponse(
         );
     }
     var ingest_result = switch (kind) {
-        .srs_docx, .sysrd_docx => design_artifacts.ingestDocxPath(db, stored_path, kind, logical_key, display_name, "dashboard_upload", alloc),
+        .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => design_artifacts.ingestDocxPath(db, stored_path, kind, logical_key, display_name, "dashboard_upload", alloc),
         .rtm_workbook => design_artifacts.ingestRtmWorkbookPath(db, stored_path, logical_key, display_name, "dashboard_upload", alloc),
     } catch |err| {
         std.log.warn("design artifact upload rejected filename={s} kind={s} reason={s}", .{ upload.filename, upload.kind, @errorName(err) });
@@ -208,7 +201,7 @@ pub fn handlePostOnboardingSourceArtifactResponse(
     };
     const display_name = upload.display_name orelse upload.filename;
     var ingest_result = switch (artifact_kind) {
-        .srs_docx, .sysrd_docx => design_artifacts.ingestDocxPath(db, stored_path, artifact_kind, logical_key, display_name, "onboarding_upload", alloc),
+        .urs_docx, .srs_docx, .swrs_docx, .hrs_docx, .sysrd_docx => design_artifacts.ingestDocxPath(db, stored_path, artifact_kind, logical_key, display_name, "onboarding_upload", alloc),
         .rtm_workbook => design_artifacts.ingestRtmWorkbookPath(db, stored_path, logical_key, display_name, "onboarding_upload", alloc),
     } catch |err| {
         std.log.warn("onboarding artifact upload rejected filename={s} reason={s}", .{ upload.filename, @errorName(err) });
@@ -217,10 +210,7 @@ pub fn handlePostOnboardingSourceArtifactResponse(
     defer ingest_result.deinit(alloc);
 
     try workspace_state.writeWorkspaceReady(db, true);
-    try workspace_state.writeSourceOfTruth(db, switch (artifact_kind) {
-        .rtm_workbook => .workbook_first,
-        .srs_docx, .sysrd_docx => .document_first,
-    });
+    try workspace_state.writeSourceOfTruth(db, if (artifact_kind == .rtm_workbook) .workbook_first else .document_first);
     try workspace_state.clearAttachWorkbookPromptDismissed(db);
 
     var resp: std.ArrayList(u8) = .empty;
@@ -232,10 +222,10 @@ pub fn handlePostOnboardingSourceArtifactResponse(
     try resp.appendSlice(alloc, ",\"kind\":");
     try shared.appendJsonStr(&resp, artifact_kind.toString(), alloc);
     try resp.appendSlice(alloc, ",\"source_of_truth\":");
-    try shared.appendJsonStr(&resp, switch (artifact_kind) {
-        .rtm_workbook => workspace_state.SourceOfTruth.workbook_first.asString(),
-        .srs_docx, .sysrd_docx => workspace_state.SourceOfTruth.document_first.asString(),
-    }, alloc);
+    try shared.appendJsonStr(&resp, if (artifact_kind == .rtm_workbook)
+        workspace_state.SourceOfTruth.workbook_first.asString()
+    else
+        workspace_state.SourceOfTruth.document_first.asString(), alloc);
     try resp.appendSlice(alloc, ",\"ingest_summary\":");
     try appendIngestSummaryJson(&resp, ingest_result.summary, alloc);
     try resp.append(alloc, '}');

@@ -163,8 +163,8 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
     defer single_source_ids.deinit();
     var missing_rtm_ids: std.StringHashMap(void) = .init(arena);
     defer missing_rtm_ids.deinit();
-    var missing_srs_ids: std.StringHashMap(void) = .init(arena);
-    defer missing_srs_ids.deinit();
+    var missing_requirement_doc_ids: std.StringHashMap(void) = .init(arena);
+    defer missing_requirement_doc_ids.deinit();
 
     if (nodes_parsed.value == .array) {
         for (nodes_parsed.value.array.items) |item| {
@@ -187,14 +187,15 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
                 if (source_assertions) |arr| {
                     if (arr == .array) {
                         var has_rtm = false;
-                        var has_srs = false;
+                        var has_requirement_doc = false;
                         for (arr.array.items) |assertion| {
                             const source_kind = internal.json_util.getString(assertion, "source_kind") orelse continue;
-                            if (std.mem.eql(u8, source_kind, "rtm_workbook")) has_rtm = true;
-                            if (std.mem.eql(u8, source_kind, "srs_docx")) has_srs = true;
+                            const parsed_kind = design_artifacts.ArtifactKind.fromString(source_kind) orelse continue;
+                            if (parsed_kind == .rtm_workbook) has_rtm = true;
+                            if (parsed_kind.isRequirementDocKind()) has_requirement_doc = true;
                         }
-                        if (has_srs and !has_rtm) try missing_rtm_ids.put(req_id, {});
-                        if (has_rtm and !has_srs) try missing_srs_ids.put(req_id, {});
+                        if (has_requirement_doc and !has_rtm) try missing_rtm_ids.put(req_id, {});
+                        if (has_rtm and !has_requirement_doc) try missing_requirement_doc_ids.put(req_id, {});
                     }
                 }
             }
@@ -226,14 +227,14 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "# Requirements\n\n");
-    try std.fmt.format(buf.writer(alloc), "- Total requirements: {d}\n- Requirements without implementation evidence: {d}\n- Requirements without linked tests: {d}\n- Requirements with source conflicts: {d}\n- Single-source requirements: {d}\n- Requirements present in SRS but absent from RTM: {d}\n- Requirements present in RTM but absent from SRS: {d}\n\n", .{
+    try std.fmt.format(buf.writer(alloc), "- Total requirements: {d}\n- Requirements without implementation evidence: {d}\n- Requirements without linked tests: {d}\n- Requirements with source conflicts: {d}\n- Single-source requirements: {d}\n- Requirements present in requirement documents but absent from RTM: {d}\n- Requirements present in RTM but absent from requirement documents: {d}\n\n", .{
         ordered_ids.items.len,
         unimplemented_ids.count(),
         untested_ids.count(),
         conflicting_ids.count(),
         single_source_ids.count(),
         missing_rtm_ids.count(),
-        missing_srs_ids.count(),
+        missing_requirement_doc_ids.count(),
     });
 
     try buf.appendSlice(alloc, "## Requirements Without Implementation Evidence\n");
@@ -269,7 +270,7 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
         try buf.append(alloc, '\n');
     }
 
-    try buf.appendSlice(alloc, "## Requirements Present In SRS But Absent From RTM\n");
+    try buf.appendSlice(alloc, "## Requirements Present In Requirement Documents But Absent From RTM\n");
     if (missing_rtm_ids.count() == 0) {
         try buf.appendSlice(alloc, "- None\n\n");
     } else {
@@ -280,12 +281,12 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
         try buf.append(alloc, '\n');
     }
 
-    try buf.appendSlice(alloc, "## Requirements Present In RTM But Absent From SRS\n");
-    if (missing_srs_ids.count() == 0) {
+    try buf.appendSlice(alloc, "## Requirements Present In RTM But Absent From Requirement Documents\n");
+    if (missing_requirement_doc_ids.count() == 0) {
         try buf.appendSlice(alloc, "- None\n\n");
     } else {
         for (ordered_ids.items) |req_id| {
-            if (!missing_srs_ids.contains(req_id)) continue;
+            if (!missing_requirement_doc_ids.contains(req_id)) continue;
             try std.fmt.format(buf.writer(alloc), "- `{s}` — {s}\n", .{ req_id, statements.get(req_id) orelse "" });
         }
         try buf.append(alloc, '\n');

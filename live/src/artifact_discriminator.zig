@@ -6,7 +6,10 @@ const xlsx = @import("rtmify").xlsx;
 
 pub const CandidateKind = enum {
     rtm_workbook,
+    urs_docx,
     srs_docx,
+    swrs_docx,
+    hrs_docx,
     sysrd_docx,
     bom,
     soup,
@@ -15,7 +18,10 @@ pub const CandidateKind = enum {
     pub fn toString(self: CandidateKind) []const u8 {
         return switch (self) {
             .rtm_workbook => "rtm_workbook",
+            .urs_docx => "urs_docx",
             .srs_docx => "srs_docx",
+            .swrs_docx => "swrs_docx",
+            .hrs_docx => "hrs_docx",
             .sysrd_docx => "sysrd_docx",
             .bom => "bom",
             .soup => "soup",
@@ -84,7 +90,10 @@ const CandidateScore = struct {
 pub fn candidateKindToDesignArtifactKind(kind: CandidateKind) ?design_artifacts.ArtifactKind {
     return switch (kind) {
         .rtm_workbook => .rtm_workbook,
+        .urs_docx => .urs_docx,
         .srs_docx => .srs_docx,
+        .swrs_docx => .swrs_docx,
+        .hrs_docx => .hrs_docx,
         .sysrd_docx => .sysrd_docx,
         else => null,
     };
@@ -167,9 +176,17 @@ fn discriminateDocxPath(path: []const u8, filename: []const u8, alloc: Allocator
     }
 
     for (tokens) |token| {
-        if (std.mem.eql(u8, token, "srs") or std.mem.eql(u8, token, "swrs") or std.mem.eql(u8, token, "software")) {
-            try addSignal(&signals, .filename_token, token, 10, alloc);
-        } else if (std.mem.eql(u8, token, "sysrd") or std.mem.eql(u8, token, "srd") or std.mem.eql(u8, token, "system")) {
+        if (std.mem.eql(u8, token, "urs") or
+            std.mem.eql(u8, token, "user") or
+            std.mem.eql(u8, token, "srs") or
+            std.mem.eql(u8, token, "swrs") or
+            std.mem.eql(u8, token, "software") or
+            std.mem.eql(u8, token, "hrs") or
+            std.mem.eql(u8, token, "hardware") or
+            std.mem.eql(u8, token, "sysrd") or
+            std.mem.eql(u8, token, "srd") or
+            std.mem.eql(u8, token, "system"))
+        {
             try addSignal(&signals, .filename_token, token, 10, alloc);
         }
     }
@@ -198,11 +215,20 @@ fn discriminateDocxPath(path: []const u8, filename: []const u8, alloc: Allocator
         try addSignal(&signals, .docx_assertion_count, detail, 0, alloc);
     }
 
+    var urs_count: usize = 0;
     var srs_count: usize = 0;
+    var swrs_count: usize = 0;
+    var hrs_count: usize = 0;
     var req_count: usize = 0;
     var other_count: usize = 0;
     for (assertions.items) |item| {
-        if (startsWithIgnoreCase(item.req_id, "SRS-")) {
+        if (startsWithIgnoreCase(item.req_id, "URS-")) {
+            urs_count += 1;
+        } else if (startsWithIgnoreCase(item.req_id, "SWRS-")) {
+            swrs_count += 1;
+        } else if (startsWithIgnoreCase(item.req_id, "HRS-")) {
+            hrs_count += 1;
+        } else if (startsWithIgnoreCase(item.req_id, "SRS-")) {
             srs_count += 1;
         } else if (startsWithIgnoreCase(item.req_id, "REQ-")) {
             req_count += 1;
@@ -210,10 +236,25 @@ fn discriminateDocxPath(path: []const u8, filename: []const u8, alloc: Allocator
             other_count += 1;
         }
     }
+    if (urs_count > 0) {
+        const detail = try std.fmt.allocPrint(alloc, "URS:{d}", .{urs_count});
+        defer alloc.free(detail);
+        try addSignal(&signals, .docx_id_family, detail, if (urs_count >= 3) 35 else 0, alloc);
+    }
     if (srs_count > 0) {
         const detail = try std.fmt.allocPrint(alloc, "SRS:{d}", .{srs_count});
         defer alloc.free(detail);
         try addSignal(&signals, .docx_id_family, detail, if (srs_count >= 3) 35 else 0, alloc);
+    }
+    if (swrs_count > 0) {
+        const detail = try std.fmt.allocPrint(alloc, "SWRS:{d}", .{swrs_count});
+        defer alloc.free(detail);
+        try addSignal(&signals, .docx_id_family, detail, if (swrs_count >= 3) 35 else 0, alloc);
+    }
+    if (hrs_count > 0) {
+        const detail = try std.fmt.allocPrint(alloc, "HRS:{d}", .{hrs_count});
+        defer alloc.free(detail);
+        try addSignal(&signals, .docx_id_family, detail, if (hrs_count >= 3) 35 else 0, alloc);
     }
     if (req_count > 0) {
         const detail = try std.fmt.allocPrint(alloc, "REQ:{d}", .{req_count});
@@ -233,50 +274,126 @@ fn discriminateDocxPath(path: []const u8, filename: []const u8, alloc: Allocator
     const lower_text = try asciiLowerDup(all_text, alloc);
     defer alloc.free(lower_text);
 
+    var urs_score = CandidateScore{ .kind = .urs_docx };
     var srs_score = CandidateScore{ .kind = .srs_docx };
+    var swrs_score = CandidateScore{ .kind = .swrs_docx };
+    var hrs_score = CandidateScore{ .kind = .hrs_docx };
     var sysrd_score = CandidateScore{ .kind = .sysrd_docx };
 
-    if (containsPhrase(lower_text, "software requirements specification")) {
-        srs_score.score += 60;
+    const has_urs_spec = containsPhrase(lower_text, "user requirements specification");
+    const has_swrs_spec = containsPhrase(lower_text, "software requirements specification");
+    const has_hrs_spec = containsPhrase(lower_text, "hardware requirements specification");
+    const has_srs_spec = containsPhrase(lower_text, "system requirements specification");
+    const has_sysrd_doc = containsPhrase(lower_text, "system requirements document");
+
+    if (has_urs_spec) {
+        urs_score.score += 60;
+        try addSignal(&signals, .docx_heading_keyword, "user requirements specification", 60, alloc);
+    }
+    if (has_swrs_spec) {
+        swrs_score.score += 60;
         try addSignal(&signals, .docx_heading_keyword, "software requirements specification", 60, alloc);
     }
-    if (containsPhrase(lower_text, "software requirements")) {
-        srs_score.score += 45;
-        sysrd_score.score -= 30;
-        try addSignal(&signals, .docx_heading_keyword, "software requirements", 45, alloc);
+    if (has_hrs_spec) {
+        hrs_score.score += 60;
+        try addSignal(&signals, .docx_heading_keyword, "hardware requirements specification", 60, alloc);
     }
-    if (containsPhrase(lower_text, "system requirements document")) {
+    if (has_srs_spec) {
+        srs_score.score += 60;
+        try addSignal(&signals, .docx_heading_keyword, "system requirements specification", 60, alloc);
+    }
+    if (has_sysrd_doc) {
         sysrd_score.score += 60;
         try addSignal(&signals, .docx_heading_keyword, "system requirements document", 60, alloc);
     }
-    if (containsPhrase(lower_text, "system requirements")) {
-        sysrd_score.score += 45;
-        srs_score.score -= 30;
-        try addSignal(&signals, .docx_heading_keyword, "system requirements", 45, alloc);
+
+    if (!has_urs_spec and containsPhrase(lower_text, "user requirements")) {
+        urs_score.score += 40;
+        try addSignal(&signals, .docx_heading_keyword, "user requirements", 40, alloc);
     }
+    if (!has_swrs_spec and containsPhrase(lower_text, "software requirements")) {
+        swrs_score.score += 40;
+        try addSignal(&signals, .docx_heading_keyword, "software requirements", 40, alloc);
+    }
+    if (!has_hrs_spec and containsPhrase(lower_text, "hardware requirements")) {
+        hrs_score.score += 40;
+        try addSignal(&signals, .docx_heading_keyword, "hardware requirements", 40, alloc);
+    }
+    if (!has_srs_spec and !has_sysrd_doc and containsPhrase(lower_text, "system requirements")) {
+        srs_score.score += 35;
+        sysrd_score.score += 25;
+        try addSignal(&signals, .docx_heading_keyword, "system requirements", 35, alloc);
+    }
+
+    if (containsPhrase(lower_text, "intended use") or
+        containsPhrase(lower_text, "environment of use") or
+        containsPhrase(lower_text, "clinical"))
+    {
+        urs_score.score += 15;
+    }
+    if (containsPhrase(lower_text, "software interface") or
+        containsPhrase(lower_text, "error handling") or
+        containsPhrase(lower_text, "data security") or
+        containsPhrase(lower_text, "algorithm"))
+    {
+        swrs_score.score += 15;
+    }
+    if (containsPhrase(lower_text, "emi") or
+        containsPhrase(lower_text, "emc") or
+        containsPhrase(lower_text, "vibration") or
+        containsPhrase(lower_text, "material") or
+        containsPhrase(lower_text, "lifecycle") or
+        containsPhrase(lower_text, "thermal"))
+    {
+        hrs_score.score += 15;
+    }
+
+    if (containsStandaloneToken(tokens, "urs")) urs_score.score += 25;
     if (containsStandaloneToken(tokens, "srs")) srs_score.score += 25;
+    if (containsStandaloneToken(tokens, "swrs")) swrs_score.score += 25;
+    if (containsStandaloneToken(tokens, "hrs")) hrs_score.score += 25;
     if (containsStandaloneToken(tokens, "sysrd") or containsStandaloneToken(tokens, "srd")) sysrd_score.score += 25;
 
+    if (urs_count >= 3) urs_score.score += 35;
     if (srs_count >= 3) srs_score.score += 35;
+    if (swrs_count >= 3) swrs_score.score += 35;
+    if (hrs_count >= 3) hrs_score.score += 35;
     if (req_count >= 3) sysrd_score.score += 35;
-    if (srs_count >= req_count + 2) {
-        srs_score.score += 20;
-        sysrd_score.score -= 20;
-    }
-    if (req_count >= srs_count + 2) {
-        sysrd_score.score += 20;
-        srs_score.score -= 20;
-    }
-    if (containsToken(tokens, "srs")) srs_score.score += 10;
-    if (containsToken(tokens, "software")) srs_score.score += 8;
-    if (containsToken(tokens, "sysrd") or containsToken(tokens, "srd")) sysrd_score.score += 10;
-    if (containsToken(tokens, "system")) sysrd_score.score += 8;
+    if (urs_count >= srs_count + swrs_count + hrs_count + req_count + 2) urs_score.score += 20;
+    if (srs_count >= urs_count + swrs_count + hrs_count + req_count + 2) srs_score.score += 20;
+    if (swrs_count >= urs_count + srs_count + hrs_count + req_count + 2) swrs_score.score += 20;
+    if (hrs_count >= urs_count + srs_count + swrs_count + req_count + 2) hrs_score.score += 20;
+    if (req_count >= urs_count + srs_count + swrs_count + hrs_count + 2) sysrd_score.score += 20;
 
-    const top = if (srs_score.score >= sysrd_score.score) srs_score else sysrd_score;
-    const runner_up = if (srs_score.score >= sysrd_score.score) sysrd_score else srs_score;
+    if (containsToken(tokens, "urs") or containsToken(tokens, "user")) urs_score.score += 10;
+    if (containsToken(tokens, "srs")) srs_score.score += 10;
+    if (containsToken(tokens, "swrs") or containsToken(tokens, "software")) swrs_score.score += 10;
+    if (containsToken(tokens, "hrs") or containsToken(tokens, "hardware")) hrs_score.score += 10;
+    if (containsToken(tokens, "sysrd") or containsToken(tokens, "srd") or containsToken(tokens, "system")) sysrd_score.score += 10;
+
+    const scores = [_]CandidateScore{ urs_score, srs_score, swrs_score, hrs_score, sysrd_score };
+    var top = scores[0];
+    var runner_up = scores[1];
+    if (runner_up.score > top.score) {
+        const tmp = top;
+        top = runner_up;
+        runner_up = tmp;
+    }
+    for (scores[2..]) |score| {
+        if (score.score > top.score) {
+            runner_up = top;
+            top = score;
+        } else if (score.score > runner_up.score) {
+            runner_up = score;
+        }
+    }
     const lead = top.score - runner_up.score;
     if (top.score >= 45 and lead >= 20) {
         return acceptResult(filename, top.kind, .high, "CLASSIFIED", "DOCX classification succeeded.", signals.items, alloc);
+    }
+    if (top.score >= 45) {
+        const legacy_fallback: CandidateKind = if (sysrd_score.score >= srs_score.score and sysrd_score.score >= 45) .sysrd_docx else .srs_docx;
+        return acceptResult(filename, legacy_fallback, .medium, "CLASSIFIED", "DOCX classified to conservative legacy requirement-document kind.", signals.items, alloc);
     }
     if (lead < 20) {
         return rejectResult(filename, top.kind, .medium, "DOCX_AMBIGUOUS_KIND", "DOCX signals were too mixed to classify safely.", signals.items, alloc);
