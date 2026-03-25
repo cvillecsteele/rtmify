@@ -39,6 +39,7 @@ pub const bom_tests = @import("bom/tests.zig");
 pub const soup = @import("soup.zig");
 pub const adapter = @import("adapter.zig");
 pub const server = @import("server.zig");
+pub const server_tests = @import("server/tests.zig");
 pub const main_live = @import("main_live.zig");
 
 test {
@@ -79,5 +80,6 @@ test {
     _ = soup;
     _ = adapter;
     _ = server;
+    _ = server_tests;
     _ = main_live;
 }
