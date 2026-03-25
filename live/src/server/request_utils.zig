@@ -54,6 +54,9 @@ pub fn queryParamRaw(target: []const u8, key: []const u8) ?[]const u8 {
 pub fn queryParamDecoded(target: []const u8, key: []const u8, alloc: Allocator) !?[]u8 {
     const raw = queryParamRaw(target, key) orelse return null;
     const buf = try alloc.dupe(u8, raw);
+    for (buf) |*c| {
+        if (c.* == '+') c.* = ' ';
+    }
     return std.Uri.percentDecodeInPlace(buf);
 }
 
@@ -102,6 +105,15 @@ test "queryParamDecoded decodes percent-encoded values" {
 
     const decoded = (try queryParamDecoded("/query/file-annotations?file_path=src%2Ffoo%20bar.c", "file_path", alloc)).?;
     try testing.expectEqualStrings("src/foo bar.c", decoded);
+}
+
+test "queryParamDecoded converts plus to space for form-style query strings" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const decoded = (try queryParamDecoded("/api/v1/soup/components?bom_name=SOUP+Components", "bom_name", alloc)).?;
+    try testing.expectEqualStrings("SOUP Components", decoded);
 }
 
 test "queryParamDecoded leaves simple values unchanged" {
