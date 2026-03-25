@@ -1,9 +1,11 @@
 /// lib_live.zig — test root for live modules.
-/// `zig build test-live` runs all tests in db.zig, graph_live.zig, and sheets.zig.
+/// `zig build test-live` runs all tests imported here, including graph package tests.
 const std = @import("std");
 
 pub const db = @import("db.zig");
+pub const graph = @import("graph/mod.zig");
 pub const graph_live = @import("graph_live.zig");
+pub const graph_tests = @import("graph/tests/mod.zig");
 pub const json_util = @import("json_util.zig");
 pub const sheets = @import("sheets.zig");
 pub const provider_common = @import("provider_common.zig");
@@ -40,7 +42,9 @@ pub const main_live = @import("main_live.zig");
 
 test {
     _ = db;
+    _ = graph;
     _ = graph_live;
+    _ = graph_tests;
     _ = json_util;
     _ = sheets;
     _ = provider_common;
