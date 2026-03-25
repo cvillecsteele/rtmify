@@ -1,4 +1,4 @@
-import { CHEVRON_SVG, esc } from '/modules/helpers.js';
+import { CHEVRON_SVG, esc, propsObj } from '/modules/helpers.js';
 
 let rerenderNodeHook = null;
 let refreshAllHook = null;
@@ -39,15 +39,60 @@ export async function loadSuspects() {
       <table>
         <thead><tr><th>Node ID</th><th>Type</th><th>Reason</th><th></th></tr></thead>
         <tbody>
-          ${data.map((node) => `<tr class="suspect">
+          ${data.map((node) => {
+            const props = propsObj(node.properties);
+            const sourceAssertions = Array.isArray(props.source_assertions) ? props.source_assertions : [];
+            const sourcePreview = renderSuspectSourcePreview(node, props, sourceAssertions);
+            return `<tr class="suspect">
             <td><button class="expand-btn" aria-label="Expand ${esc(node.id)}" aria-expanded="false" data-action="toggle-row" data-id="${esc(node.id)}" data-colspan="4">${CHEVRON_SVG}</button><span class="req-id">${esc(node.id)}</span></td>
             <td><span class="node-type-badge">${esc(node.type)}</span></td>
-            <td class="text-suspect">${esc(node.suspect_reason || '')}</td>
+            <td class="text-suspect">${esc(node.suspect_reason || '')}${sourcePreview}</td>
             <td><button class="suspect-clear" data-action="clear-suspect" data-id="${esc(node.id)}">Mark Reviewed</button></td>
-          </tr>`).join('')}
+          </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>`;
+}
+
+function renderSuspectSourcePreview(node, props, sourceAssertions) {
+  if (node.type !== 'Requirement') return '';
+  if ((props.text_status || '') !== 'conflict') return '';
+  if (sourceAssertions.length < 2) return '';
+
+  const items = sourceAssertions
+    .filter((item) => item && (item.text || item.artifact_id || item.source_kind))
+    .map((item) => {
+      const kind = formatRequirementSourceKind(item.source_kind || '');
+      const artifact = item.artifact_id || item.id || 'unknown source';
+      const context = [item.section, item.parse_status && item.parse_status !== 'ok' ? item.parse_status : '']
+        .filter(Boolean)
+        .join(' · ');
+      return `<div class="suspect-source-item">
+        <div class="suspect-source-meta">
+          <span class="node-type-badge">${esc(kind)}</span>
+          <span class="req-id">${esc(artifact)}</span>
+        </div>
+        <div class="suspect-source-subtle">${esc(context || 'source assertion')}</div>
+        <div class="suspect-source-text">${esc(item.text || '—')}</div>
+      </div>`;
+    });
+
+  if (!items.length) return '';
+  return `<div class="suspect-source-preview">
+    <div class="suspect-source-title">Differing source texts</div>
+    ${items.join('')}
+  </div>`;
+}
+
+function formatRequirementSourceKind(kind) {
+  if (kind === 'rtm_workbook') return 'RTM Workbook';
+  if (kind === 'urs_docx') return 'URS';
+  if (kind === 'srs_docx') return 'SRS';
+  if (kind === 'swrs_docx') return 'SwRS';
+  if (kind === 'hrs_docx') return 'HRS';
+  if (kind === 'sysrd_docx') return 'SysRD / SRD';
+  return kind || 'Source';
 }
 
 export function updateSuspectBadge(count) {
