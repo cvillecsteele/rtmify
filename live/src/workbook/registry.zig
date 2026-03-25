@@ -82,6 +82,11 @@ pub const WorkbookRegistry = struct {
     }
 
     pub fn activeConfig(self: *WorkbookRegistry) !*workbook_config.WorkbookConfig {
+        if (self.active_runtime) |runtime| {
+            if (workbook_config.findById(&self.live_config, runtime.config.id)) |cfg| {
+                return cfg;
+            }
+        }
         return workbook_config.activeWorkbook(&self.live_config) orelse error.NoActiveWorkbook;
     }
 
@@ -104,12 +109,6 @@ pub const WorkbookRegistry = struct {
     }
 
     pub fn save(self: *WorkbookRegistry, alloc: Allocator) !void {
-        if (self.active_runtime) |runtime| {
-            if (workbook_config.findById(&self.live_config, runtime.config.id)) |cfg| {
-                cfg.deinit(alloc);
-                cfg.* = try runtime.config.clone(alloc);
-            }
-        }
         try workbook_config.save(&self.live_config, alloc);
     }
 
@@ -146,6 +145,15 @@ pub const WorkbookRegistry = struct {
         const cfg = try self.activeConfig();
         runtime.config.deinit(alloc);
         runtime.config = try cfg.clone(alloc);
+    }
+
+    pub fn syncActiveWorkbookIdFromRuntime(self: *WorkbookRegistry, alloc: Allocator) !void {
+        const runtime = self.active_runtime orelse return;
+        if (self.live_config.active_workbook_id) |existing| {
+            if (std.mem.eql(u8, existing, runtime.config.id)) return;
+            alloc.free(existing);
+        }
+        self.live_config.active_workbook_id = try alloc.dupe(u8, runtime.config.id);
     }
 
     pub fn createWorkbook(

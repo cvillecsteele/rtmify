@@ -46,6 +46,24 @@ test "resources list returns curated resources" {
     try testing.expect(std.mem.indexOf(u8, resp, "execution://exec-001") != null);
 }
 
+test "resources list samples canonical requirements even when no RTM rows exist" {
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("SRS-001", "Requirement", "{\"statement\":\"Only in artifact-backed canonical set\"}", null);
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    const req_ctx = internal.RequestContext{ .registry = &registry, .secure_store_ref = &store, .state = &state, .license_service = undefined, .refresh_active_runtime_fn = null, .alloc = testing.allocator };
+    const runtime_ctx = internal.RuntimeContext{ .db = &db, .profile_name = "generic" };
+    const resp = try resources.resourcesListResult(&db, testing.allocator);
+    defer testing.allocator.free(resp);
+    _ = req_ctx;
+    _ = runtime_ctx;
+    try testing.expect(std.mem.indexOf(u8, resp, "requirement://SRS-001") != null);
+}
+
 test "resources read returns requirements index markdown" {
     var db = try internal.graph_live.GraphDb.init(":memory:");
     defer db.deinit();

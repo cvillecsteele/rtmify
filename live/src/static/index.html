@@ -108,6 +108,37 @@
     .header-workbook-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: oklch(70% 0.02 258); }
     .header-workbook-select { width: 100%; background: oklch(24% 0.05 258); color: oklch(96% 0.01 258); border: 1px solid oklch(34% 0.04 258); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
     .header-workbook-meta { font-size: 11px; color: oklch(74% 0.016 258); white-space: normal; overflow-wrap: anywhere; line-height: 1.3; min-height: 1.3em; }
+    .preview-banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--border-1);
+      background: oklch(96% 0.03 95);
+    }
+    .preview-banner.visible { display: flex; }
+    .preview-banner-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
+    .preview-banner-sub { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+    .preview-banner-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .preview-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border-2);
+      background: white;
+      color: var(--text-2);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .preview-chip.secondary {
+      background: transparent;
+      border-color: transparent;
+      color: var(--text-3);
+    }
 
     /* Primary nav */
     nav.nav-primary {
@@ -452,6 +483,7 @@
     .profile-row.selected .profile-row-check svg { display: block; }
     /* Provider tiles */
     .provider-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+    .provider-tiles.provider-tiles-single { grid-template-columns: 1fr; }
     .provider-tile {
       border: 1.5px solid var(--border-1); border-radius: 4px; padding: 20px 16px;
       cursor: pointer; text-align: center;
@@ -462,6 +494,12 @@
     .provider-tile-logo { height: 32px; margin-bottom: 10px; display: flex; align-items: center; justify-content: center; }
     .provider-tile-name { font-size: 13px; font-weight: 600; color: var(--text-1); }
     .provider-tile-sub { font-size: 11px; color: var(--text-3); margin-top: 3px; }
+    .source-upload-panel { margin-top: 16px; }
+    .source-upload-chip { display: none; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border-1); background: var(--surface-2); margin-bottom: 14px; }
+    .source-upload-chip.visible { display: flex; }
+    .source-upload-name { font-size: 13px; font-weight: 600; color: var(--text-1); }
+    .source-upload-meta { font-size: 11px; color: var(--text-3); }
+    .source-upload-link { font-size: 12px; font-weight: 600; color: var(--brand-navy); cursor: pointer; }
     /* Credential upload zone */
     .sa-upload-zone {
       border: 2px dashed var(--border-2); border-radius: 4px; padding: 28px 20px; text-align: center;
@@ -509,6 +547,13 @@
       background: oklch(100% 0 0 / 0.10); width: 0%; transition: width 0.4s ease; pointer-events: none;
     }
     .authorize-btn-label { position: relative; z-index: 1; }
+    .secondary-btn {
+      width: 100%; padding: 12px 20px; background: white; color: var(--text-2);
+      border: 1px solid var(--border-2); border-radius: 4px; cursor: pointer;
+      font-size: 13px; font-weight: 600; font-family: var(--font-body);
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .secondary-btn:hover { border-color: var(--border-3); background: var(--surface-2); }
     /* Success screen */
     .success-screen { text-align: center; padding: 12px 0 4px; }
     .success-check { margin: 0 auto 24px; display: flex; align-items: center; justify-content: center; }
@@ -1133,6 +1178,7 @@
 <div id="lobby" role="dialog" aria-modal="true" aria-labelledby="lobby-headline">
   <div class="lobby-card" id="lobby-card">
     <input type="file" id="sa-file-input" accept=".json,application/json" style="display:none">
+    <input type="file" id="source-artifact-file-input" accept=".docx,.xlsx" style="display:none">
 
     <!-- Lobby nav: back button + step dots -->
     <div class="lobby-nav">
@@ -1140,62 +1186,69 @@
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="10,3 5,8 10,13"/></svg>
         Back
       </button>
-      <div class="lobby-dots" id="lobby-dots">
-        <div class="lobby-dot active" data-dot="1"></div>
-        <div class="lobby-dot" data-dot="2"></div>
-        <div class="lobby-dot" data-dot="3"></div>
-        <div class="lobby-dot" data-dot="4"></div>
-      </div>
+      <div class="lobby-dots" id="lobby-dots"></div>
     </div>
 
     <div id="lobby-error" class="lobby-error" style="display:none"></div>
 
     <!-- Screen 1: Mission Profile -->
     <div class="lobby-screen active" data-screen="1">
-      <p class="screen-label">Step 1 of 4</p>
+      <p class="screen-label" id="lobby-screen-label-1">Step 1</p>
       <h2 class="screen-headline" id="lobby-headline">What standard governs your work?</h2>
-      <input id="lobby-display-name" class="lobby-input" type="text" placeholder="Workbook display name" aria-label="Workbook display name" oninput="lobbyStateFromInputs()">
       <div class="profile-list" id="profile-list"></div>
       <button class="authorize-btn" onclick="lobbyNext(1)">
         <span class="authorize-btn-label">Continue →</span>
       </button>
     </div>
 
-    <!-- Screen 2: Provider -->
+    <!-- Screen 2: Source of Truth -->
     <div class="lobby-screen" data-screen="2">
-      <p class="screen-label">Step 2 of 4</p>
-      <h2 class="screen-headline">Where is your workbook?</h2>
-      <div class="provider-tiles">
-        <div class="provider-tile selected" id="tile-google" onclick="selectProvider('google')">
+      <p class="screen-label" id="lobby-screen-label-2">Step 2</p>
+      <h2 class="screen-headline" id="source-screen-headline">What is your source of truth?</h2>
+      <div class="provider-tiles" id="source-tiles">
+        <div class="provider-tile" id="tile-document-source" onclick="selectSourceOfTruth('document_first')">
+          <div class="provider-tile-logo">
+            <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#1d4ed8"/><path d="M16 10h12l8 8v20H16z" fill="#fff" opacity=".92"/><path d="M28 10v8h8" fill="none" stroke="#1d4ed8" stroke-width="1.7"/><path d="M20 24h12M20 29h12M20 34h8" stroke="#1d4ed8" stroke-width="1.7" stroke-linecap="round"/></svg>
+          </div>
+          <div class="provider-tile-name">Requirements Document</div>
+          <div class="provider-tile-sub">Drop an SRS, SysRD / SRD, or RTM workbook file to seed the workspace.</div>
+        </div>
+        <div class="provider-tile" id="tile-workbook-source" onclick="selectSourceOfTruth('workbook_first')">
           <div class="provider-tile-logo">
             <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#0F9D58"/><path d="M12 16h24v16H12z" fill="#fff" opacity=".9"/><path d="M12 20h24M12 24h24M12 28h24M20 16v16M28 16v16" stroke="#0F9D58" stroke-width="1.5"/><path d="M12 16h24v3H12z" fill="#0F9D58"/></svg>
           </div>
-          <div class="provider-tile-name">Google Sheets</div>
-          <div class="provider-tile-sub">Google Workspace</div>
-        </div>
-        <div class="provider-tile" id="tile-excel" onclick="selectProvider('excel')">
-          <div class="provider-tile-logo">
-            <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#217346"/><path d="M8 12h20v24H8z" fill="#185C37"/><path d="M8 12l12 12L8 36" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M28 16h12M28 24h12M28 32h12M28 20h12M28 28h12" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>
-          </div>
-          <div class="provider-tile-name">Excel Online</div>
-          <div class="provider-tile-sub">Microsoft 365</div>
-        </div>
-        <div class="provider-tile" id="tile-local" onclick="selectProvider('local')" style="display:none">
-          <div class="provider-tile-logo">
-            <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#4A5568"/><ellipse cx="24" cy="13" rx="12" ry="5" fill="#E2E8F0"/><path d="M12 13v16c0 2.8 5.4 5 12 5s12-2.2 12-5V13" fill="none" stroke="#E2E8F0" stroke-width="2"/><path d="M12 21c0 2.8 5.4 5 12 5s12-2.2 12-5M12 29c0 2.8 5.4 5 12 5s12-2.2 12-5" fill="none" stroke="#E2E8F0" stroke-width="2"/></svg>
-          </div>
-          <div class="provider-tile-name">Existing Local DB</div>
-          <div class="provider-tile-sub">Opened with `--db`</div>
+          <div class="provider-tile-name">Connected RTM Workbook</div>
+          <div class="provider-tile-sub">Connect Google Sheets or Excel Online and let Live build the graph from the workbook.</div>
         </div>
       </div>
-      <button class="authorize-btn" onclick="lobbyNext(2)">
+      <div id="source-upload-panel" class="source-upload-panel" style="display:none">
+        <div class="source-upload-chip" id="source-upload-chip">
+          <div>
+            <div class="source-upload-name" id="source-upload-name">No file selected</div>
+            <div class="source-upload-meta" id="source-upload-meta">Drop a `.docx` requirements document or `.xlsx` RTM workbook.</div>
+          </div>
+          <span class="source-upload-link" onclick="clearSourceArtifact()">Change</span>
+        </div>
+        <div class="sa-upload-zone" id="source-artifact-zone"
+             onclick="document.getElementById('source-artifact-file-input').click()"
+             ondragover="onSourceArtifactDragOver(event)"
+             ondragleave="onSourceArtifactDragLeave(event)"
+             ondrop="onSourceArtifactDrop(event)">
+          <div class="sa-upload-zone-icon">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="sa-upload-zone-primary">Drop a requirements artifact here</div>
+          <div class="sa-upload-zone-secondary">Accepts `.docx` SRS / SysRD files or an `.xlsx` RTM workbook. Classification is content-first and ambiguous files are rejected.</div>
+        </div>
+      </div>
+      <button class="authorize-btn" id="s2-continue-btn" onclick="lobbyNext(2)">
         <span class="authorize-btn-label">Continue →</span>
       </button>
     </div>
 
     <!-- Screen 3: Credentials + Workbook URL -->
     <div class="lobby-screen" data-screen="3">
-      <p class="screen-label">Step 3 of 4</p>
+      <p class="screen-label" id="lobby-screen-label-3">Step 3</p>
       <h2 class="screen-headline">Connect your workbook</h2>
       <!-- Google path -->
       <div id="s3-google">
@@ -1231,11 +1284,6 @@
         </div>
         <div style="margin-bottom:16px"></div>
       </div>
-      <div id="s3-local" style="display:none">
-        <div class="text-hint mb-12">
-          This workspace was launched from an existing local SQLite graph database. No Google Sheets or Excel Online connection is required.
-        </div>
-      </div>
       <div id="lobby-url-wrap">
         <input id="lobby-url" class="lobby-input" type="text"
                aria-label="Workbook URL"
@@ -1247,15 +1295,22 @@
       </button>
     </div>
 
-    <!-- Screen 4: Mission Brief -->
+    <!-- Screen 4: License -->
     <div class="lobby-screen" data-screen="4">
-      <p class="screen-label">Ready to authorize</p>
-      <h2 class="screen-headline" id="brief-headline"></h2>
-      <div class="mission-brief" id="mission-brief"></div>
-      <button class="authorize-btn" id="authorize-btn" onclick="connectSheet()">
-        <div class="authorize-btn-fill" id="authorize-fill"></div>
-        <span class="authorize-btn-label" id="authorize-label">Authorize &amp; Connect</span>
-      </button>
+      <p class="screen-label" id="lobby-screen-label-4">Step 4</p>
+      <h2 class="screen-headline" id="license-step-headline">Install a license now or continue in Preview Mode</h2>
+      <div class="mission-brief" id="mission-brief">
+        <div class="brief-row"><span class="brief-key">Mode</span><span class="brief-val plain" id="license-step-mode">Preview</span></div>
+        <div class="brief-row"><span class="brief-key">Status</span><span class="brief-val plain" id="license-step-status">Checking license…</span></div>
+        <div class="brief-row"><span class="brief-key">Locked</span><span class="brief-val" id="license-step-locked">Reports, MCP, repository scanning, code traceability, and background sync</span></div>
+      </div>
+      <div class="license-gate-actions">
+        <button class="authorize-btn" onclick="showLicenseGate(licenseStatusCache)">
+          <span class="authorize-btn-label">Install License Now</span>
+        </button>
+        <button class="secondary-btn" onclick="refreshLicenseStatus()">Refresh License Status</button>
+      </div>
+      <button class="secondary-btn mt-12" id="preview-continue-btn" onclick="continueInPreviewMode()">Continue in Preview Mode</button>
     </div>
 
     <!-- Screen 5: Success -->
@@ -1267,7 +1322,7 @@
             <polyline class="check-mark" points="20,33 28,41 44,23" stroke="#2d7a2d" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
           </svg>
         </div>
-        <div class="success-title">Workspace authorized.</div>
+        <div class="success-title" id="success-title">Workspace ready.</div>
         <div class="success-sub" id="success-sub"></div>
         <div class="success-detail" id="success-detail"></div>
         <button class="open-workspace-btn" onclick="openWorkspace()">Open Workspace</button>
@@ -1313,6 +1368,26 @@
   <span id="suspect-header-badge" class="header-badge" style="display:none"
     onclick="showTab('review')"></span>
 </header>
+<div id="preview-banner" class="preview-banner">
+  <div>
+    <div class="preview-banner-title" id="preview-banner-title">Preview mode</div>
+    <div class="preview-banner-sub" id="preview-banner-sub">Licensed features are currently disabled.</div>
+  </div>
+  <div class="preview-banner-actions">
+    <button class="preview-chip" onclick="showLicenseGate(licenseStatusCache)">Install License</button>
+    <button class="preview-chip secondary" onclick="showPreviewFeatureHelp()">What is locked?</button>
+  </div>
+</div>
+<div id="attach-workbook-prompt" class="preview-banner">
+  <div>
+    <div class="preview-banner-title">Attach an RTM workbook when you are ready</div>
+    <div class="preview-banner-sub">This workspace was bootstrapped from a requirements artifact. Connect a workbook later from Settings → Workbooks.</div>
+  </div>
+  <div class="preview-banner-actions">
+    <button class="preview-chip" onclick="openAddWorkbook()">Attach Workbook</button>
+    <button class="preview-chip secondary" onclick="dismissAttachWorkbookPrompt()">Dismiss</button>
+  </div>
+</div>
 
 <!-- Primary nav -->
 <nav class="nav-primary">
@@ -1345,6 +1420,7 @@
 <div class="nav-sub active" data-group="data">
   <button class="active" data-tab="user-needs" onclick="showTab('user-needs')">User Needs</button>
   <button data-tab="requirements" onclick="showTab('requirements')">Requirements</button>
+  <button data-tab="design-artifacts" onclick="showTab('design-artifacts')">Design Artifacts</button>
   <button data-tab="tests" onclick="showTab('tests')">Tests</button>
   <button data-tab="risks" onclick="showTab('risks')">Risks</button>
   <button data-tab="rtm" onclick="showTab('rtm')">RTM</button>
@@ -1698,6 +1774,62 @@
         </thead>
         <tbody id="un-body"></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- Design Artifacts tab -->
+  <section id="tab-design-artifacts">
+    <div class="toolbar">
+      <h2>Design Artifacts</h2>
+      <button class="btn" onclick="loadDesignArtifacts(true)">Refresh</button>
+    </div>
+    <div id="design-artifacts-error" class="error-banner" style="display:none"></div>
+    <div class="card card--mb card--padded">
+      <div class="bom-sync-grid mb-12">
+        <select id="design-artifact-kind" class="lobby-input lobby-input--no-mb" aria-label="Design artifact kind">
+          <option value="srs_docx">SRS</option>
+          <option value="sysrd_docx">SysRD / SRD</option>
+          <option value="rtm_workbook">RTM Workbook (.xlsx)</option>
+        </select>
+        <input id="design-artifact-display-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="Display name (optional)" aria-label="Design artifact display name">
+      </div>
+      <div class="bom-upload-zone" id="design-artifact-upload-zone">
+        <div>
+          <div class="bom-upload-title">Upload design artifact</div>
+          <div class="bom-upload-subtitle">Drop or choose a `.docx` SRS / SysRD file or an `.xlsx` RTM workbook. Filenames are hints only; uploads are classified from contents and rejected if they do not match the selected kind.</div>
+        </div>
+        <div class="bom-inline-actions">
+          <button class="btn" onclick="document.getElementById('design-artifact-upload-input').click()">Choose File</button>
+        </div>
+      </div>
+      <input id="design-artifact-upload-input" type="file" accept=".docx,.xlsx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none">
+      <div id="design-artifact-upload-result" class="text-sm-subtle mt-12">No upload yet.</div>
+    </div>
+    <div class="card card--mb card--padded">
+      <h3 class="mb-10">Available Artifacts</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Kind</th>
+            <th>Display Name</th>
+            <th>Logical Key</th>
+            <th>Requirements</th>
+            <th>Conflicts</th>
+            <th>Null Text</th>
+            <th>Low Confidence</th>
+            <th>Last Ingested</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="design-artifact-list-body">
+          <tr><td colspan="9" class="empty-state">Loading design artifacts…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card card--padded">
+      <div id="design-artifact-detail">
+        <div class="empty-state">Select a design artifact to inspect extracted requirement assertions and conflicts.</div>
+      </div>
     </div>
   </section>
 

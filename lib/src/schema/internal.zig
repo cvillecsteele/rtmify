@@ -29,6 +29,9 @@ pub const IngestOptions = struct {
     enable_design_inputs_tab: bool = false,
     enable_design_outputs_tab: bool = false,
     enable_config_items_tab: bool = false,
+    rtm_artifact_id: ?[]const u8 = null,
+    rtm_artifact_display_name: ?[]const u8 = null,
+    rtm_artifact_path: ?[]const u8 = null,
 };
 
 pub const IngestContext = struct {

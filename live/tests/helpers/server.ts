@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { licenseFilePath, secureStoreFilePath, writeTestLicenseFile } from './db-seed.js';
+import { licenseFilePath, liveConfigFilePath, secureStoreFilePath, writeTestLicenseFile } from './db-seed.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sysRoot = path.resolve(here, '..', '..', '..');
@@ -52,7 +53,18 @@ export async function startServer(options: {
   env?: Record<string, string>;
   licensed?: boolean;
 }): Promise<StartedServer> {
-  const args = ['--db', options.dbPath, '--port', String(options.port), '--no-browser'];
+  const inboxDir = inboxDirPath(options.dbPath);
+  const homeDir = path.join(path.dirname(options.dbPath), 'home');
+  const rtmifyHome = path.join(homeDir, '.rtmify');
+  fs.mkdirSync(inboxDir, { recursive: true });
+  fs.mkdirSync(rtmifyHome, { recursive: true });
+  const seededLiveConfig = liveConfigFilePath(options.dbPath);
+  const targetLiveConfig = path.join(rtmifyHome, 'live.json');
+  if (fs.existsSync(seededLiveConfig) && !fs.existsSync(targetLiveConfig)) {
+    fs.copyFileSync(seededLiveConfig, targetLiveConfig);
+  }
+
+  const args = ['--db', options.dbPath, '--inbox-dir', inboxDir, '--port', String(options.port), '--no-browser'];
   if (options.repoPath) args.push('--repo', options.repoPath);
   if (options.extraArgs) args.push(...options.extraArgs);
 
@@ -64,11 +76,12 @@ export async function startServer(options: {
     cwd: sysRoot,
     env: {
       ...process.env,
+      HOME: homeDir,
       RTMIFY_LOG_PATH: logPath,
       RTMIFY_SECURE_STORE_BACKEND: 'test-memory',
       RTMIFY_SECURE_STORE_TEST_FILE: secureStoreFilePath(options.dbPath),
       RTMIFY_TEST_RESULTS_TOKEN_FILE: tokenFilePath(options.dbPath),
-      RTMIFY_TEST_RESULTS_INBOX_DIR: inboxDirPath(options.dbPath),
+      RTMIFY_TEST_RESULTS_INBOX_DIR: inboxDir,
       RTMIFY_LICENSE: configuredLicensePath,
       ...options.env,
     },

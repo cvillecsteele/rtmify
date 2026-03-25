@@ -24,6 +24,17 @@ pub fn ingest(ctx: *const internal.IngestContext, sheet: internal.SheetData, sta
     var seen = std.StringHashMap(void).init(a);
     defer seen.deinit();
 
+    const artifact_id = ctx.opts.rtm_artifact_id;
+    if (artifact_id) |id| {
+        try g.addNode(id, .artifact, &.{
+            .{ .key = "kind", .value = "rtm_workbook" },
+            .{ .key = "display_name", .value = ctx.opts.rtm_artifact_display_name orelse "RTM Workbook" },
+            .{ .key = "path", .value = ctx.opts.rtm_artifact_path orelse "" },
+            .{ .key = "ingest_source", .value = "workbook_sync" },
+            .{ .key = "logical_key", .value = id },
+        });
+    }
+
     for (data, 0..) |row, ri| {
         if (normalize.isSectionDivider(row, c_id)) continue;
         const raw_id = internal.cell(row, c_id);
@@ -60,6 +71,25 @@ pub fn ingest(ctx: *const internal.IngestContext, sheet: internal.SheetData, sta
             .{ .key = "declared_test_group_ref_count", .value = declared_test_group_ref_count_str },
         });
         stats.requirement_count += 1;
+
+        if (artifact_id) |source_artifact_id| {
+            const text_id = try std.fmt.allocPrint(a, "{s}::{s}", .{ source_artifact_id, id });
+            const statement = internal.cell(row, c_stmt);
+            try g.addNode(text_id, .requirement_text, &.{
+                .{ .key = "req_id", .value = id },
+                .{ .key = "artifact_id", .value = source_artifact_id },
+                .{ .key = "source_kind", .value = "rtm_workbook" },
+                .{ .key = "section", .value = sheet.name },
+                .{ .key = "text", .value = statement },
+                .{ .key = "normalized_text", .value = statement },
+                .{ .key = "hash", .value = "" },
+                .{ .key = "imported_at", .value = "" },
+                .{ .key = "parse_status", .value = "ok" },
+                .{ .key = "occurrence_count", .value = "1" },
+            });
+            try g.addEdge(source_artifact_id, text_id, .contains);
+            try g.addEdge(text_id, id, .asserts);
+        }
 
         const un_raw = internal.cell(row, c_un);
         if (!normalize.isBlankEquivalent(un_raw)) {

@@ -1,7 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const artifact_discriminator = @import("artifact_discriminator.zig");
 const bom = @import("bom.zig");
+const design_artifacts = @import("design_artifacts.zig");
 const graph_live = @import("graph_live.zig");
 const soup = @import("soup.zig");
 const shared = @import("routes/shared.zig");
@@ -15,12 +17,6 @@ pub const InboxCtx = struct {
     control: *sync_live.WorkerControl,
     inbox_dir: []const u8,
     alloc: Allocator,
-};
-
-const ArtifactKind = enum {
-    test_results,
-    bom,
-    soup,
 };
 
 pub fn destroyInboxCtx(ctx: *InboxCtx) void {
@@ -56,7 +52,7 @@ pub fn processInboxOnce(db: *graph_live.GraphDb, inbox_dir: []const u8, alloc: A
     while (try it.next()) |entry| {
         if (entry.kind != .file) continue;
         if (entry.name.len == 0 or entry.name[0] == '.') continue;
-        if (!std.mem.endsWith(u8, entry.name, ".json") and !std.mem.endsWith(u8, entry.name, ".csv") and !std.mem.endsWith(u8, entry.name, ".xlsx")) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".json") and !std.mem.endsWith(u8, entry.name, ".csv") and !std.mem.endsWith(u8, entry.name, ".xlsx") and !std.mem.endsWith(u8, entry.name, ".docx")) continue;
         try processOneFile(db, inbox_dir, entry.name, alloc);
     }
 }
@@ -64,26 +60,23 @@ pub fn processInboxOnce(db: *graph_live.GraphDb, inbox_dir: []const u8, alloc: A
 fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const u8, alloc: Allocator) !void {
     const path = try std.fs.path.join(alloc, &.{ inbox_dir, name });
     defer alloc.free(path);
-    const max_bytes: usize = if (std.mem.endsWith(u8, name, ".csv")) 10 * 1024 * 1024 else 25 * 1024 * 1024;
-    const bytes = std.fs.cwd().readFileAlloc(alloc, path, max_bytes) catch |err| {
+    var discrimination = artifact_discriminator.discriminateInboxPath(path, name, alloc) catch |err| {
         try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
         return;
     };
-    defer alloc.free(bytes);
+    defer discrimination.deinit(alloc);
+    if (!discrimination.accepted) {
+        try rejectDiscriminatedFile(db, inbox_dir, name, alloc, discrimination);
+        return;
+    }
 
-    const kind = if (std.mem.endsWith(u8, name, ".xlsx"))
-        detectXlsxArtifactKind(path, alloc) catch |err| {
-            try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
-            return;
-        }
-    else
-        detectArtifactKind(name, bytes, alloc) catch |err| {
-            try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
-            return;
-        };
-
-    switch (kind) {
+    switch (discrimination.kind.?) {
         .test_results => {
+            const bytes = std.fs.cwd().readFileAlloc(alloc, path, 25 * 1024 * 1024) catch |err| {
+                try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+                return;
+            };
+            defer alloc.free(bytes);
             if (bytes.len > 10 * 1024 * 1024) {
                 try rejectFile(db, inbox_dir, name, alloc, "TestResultsTooLarge");
                 return;
@@ -101,6 +94,11 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
             defer response.deinit(alloc);
         },
         .bom => {
+            const bytes = std.fs.cwd().readFileAlloc(alloc, path, 25 * 1024 * 1024) catch |err| {
+                try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+                return;
+            };
+            defer alloc.free(bytes);
             if (std.mem.endsWith(u8, name, ".xlsx")) {
                 var grouped = bom.ingestXlsxBody(db, bytes, alloc) catch |err| {
                     try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
@@ -141,53 +139,34 @@ fn processOneFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const 
             try recordSoupWarnings(db, archived_path, response, alloc);
             return;
         },
+        .rtm_workbook, .srs_docx, .sysrd_docx => {
+            const kind_enum = artifact_discriminator.candidateKindToDesignArtifactKind(discrimination.kind.?) orelse unreachable;
+            const logical_key = try alloc.dupe(u8, discrimination.filename_stem_slug);
+            defer alloc.free(logical_key);
+            const archived_path = try archiveDesignArtifactFile(inbox_dir, kind_enum, logical_key, name, alloc);
+            defer alloc.free(archived_path);
+            switch (kind_enum) {
+                .rtm_workbook => {
+                    var ingest_result = design_artifacts.ingestRtmWorkbookPath(db, archived_path, logical_key, std.fs.path.basename(archived_path), "external_inbox", alloc) catch |err| {
+                        try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+                        return;
+                    };
+                    defer ingest_result.deinit(alloc);
+                },
+                .srs_docx, .sysrd_docx => {
+                    var ingest_result = design_artifacts.ingestDocxPath(db, archived_path, kind_enum, logical_key, std.fs.path.basename(archived_path), "external_inbox", alloc) catch |err| {
+                        try rejectFile(db, inbox_dir, name, alloc, @errorName(err));
+                        return;
+                    };
+                    defer ingest_result.deinit(alloc);
+                },
+            }
+            return;
+        },
     }
 
     const archived_path = try archiveFile(inbox_dir, "processed", name, alloc);
     alloc.free(archived_path);
-}
-
-fn detectArtifactKind(name: []const u8, body: []const u8, alloc: Allocator) !ArtifactKind {
-    if (std.mem.endsWith(u8, name, ".csv")) {
-        return if (looksLikeBomCsv(body)) .bom else error.UnsupportedFormat;
-    }
-    if (!std.mem.endsWith(u8, name, ".json")) return error.UnsupportedFormat;
-
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch return error.InvalidJson;
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidJson;
-    if (parsed.value.object.get("test_cases") != null) return .test_results;
-    if (parsed.value.object.get("bom_items") != null) return .bom;
-    if (parsed.value.object.get("bomFormat")) |value| {
-        if (value == .string and std.mem.eql(u8, value.string, "CycloneDX")) return .bom;
-    }
-    if (parsed.value.object.get("spdxVersion") != null) return .bom;
-    if (parsed.value.object.get("components") != null) return .soup;
-    return error.UnsupportedFormat;
-}
-
-fn detectXlsxArtifactKind(path: []const u8, alloc: Allocator) !ArtifactKind {
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-    const sheets = try xlsx.parse(arena.allocator(), path);
-    if (sheetExists(sheets, "SOUP Components")) return .soup;
-    if (sheetExists(sheets, "Design BOM")) return .bom;
-    return error.UnsupportedFormat;
-}
-
-fn looksLikeBomCsv(body: []const u8) bool {
-    const first_newline = std.mem.indexOfScalar(u8, body, '\n') orelse body.len;
-    const header = std.mem.trimRight(u8, body[0..first_newline], "\r");
-    return std.mem.indexOf(u8, header, "bom_name") != null and
-        std.mem.indexOf(u8, header, "full_identifier") != null and
-        std.mem.indexOf(u8, header, "child_part") != null;
-}
-
-fn sheetExists(sheets: []const xlsx.SheetData, want: []const u8) bool {
-    for (sheets) |sheet| {
-        if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, sheet.name, " \r\n\t"), want)) return true;
-    }
-    return false;
 }
 
 fn extractSoupInboxProductIdentifier(name: []const u8) ?[]const u8 {
@@ -197,6 +176,7 @@ fn extractSoupInboxProductIdentifier(name: []const u8) ?[]const u8 {
 }
 
 fn rejectFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const u8, alloc: Allocator, reason: []const u8) !void {
+    std.log.warn("external design/bom inbox file rejected name={s} reason={s}", .{ name, reason });
     const archived_path = try archiveFile(inbox_dir, "rejected", name, alloc);
     defer alloc.free(archived_path);
     const subject = try alloc.dupe(u8, archived_path);
@@ -215,6 +195,77 @@ fn rejectFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const u8, 
         subject,
         "{}",
     );
+}
+
+fn rejectDiscriminatedFile(
+    db: *graph_live.GraphDb,
+    inbox_dir: []const u8,
+    name: []const u8,
+    alloc: Allocator,
+    result: artifact_discriminator.DiscriminationResult,
+) !void {
+    const kind_str = if (result.kind) |kind| kind.toString() else "unknown";
+    const confidence = result.confidence.toString();
+    const signal_summary = try discriminationSignalSummary(result.signals, alloc);
+    defer alloc.free(signal_summary);
+
+    std.log.warn(
+        "external design/bom inbox file rejected name={s} reason={s} classified={s} confidence={s}",
+        .{ name, result.reason_code, kind_str, confidence },
+    );
+
+    const archived_path = try archiveFile(inbox_dir, "rejected", name, alloc);
+    defer alloc.free(archived_path);
+    const subject = try alloc.dupe(u8, archived_path);
+    defer alloc.free(subject);
+    const message = try std.fmt.allocPrint(
+        alloc,
+        "Rejected inbox file {s}: {s} ({s})",
+        .{ name, result.reason, result.reason_code },
+    );
+    defer alloc.free(message);
+    const dedupe_key = try std.fmt.allocPrint(alloc, "external_ingest_inbox:{s}", .{name});
+    defer alloc.free(dedupe_key);
+
+    var details: std.ArrayList(u8) = .empty;
+    defer details.deinit(alloc);
+    try details.appendSlice(alloc, "{\"reason_code\":");
+    try shared.appendJsonStr(&details, result.reason_code, alloc);
+    try details.appendSlice(alloc, ",\"reason\":");
+    try shared.appendJsonStr(&details, result.reason, alloc);
+    try details.appendSlice(alloc, ",\"classified_kind\":");
+    try shared.appendJsonStr(&details, kind_str, alloc);
+    try details.appendSlice(alloc, ",\"confidence\":");
+    try shared.appendJsonStr(&details, confidence, alloc);
+    try details.appendSlice(alloc, ",\"signal_summary\":");
+    try shared.appendJsonStr(&details, signal_summary, alloc);
+    try details.append(alloc, '}');
+
+    try db.upsertRuntimeDiagnostic(
+        dedupe_key,
+        9501,
+        "warn",
+        "External ingest inbox file rejected",
+        message,
+        "external_ingest_inbox",
+        subject,
+        details.items,
+    );
+}
+
+fn discriminationSignalSummary(signals: []const artifact_discriminator.Signal, alloc: Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    const limit = @min(signals.len, 4);
+    for (signals[0..limit], 0..) |signal, idx| {
+        if (idx > 0) try buf.appendSlice(alloc, "; ");
+        try std.fmt.format(buf.writer(alloc), "{s}:{s}:{d}", .{
+            @tagName(signal.kind),
+            signal.detail,
+            signal.weight,
+        });
+    }
+    return alloc.dupe(u8, buf.items);
 }
 
 fn recordBomWarnings(db: *graph_live.GraphDb, archived_path: []const u8, response: bom.BomIngestResponse, alloc: Allocator) !void {
@@ -367,6 +418,39 @@ fn archiveFile(inbox_dir: []const u8, subdir: []const u8, name: []const u8, allo
         };
     }
     return alloc.dupe(u8, target_path);
+}
+
+fn archiveDesignArtifactFile(
+    inbox_dir: []const u8,
+    kind: design_artifacts.ArtifactKind,
+    logical_key: []const u8,
+    name: []const u8,
+    alloc: Allocator,
+) ![]const u8 {
+    const target_dir_path = try std.fs.path.join(alloc, &.{ inbox_dir, "processed", "design-artifacts", kind.toString() });
+    defer alloc.free(target_dir_path);
+    try ensureDirPath(target_dir_path);
+    const extension = switch (kind) {
+        .rtm_workbook => ".xlsx",
+        .srs_docx, .sysrd_docx => ".docx",
+    };
+    const target_name = try std.fmt.allocPrint(alloc, "{s}{s}", .{ logical_key, extension });
+    defer alloc.free(target_name);
+    const source_path = try std.fs.path.join(alloc, &.{ inbox_dir, name });
+    defer alloc.free(source_path);
+    const target_path = try std.fs.path.join(alloc, &.{ target_dir_path, target_name });
+    if (std.fs.path.isAbsolute(source_path) and std.fs.path.isAbsolute(target_path)) {
+        std.fs.renameAbsolute(source_path, target_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    } else {
+        std.fs.cwd().rename(source_path, target_path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+    }
+    return target_path;
 }
 
 fn ensureInboxLayout(inbox_dir: []const u8) !void {

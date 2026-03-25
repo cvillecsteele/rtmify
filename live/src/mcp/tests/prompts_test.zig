@@ -8,6 +8,7 @@ test "prompts list returns expected names" {
     const resp = try prompts.promptsListResult(testing.allocator);
     defer testing.allocator.free(resp);
     try testing.expect(std.mem.indexOf(u8, resp, "trace_requirement") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "trace_design_artifact") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "trace_user_need") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "trace_test") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "trace_risk") != null);
@@ -21,6 +22,28 @@ test "prompts list returns expected names" {
     try testing.expect(std.mem.indexOf(u8, resp, "requirement_change_review") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "impact_of_change") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "inspect_bom_item_traceability") != null);
+}
+
+test "design artifact trace prompt references artifact resources" {
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("artifact_id", .{ .string = "artifact://srs_docx/core" });
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+    var license_service = try internal.license.initDefaultStub(testing.allocator, .{});
+    defer license_service.deinit(testing.allocator);
+    const req_ctx = internal.RequestContext{ .registry = &registry, .secure_store_ref = &store, .state = &state, .license_service = &license_service, .refresh_active_runtime_fn = null, .alloc = testing.allocator };
+    const runtime_ctx = internal.RuntimeContext{ .db = &db, .profile_name = "generic" };
+    const resp = try prompts.promptGetResult("trace_design_artifact", .{ .object = args_obj }, &req_ctx, &runtime_ctx);
+    defer testing.allocator.free(resp);
+    try testing.expect(std.mem.indexOf(u8, resp, "artifact://artifact://srs_docx/core") == null);
+    try testing.expect(std.mem.indexOf(u8, resp, "artifact://srs_docx/core") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "artifacts://") != null);
 }
 
 test "prompts get interpolates arguments" {

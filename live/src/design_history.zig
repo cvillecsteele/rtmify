@@ -278,7 +278,7 @@ fn collectNodesViaOutgoingEdge(
     result: *std.ArrayList(graph_live.Node),
 ) !void {
     var st = try db.db.prepare(
-        \\SELECT n.id, n.type, n.properties, n.suspect, n.suspect_reason
+        \\SELECT n.id
         \\FROM nodes n JOIN edges e ON e.to_id = n.id
         \\WHERE e.from_id = ? AND e.label = ? AND n.type = ?
         \\ORDER BY n.id
@@ -288,7 +288,9 @@ fn collectNodesViaOutgoingEdge(
     try st.bindText(2, edge_label);
     try st.bindText(3, node_type);
     while (try st.step()) {
-        try addUniqueNode(result, try stmtToNode(&st, alloc), alloc);
+        if (try db.getNode(st.columnText(0), alloc)) |node| {
+            try addUniqueNode(result, node, alloc);
+        }
     }
 }
 
@@ -301,7 +303,7 @@ fn collectNodesViaIncomingEdge(
     result: *std.ArrayList(graph_live.Node),
 ) !void {
     var st = try db.db.prepare(
-        \\SELECT n.id, n.type, n.properties, n.suspect, n.suspect_reason
+        \\SELECT n.id
         \\FROM nodes n JOIN edges e ON e.from_id = n.id
         \\WHERE e.to_id = ? AND e.label = ? AND n.type = ?
         \\ORDER BY n.id
@@ -311,7 +313,9 @@ fn collectNodesViaIncomingEdge(
     try st.bindText(2, edge_label);
     try st.bindText(3, node_type);
     while (try st.step()) {
-        try addUniqueNode(result, try stmtToNode(&st, alloc), alloc);
+        if (try db.getNode(st.columnText(0), alloc)) |node| {
+            try addUniqueNode(result, node, alloc);
+        }
     }
 }
 
@@ -321,7 +325,7 @@ fn collectUnlinkedRequirements(
     result: *std.ArrayList(graph_live.Node),
 ) !void {
     var st = try db.db.prepare(
-        \\SELECT n.id, n.type, n.properties, n.suspect, n.suspect_reason
+        \\SELECT n.id
         \\FROM nodes n
         \\WHERE n.type = 'Requirement'
         \\  AND NOT EXISTS (
@@ -333,18 +337,10 @@ fn collectUnlinkedRequirements(
     );
     defer st.finalize();
     while (try st.step()) {
-        try result.append(alloc, try stmtToNode(&st, alloc));
+        if (try db.getNode(st.columnText(0), alloc)) |node| {
+            try result.append(alloc, node);
+        }
     }
-}
-
-fn stmtToNode(st: anytype, alloc: Allocator) !graph_live.Node {
-    return .{
-        .id = try alloc.dupe(u8, st.columnText(0)),
-        .type = try alloc.dupe(u8, st.columnText(1)),
-        .properties = try alloc.dupe(u8, st.columnText(2)),
-        .suspect = st.columnInt(3) != 0,
-        .suspect_reason = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
-    };
 }
 
 fn relatedIdsPut(set: *std.StringHashMap(void), id: []const u8, alloc: Allocator) !void {

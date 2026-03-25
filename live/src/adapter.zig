@@ -181,12 +181,16 @@ test "buildGraphFromSqlite ports extended live nodes and edges" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
 
-    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Detect GPS loss\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"text_status\":\"single_source\",\"authoritative_source\":\"artifact://rtm/demo\",\"source_count\":1}", null);
+    try db.addNode("artifact://rtm/demo", "Artifact", "{\"kind\":\"rtm_workbook\"}", null);
+    try db.addNode("artifact://rtm/demo:REQ-001", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-001\",\"text\":\"Detect GPS loss\",\"normalized_text\":\"detect gps loss\",\"hash\":\"abc\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
     try db.addNode("DI-001", "DesignInput", "{\"description\":\"Timing spec\"}", null);
     try db.addNode("DO-001", "DesignOutput", "{\"description\":\"Firmware\"}", null);
     try db.addNode("CI-001", "ConfigurationItem", "{\"version\":\"1.0\"}", null);
     try db.addNode("src/gps.c", "SourceFile", "{\"path\":\"src/gps.c\"}", null);
 
+    try db.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://rtm/demo:REQ-001", "REQ-001", "ASSERTS");
     try db.addEdge("REQ-001", "DI-001", "ALLOCATED_TO");
     try db.addEdge("DI-001", "DO-001", "SATISFIED_BY");
     try db.addEdge("DO-001", "CI-001", "CONTROLLED_BY");
@@ -195,7 +199,9 @@ test "buildGraphFromSqlite ports extended live nodes and edges" {
     var g = try buildGraphFromSqlite(&db, alloc);
     defer g.deinit();
 
-    try testing.expect(g.getNode("REQ-001") != null);
+    const req = g.getNode("REQ-001");
+    try testing.expect(req != null);
+    try testing.expectEqualStrings("Detect GPS loss", req.?.get("statement").?);
     try testing.expect(g.getNode("DI-001") != null);
     try testing.expect(g.getNode("DO-001") != null);
     try testing.expect(g.getNode("CI-001") != null);

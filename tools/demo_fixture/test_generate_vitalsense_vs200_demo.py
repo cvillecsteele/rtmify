@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -24,13 +25,53 @@ class VitalSenseFixtureTests(unittest.TestCase):
         self.assertGreater(summary.edge_count, 0)
         self.assertEqual(summary.product_identifier, ds.PRODUCT_FULL_IDENTIFIER)
         self.assertEqual(summary.production_serial_count, ds.EXPECTED_PRODUCTION_SERIAL_COUNT)
+        self.assertEqual(summary.artifact_count, len(ds.ARTIFACTS))
+
+    def test_validate_only_does_not_write_requested_artifact_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            requested = Path(tmpdir) / "artifacts"
+            summary = fixture.validate_only(quiet=True, artifact_dir=str(requested))
+            self.assertFalse(requested.exists())
+            self.assertTrue(summary.artifact_dir)
 
     def test_generate_fixture_and_smoke_queries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "vitalsense.sqlite"
-            summary = fixture.generate_fixture(str(db_path), overwrite=True, quiet=True)
+            artifact_dir = Path(tmpdir) / "demo-artifacts"
+            summary = fixture.generate_fixture(str(db_path), overwrite=True, quiet=True, artifact_dir=str(artifact_dir))
             self.assertTrue(db_path.exists())
-            self.assertGreater(summary.runtime_diagnostic_count, 0)
+            self.assertEqual(Path(summary.artifact_dir), artifact_dir)
+            self.assertEqual(summary.artifact_count, len(ds.ARTIFACTS))
+            self.assertEqual(set(summary.artifact_ids), {item["id"] for item in ds.ARTIFACTS})
+            self.assertEqual(set(summary.generated_artifact_paths), {
+                str(artifact_dir / "rtm" / f"{ds.RTM_ARTIFACT_LOGICAL_KEY}.xlsx"),
+                str(artifact_dir / "srs" / f"{ds.SRS_ARTIFACT_LOGICAL_KEY}.docx"),
+                str(artifact_dir / "sysrd" / f"{ds.SYSRD_ARTIFACT_LOGICAL_KEY}.docx"),
+            })
+
+            for generated_path in summary.generated_artifact_paths:
+                path = Path(generated_path)
+                self.assertTrue(path.exists())
+                with zipfile.ZipFile(path, "r") as zf:
+                    if path.suffix == ".docx":
+                        self.assertIn("word/document.xml", zf.namelist())
+                        document_xml = zf.read("word/document.xml").decode("utf-8")
+                    else:
+                        self.assertIn("xl/workbook.xml", zf.namelist())
+                        workbook_xml = zf.read("xl/workbook.xml").decode("utf-8")
+                        self.assertIn("Requirements", workbook_xml)
+                        self.assertIn("User Needs", workbook_xml)
+                        requirements_sheet = zf.read("xl/worksheets/sheet1.xml").decode("utf-8")
+                        self.assertIn("SRS-015", requirements_sheet)
+                        self.assertIn(ds.REQUIREMENT_TEXTS["SRS-015"], requirements_sheet)
+                        continue
+                    if "srs" in path.parts:
+                        self.assertIn("SRS-015", document_xml)
+                        self.assertIn(ds.PREVIOUS_RTM_TEXTS["SRS-015"], document_xml)
+                        self.assertIn("SRS-017", document_xml)
+                    else:
+                        self.assertIn("REQ-003", document_xml)
+                        self.assertIn(ds.REQUIREMENT_TEXTS["REQ-003"], document_xml)
 
             conn = sqlite3.connect(str(db_path))
             try:
@@ -41,6 +82,121 @@ class VitalSenseFixtureTests(unittest.TestCase):
                     ).fetchone()[0],
                     1,
                 )
+
+                requirement_statement_count = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM nodes
+                    WHERE type='Requirement'
+                      AND json_extract(properties, '$.statement') IS NOT NULL
+                    """
+                ).fetchone()[0]
+                self.assertEqual(requirement_statement_count, 0)
+                requirement_effective_statement_count = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM nodes
+                    WHERE type='Requirement'
+                      AND json_extract(properties, '$.effective_statement') IS NOT NULL
+                    """
+                ).fetchone()[0]
+                self.assertEqual(requirement_effective_statement_count, 0)
+
+                artifact_ids = {
+                    row[0]
+                    for row in conn.execute("SELECT id FROM nodes WHERE type='Artifact'")
+                }
+                self.assertEqual(artifact_ids, {item["id"] for item in ds.ARTIFACTS})
+
+                requirement_text_count = conn.execute(
+                    "SELECT COUNT(*) FROM nodes WHERE type='RequirementText'"
+                ).fetchone()[0]
+                self.assertEqual(
+                    requirement_text_count,
+                    sum(len(ds.artifact_assertions_for(item["id"])) for item in ds.ARTIFACTS),
+                )
+
+                contains_count = conn.execute(
+                    "SELECT COUNT(*) FROM edges WHERE label='CONTAINS'"
+                ).fetchone()[0]
+                asserts_count = conn.execute(
+                    "SELECT COUNT(*) FROM edges WHERE label='ASSERTS'"
+                ).fetchone()[0]
+                conflict_count = conn.execute(
+                    "SELECT COUNT(*) FROM edges WHERE label='CONFLICTS_WITH'"
+                ).fetchone()[0]
+                self.assertGreaterEqual(contains_count, requirement_text_count)
+                self.assertGreaterEqual(asserts_count, requirement_text_count)
+                self.assertEqual(conflict_count, 2)
+
+                srs_015 = conn.execute(
+                    """
+                    SELECT
+                      json_extract(properties, '$.text_status'),
+                      json_extract(properties, '$.authoritative_source'),
+                      json_extract(properties, '$.source_count')
+                    FROM nodes
+                    WHERE id='SRS-015'
+                    """
+                ).fetchone()
+                self.assertEqual(srs_015[0], "conflict")
+                self.assertEqual(srs_015[1], ds.RTM_ARTIFACT_ID)
+                self.assertEqual(int(srs_015[2]), 2)
+
+                for req_id in ("SRS-016", "SRS-017"):
+                    row = conn.execute(
+                        """
+                        SELECT
+                          json_extract(properties, '$.text_status'),
+                          json_extract(properties, '$.authoritative_source'),
+                          json_extract(properties, '$.source_count')
+                        FROM nodes
+                        WHERE id=?
+                        """,
+                        (req_id,),
+                    ).fetchone()
+                    self.assertEqual(row[0], "single_source")
+                    self.assertEqual(row[1], ds.SRS_ARTIFACT_ID)
+                    self.assertEqual(int(row[2]), 1)
+                    rtm_assertions = conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM edges e
+                        JOIN nodes rt ON rt.id = e.from_id AND rt.type='RequirementText'
+                        WHERE e.label='ASSERTS'
+                          AND e.to_id=?
+                          AND json_extract(rt.properties, '$.source_kind')='rtm_workbook'
+                        """,
+                        (req_id,),
+                    ).fetchone()[0]
+                    self.assertEqual(rtm_assertions, 0)
+
+                req_003 = conn.execute(
+                    """
+                    SELECT
+                      json_extract(properties, '$.text_status'),
+                      json_extract(properties, '$.authoritative_source')
+                    FROM nodes
+                    WHERE id='REQ-003'
+                    """
+                ).fetchone()
+                self.assertEqual(req_003[0], "aligned")
+                self.assertEqual(req_003[1], ds.RTM_ARTIFACT_ID)
+
+                self.assertGreaterEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM node_history WHERE node_id='SRS-015'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertGreaterEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM node_history WHERE node_id=?",
+                        (ds.requirement_text_node_id(ds.RTM_ARTIFACT_ID, "SRS-015"),),
+                    ).fetchone()[0],
+                    1,
+                )
+
                 untested = {
                     row[0]
                     for row in conn.execute(
@@ -177,10 +333,15 @@ class VitalSenseFixtureTests(unittest.TestCase):
                     """
                 ).fetchone()[0]
                 self.assertEqual(production_count, ds.EXPECTED_PRODUCTION_SERIAL_COUNT)
+
+                diagnostics = {
+                    row[0] for row in conn.execute("SELECT dedupe_key FROM runtime_diagnostics")
+                }
+                self.assertEqual(diagnostics, {item["dedupe_key"] for item in ds.DEMO_DIAGNOSTICS})
             finally:
                 conn.close()
 
-    def test_cli_summary_json(self) -> None:
+    def test_default_artifact_dir_and_cli_summary_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "demo.sqlite"
             proc = subprocess.run(
@@ -200,7 +361,11 @@ class VitalSenseFixtureTests(unittest.TestCase):
             data = json.loads(proc.stdout)
             self.assertEqual(data["product_identifier"], ds.PRODUCT_FULL_IDENTIFIER)
             self.assertEqual(data["production_serial_count"], ds.EXPECTED_PRODUCTION_SERIAL_COUNT)
+            self.assertEqual(data["artifact_count"], len(ds.ARTIFACTS))
+            self.assertEqual(Path(data["artifact_dir"]), Path(f"{db_path}.artifacts"))
             self.assertTrue(db_path.exists())
+            for generated_path in data["generated_artifact_paths"]:
+                self.assertTrue(Path(generated_path).exists())
 
 
 if __name__ == "__main__":

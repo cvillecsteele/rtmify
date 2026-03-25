@@ -9,6 +9,7 @@ const repo = @import("repo.zig");
 const design_history = @import("design_history.zig");
 const reports = @import("reports.zig");
 const test_results = @import("test_results.zig");
+const design_artifacts_api = @import("design_artifacts_api.zig");
 const bom = @import("bom.zig");
 const soup_api = @import("soup_api.zig");
 
@@ -32,6 +33,7 @@ pub const handleNode = query.handleNode;
 
 pub const handleStatus = status.handleStatus;
 pub const handleInfo = status.handleInfo;
+pub const handlePostWorkspacePrefsResponse = status.handlePostWorkspacePrefsResponse;
 pub const handleLicenseStatus = license_routes.handleLicenseStatus;
 pub const handleLicenseInfo = license_routes.handleLicenseInfo;
 pub const handleLicenseImportResponse = license_routes.handleLicenseImportResponse;
@@ -107,6 +109,11 @@ pub const handleGetExecution = test_results.handleGetExecution;
 pub const handleGetExecutionResponse = test_results.handleGetExecutionResponse;
 pub const handleRegenerateTestResultsToken = test_results.handleRegenerateTestResultsToken;
 pub const handleRegenerateTestResultsTokenResponse = test_results.handleRegenerateTestResultsTokenResponse;
+pub const handleListArtifactsResponse = design_artifacts_api.handleListArtifactsResponse;
+pub const handleGetArtifactResponse = design_artifacts_api.handleGetArtifactResponse;
+pub const handlePostUploadResponse = design_artifacts_api.handlePostUploadResponse;
+pub const handlePostOnboardingSourceArtifactResponse = design_artifacts_api.handlePostOnboardingSourceArtifactResponse;
+pub const handleReingestArtifactResponse = design_artifacts_api.handleReingestArtifactResponse;
 pub const handlePostBomResponse = bom.handlePostBomResponse;
 pub const handlePostBomXlsxResponse = bom.handlePostBomXlsxResponse;
 pub const handleGetBomResponse = bom.handleGetBomResponse;

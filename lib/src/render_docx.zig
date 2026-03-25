@@ -814,8 +814,8 @@ test "render_docx no gaps no yellow" {
 test "render_docx includes multiple test groups and plural linked requirements" {
     var g = Graph.init(testing.allocator);
     defer g.deinit();
-    try g.addNode("REQ-001", .requirement, &.{.{ .key = "statement", .value = "One" }});
-    try g.addNode("REQ-002", .requirement, &.{.{ .key = "statement", .value = "Two" }});
+    try g.addNode("REQ-001", .requirement, &.{});
+    try g.addNode("REQ-002", .requirement, &.{});
     try g.addNode("TG-001", .test_group, &.{});
     try g.addNode("TG-002", .test_group, &.{});
     try g.addNode("T-001", .test_case, &.{});

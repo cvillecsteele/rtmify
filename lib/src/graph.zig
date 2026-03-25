@@ -9,6 +9,8 @@ pub const NodeType = enum {
     product,
     user_need,
     requirement,
+    artifact,
+    requirement_text,
     test_group,
     test_case,
     risk,
@@ -24,6 +26,8 @@ pub const NodeType = enum {
         if (std.mem.eql(u8, s, "Product")) return .product;
         if (std.mem.eql(u8, s, "UserNeed")) return .user_need;
         if (std.mem.eql(u8, s, "Requirement")) return .requirement;
+        if (std.mem.eql(u8, s, "Artifact")) return .artifact;
+        if (std.mem.eql(u8, s, "RequirementText")) return .requirement_text;
         if (std.mem.eql(u8, s, "TestGroup")) return .test_group;
         if (std.mem.eql(u8, s, "Test")) return .test_case;
         if (std.mem.eql(u8, s, "Risk")) return .risk;
@@ -42,6 +46,8 @@ pub const NodeType = enum {
             .product => "Product",
             .user_need => "UserNeed",
             .requirement => "Requirement",
+            .artifact => "Artifact",
+            .requirement_text => "RequirementText",
             .test_group => "TestGroup",
             .test_case => "Test",
             .risk => "Risk",
@@ -72,6 +78,8 @@ pub const EdgeLabel = enum {
     changes,
     annotated_at,
     contains,
+    asserts,
+    conflicts_with,
     contains_annotation, // kept for backward-compat with old DB rows
 
     pub fn fromString(s: []const u8) ?EdgeLabel {
@@ -90,6 +98,8 @@ pub const EdgeLabel = enum {
         if (std.mem.eql(u8, s, "CHANGES")) return .changes;
         if (std.mem.eql(u8, s, "ANNOTATED_AT")) return .annotated_at;
         if (std.mem.eql(u8, s, "CONTAINS")) return .contains;
+        if (std.mem.eql(u8, s, "ASSERTS")) return .asserts;
+        if (std.mem.eql(u8, s, "CONFLICTS_WITH")) return .conflicts_with;
         if (std.mem.eql(u8, s, "CONTAINS_ANNOTATION")) return .contains_annotation;
         return null;
     }
@@ -111,6 +121,8 @@ pub const EdgeLabel = enum {
             .changes => "CHANGES",
             .annotated_at => "ANNOTATED_AT",
             .contains => "CONTAINS",
+            .asserts => "ASSERTS",
+            .conflicts_with => "CONFLICTS_WITH",
             .contains_annotation => "CONTAINS_ANNOTATION",
         };
     }

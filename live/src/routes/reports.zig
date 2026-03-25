@@ -300,6 +300,28 @@ fn appendMarkdownStringArray(buf: *std.ArrayList(u8), value: ?std.json.Value, al
 
 const testing = std.testing;
 
+fn seedRtmReportFixture(db: *graph_live.GraphDb) !void {
+    try db.addNode("artifact://rtm/demo", "Artifact", "{\"kind\":\"rtm_workbook\",\"display_name\":\"Demo RTM\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"status\":\"Approved\",\"text_status\":\"single_source\",\"authoritative_source\":\"artifact://rtm/demo\",\"source_count\":1}", null);
+    try db.addNode("REQ-002", "Requirement", "{\"status\":\"Approved\",\"text_status\":\"single_source\",\"authoritative_source\":\"artifact://rtm/demo\",\"source_count\":1}", null);
+    try db.addNode("artifact://rtm/demo:REQ-001", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-001\",\"section\":\"Requirements\",\"text\":\"Resolved requirement one\",\"normalized_text\":\"resolved requirement one\",\"hash\":\"abc\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try db.addNode("artifact://rtm/demo:REQ-002", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-002\",\"section\":\"Requirements\",\"text\":\"Resolved requirement two\",\"normalized_text\":\"resolved requirement two\",\"hash\":\"def\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try db.addNode("TG-001", "TestGroup", "{\"protocol\":\"ATP\"}", null);
+    try db.addNode("TG-002", "TestGroup", "{\"protocol\":\"ATP\"}", null);
+    try db.addNode("T-001", "Test", "{\"test_type\":\"Verification\",\"test_method\":\"Bench\"}", null);
+    try db.addNode("T-002", "Test", "{\"test_type\":\"Verification\",\"test_method\":\"Bench\"}", null);
+
+    try db.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-002", "CONTAINS");
+    try db.addEdge("artifact://rtm/demo:REQ-001", "REQ-001", "ASSERTS");
+    try db.addEdge("artifact://rtm/demo:REQ-002", "REQ-002", "ASSERTS");
+    try db.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try db.addEdge("REQ-001", "TG-002", "TESTED_BY");
+    try db.addEdge("REQ-002", "TG-001", "TESTED_BY");
+    try db.addEdge("TG-001", "T-001", "HAS_TEST");
+    try db.addEdge("TG-002", "T-002", "HAS_TEST");
+}
+
 test "handleReportDhrMd includes downstream design history artifacts" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -314,6 +336,7 @@ test "handleReportDhrMd includes downstream design history artifacts" {
     try testing.expect(std.mem.indexOf(u8, resp, "Profile: medical") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "## UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "### Requirement REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Detect GPS loss") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "#### Risks") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Clock drift") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "#### Design Inputs") != null);
@@ -362,8 +385,57 @@ test "handleReportDhrPdf includes downstream design history artifacts" {
     try testing.expect(std.mem.indexOf(u8, resp, "Design History Record") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Requirement REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Detect GPS loss") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Design Inputs") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Timing spec") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Requirements Without User Needs") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "REQ-999") != null);
+}
+
+test "handleReportRtmMd resolves requirement statements from RTM assertions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRtmReportFixture(&db);
+
+    const resp = try handleReportRtmMd(&db, alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "Resolved requirement one") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "TG-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "TG-002") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "REQ-001, REQ-002") != null);
+}
+
+test "handleReportRtmPdf resolves requirement statements from RTM assertions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRtmReportFixture(&db);
+
+    const resp = try handleReportRtmPdf(&db, alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "Resolved requirement one") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "TG-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "TG-002") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "REQ-001, REQ-002") != null);
+}
+
+test "handleReportRtmDocx resolves requirement statements from RTM assertions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRtmReportFixture(&db);
+
+    const resp = try handleReportRtmDocx(&db, alloc);
+    try testing.expect(std.mem.indexOf(u8, resp, "Resolved requirement one") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "TG-001") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "TG-002") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "REQ-001, REQ-002") != null);
 }

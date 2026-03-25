@@ -1,6 +1,7 @@
 const std = @import("std");
 const internal = @import("internal.zig");
 const protocol = @import("protocol.zig");
+const design_artifacts = @import("../design_artifacts.zig");
 
 pub fn nodeMarkdown(node_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
     const data = try internal.routes.handleNode(db, node_id, alloc);
@@ -214,9 +215,13 @@ pub fn rtmSummaryMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.Allo
     defer parsed.deinit();
     var user_needs_parsed = try std.json.parseFromSlice(std.json.Value, arena, user_needs_data, .{});
     defer user_needs_parsed.deinit();
+    const requirements_data = try internal.routes.handleNodes(db, "Requirement", arena);
+    var requirements_parsed = try std.json.parseFromSlice(std.json.Value, arena, requirements_data, .{});
+    defer requirements_parsed.deinit();
     var unique: std.StringHashMap(void) = .init(arena);
     defer unique.deinit();
     var linked_tests: usize = 0;
+    var conflicting_requirements: usize = 0;
     if (parsed.value == .array) {
         for (parsed.value.array.items) |item| {
             const req_id = internal.json_util.getString(item, "req_id") orelse continue;
@@ -224,13 +229,21 @@ pub fn rtmSummaryMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.Allo
             if (internal.json_util.getString(item, "test_group_id") != null) linked_tests += 1;
         }
     }
+    if (requirements_parsed.value == .array) {
+        for (requirements_parsed.value.array.items) |item| {
+            const props = internal.json_util.getObjectField(item, "properties") orelse continue;
+            if (std.mem.eql(u8, internal.json_util.getString(props, "text_status") orelse "", "conflict"))
+                conflicting_requirements += 1;
+        }
+    }
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "# RTM Summary\n\n");
-    try std.fmt.format(buf.writer(alloc), "- User needs represented: {d}\n- Requirements represented: {d}\n- Rows with linked tests: {d}\n", .{
+    try std.fmt.format(buf.writer(alloc), "- User needs represented: {d}\n- Requirements represented: {d}\n- Rows with linked tests: {d}\n- Requirements with source conflicts: {d}\n", .{
         if (user_needs_parsed.value == .array) user_needs_parsed.value.array.items.len else 0,
         unique.count(),
         linked_tests,
+        conflicting_requirements,
     });
     return alloc.dupe(u8, buf.items);
 }
@@ -239,12 +252,12 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
     var arena_state = std.heap.ArenaAllocator.init(alloc);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const rtm_data = try internal.routes.handleRtm(db, arena);
+    const nodes_data = try internal.routes.handleNodes(db, "Requirement", arena);
     const unimplemented_data = try internal.routes.handleUnimplementedRequirements(db, arena);
     const gaps_data = try internal.routes.handleGaps(db, arena);
 
-    var rtm_parsed = try std.json.parseFromSlice(std.json.Value, arena, rtm_data, .{});
-    defer rtm_parsed.deinit();
+    var nodes_parsed = try std.json.parseFromSlice(std.json.Value, arena, nodes_data, .{});
+    defer nodes_parsed.deinit();
     var unimplemented_parsed = try std.json.parseFromSlice(std.json.Value, arena, unimplemented_data, .{});
     defer unimplemented_parsed.deinit();
     var gaps_parsed = try std.json.parseFromSlice(std.json.Value, arena, gaps_data, .{});
@@ -252,19 +265,58 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
 
     var statements: std.StringHashMap([]const u8) = .init(arena);
     defer statements.deinit();
+    var text_statuses: std.StringHashMap([]const u8) = .init(arena);
+    defer text_statuses.deinit();
+    var authoritative_sources: std.StringHashMap([]const u8) = .init(arena);
+    defer authoritative_sources.deinit();
+    var source_counts: std.StringHashMap(usize) = .init(arena);
+    defer source_counts.deinit();
     var ordered_ids: std.ArrayList([]const u8) = .empty;
     defer ordered_ids.deinit(arena);
     var unimplemented_ids: std.StringHashMap(void) = .init(arena);
     defer unimplemented_ids.deinit();
     var untested_ids: std.StringHashMap(void) = .init(arena);
     defer untested_ids.deinit();
+    var conflicting_ids: std.StringHashMap(void) = .init(arena);
+    defer conflicting_ids.deinit();
+    var single_source_ids: std.StringHashMap(void) = .init(arena);
+    defer single_source_ids.deinit();
+    var missing_rtm_ids: std.StringHashMap(void) = .init(arena);
+    defer missing_rtm_ids.deinit();
+    var missing_srs_ids: std.StringHashMap(void) = .init(arena);
+    defer missing_srs_ids.deinit();
 
-    if (rtm_parsed.value == .array) {
-        for (rtm_parsed.value.array.items) |item| {
-            const req_id = internal.json_util.getString(item, "req_id") orelse continue;
+    if (nodes_parsed.value == .array) {
+        for (nodes_parsed.value.array.items) |item| {
+            const req_id = internal.json_util.getString(item, "id") orelse continue;
+            const props = internal.json_util.getObjectField(item, "properties");
             if (!statements.contains(req_id)) {
                 try ordered_ids.append(arena, req_id);
-                try statements.put(req_id, internal.json_util.getString(item, "statement") orelse "");
+                try statements.put(req_id, if (props) |p| internal.json_util.getString(p, "statement") orelse "" else "");
+            }
+            const text_status = if (props) |p| internal.json_util.getString(p, "text_status") orelse "no_source" else "no_source";
+            const authoritative_source = if (props) |p| internal.json_util.getString(p, "authoritative_source") orelse "" else "";
+            const source_count = if (props) |p| internal.json_util.getInt(p, "source_count") orelse 0 else 0;
+            try text_statuses.put(req_id, text_status);
+            try authoritative_sources.put(req_id, authoritative_source);
+            try source_counts.put(req_id, @intCast(source_count));
+            if (std.mem.eql(u8, text_status, "conflict")) try conflicting_ids.put(req_id, {});
+            if (std.mem.eql(u8, text_status, "single_source")) try single_source_ids.put(req_id, {});
+            if (props) |p| {
+                const source_assertions = internal.json_util.getObjectField(p, "source_assertions");
+                if (source_assertions) |arr| {
+                    if (arr == .array) {
+                        var has_rtm = false;
+                        var has_srs = false;
+                        for (arr.array.items) |assertion| {
+                            const source_kind = internal.json_util.getString(assertion, "source_kind") orelse continue;
+                            if (std.mem.eql(u8, source_kind, "rtm_workbook")) has_rtm = true;
+                            if (std.mem.eql(u8, source_kind, "srs_docx")) has_srs = true;
+                        }
+                        if (has_srs and !has_rtm) try missing_rtm_ids.put(req_id, {});
+                        if (has_rtm and !has_srs) try missing_srs_ids.put(req_id, {});
+                    }
+                }
             }
         }
     }
@@ -294,10 +346,14 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "# Requirements\n\n");
-    try std.fmt.format(buf.writer(alloc), "- Total requirements: {d}\n- Requirements without implementation evidence: {d}\n- Requirements without linked tests: {d}\n\n", .{
+    try std.fmt.format(buf.writer(alloc), "- Total requirements: {d}\n- Requirements without implementation evidence: {d}\n- Requirements without linked tests: {d}\n- Requirements with source conflicts: {d}\n- Single-source requirements: {d}\n- Requirements present in SRS but absent from RTM: {d}\n- Requirements present in RTM but absent from SRS: {d}\n\n", .{
         ordered_ids.items.len,
         unimplemented_ids.count(),
         untested_ids.count(),
+        conflicting_ids.count(),
+        single_source_ids.count(),
+        missing_rtm_ids.count(),
+        missing_srs_ids.count(),
     });
 
     try buf.appendSlice(alloc, "## Requirements Without Implementation Evidence\n");
@@ -322,16 +378,159 @@ pub fn requirementsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: intern
         try buf.append(alloc, '\n');
     }
 
+    try buf.appendSlice(alloc, "## Requirements With Source Conflicts\n");
+    if (conflicting_ids.count() == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+    } else {
+        for (ordered_ids.items) |req_id| {
+            if (!conflicting_ids.contains(req_id)) continue;
+            try std.fmt.format(buf.writer(alloc), "- `{s}` — {s}\n", .{ req_id, statements.get(req_id) orelse "" });
+        }
+        try buf.append(alloc, '\n');
+    }
+
+    try buf.appendSlice(alloc, "## Requirements Present In SRS But Absent From RTM\n");
+    if (missing_rtm_ids.count() == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+    } else {
+        for (ordered_ids.items) |req_id| {
+            if (!missing_rtm_ids.contains(req_id)) continue;
+            try std.fmt.format(buf.writer(alloc), "- `{s}` — {s}\n", .{ req_id, statements.get(req_id) orelse "" });
+        }
+        try buf.append(alloc, '\n');
+    }
+
+    try buf.appendSlice(alloc, "## Requirements Present In RTM But Absent From SRS\n");
+    if (missing_srs_ids.count() == 0) {
+        try buf.appendSlice(alloc, "- None\n\n");
+    } else {
+        for (ordered_ids.items) |req_id| {
+            if (!missing_srs_ids.contains(req_id)) continue;
+            try std.fmt.format(buf.writer(alloc), "- `{s}` — {s}\n", .{ req_id, statements.get(req_id) orelse "" });
+        }
+        try buf.append(alloc, '\n');
+    }
+
     try buf.appendSlice(alloc, "## Requirement Inventory\n");
     for (ordered_ids.items) |req_id| {
-        try std.fmt.format(buf.writer(alloc), "- `{s}` — {s} [implemented={s}, tested={s}]\n", .{
+        try std.fmt.format(buf.writer(alloc), "- `{s}` — {s} [implemented={s}, tested={s}, text_status={s}, source_count={d}, authoritative_source={s}]\n", .{
             req_id,
             statements.get(req_id) orelse "",
             if (unimplemented_ids.contains(req_id)) "no" else "yes",
             if (untested_ids.contains(req_id)) "no" else "yes",
+            text_statuses.get(req_id) orelse "no_source",
+            source_counts.get(req_id) orelse 0,
+            if ((authoritative_sources.get(req_id) orelse "").len > 0) authoritative_sources.get(req_id).? else "none",
         });
     }
     try buf.append(alloc, '\n');
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn artifactsIndexMarkdown(db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const data = try design_artifacts.listArtifactsJson(db, arena);
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
+    defer parsed.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "# Design Artifacts\n\n");
+    if (parsed.value != .array or parsed.value.array.items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n");
+        return alloc.dupe(u8, buf.items);
+    }
+    try std.fmt.format(buf.writer(alloc), "- Total artifacts: {d}\n\n", .{parsed.value.array.items.len});
+    for (parsed.value.array.items) |item| {
+        const artifact_id = internal.json_util.getString(item, "artifact_id") orelse continue;
+        const display_name = internal.json_util.getString(item, "display_name") orelse artifact_id;
+        const kind = internal.json_util.getString(item, "kind") orelse "unknown";
+        const conflict_count = internal.json_util.getInt(item, "conflict_count") orelse 0;
+        const null_text_count = internal.json_util.getInt(item, "null_text_count") orelse 0;
+        const low_confidence_count = internal.json_util.getInt(item, "low_confidence_count") orelse 0;
+        try std.fmt.format(buf.writer(alloc), "- [`{s}`](artifact://{s}) — {s} [{s}; conflicts={d}; null_text={d}; low_confidence={d}]\n", .{
+            display_name,
+            artifact_id,
+            artifact_id,
+            kind,
+            conflict_count,
+            null_text_count,
+            low_confidence_count,
+        });
+    }
+    return alloc.dupe(u8, buf.items);
+}
+
+pub fn artifactMarkdown(artifact_id: []const u8, db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const data = try design_artifacts.getArtifactJson(db, artifact_id, arena);
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena, data, .{});
+    defer parsed.deinit();
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try std.fmt.format(buf.writer(alloc), "# Design Artifact {s}\n\n", .{artifact_id});
+
+    const props = internal.json_util.getObjectField(parsed.value, "properties");
+    if (props) |p| {
+        try std.fmt.format(buf.writer(alloc), "- Kind: {s}\n", .{internal.json_util.getString(p, "kind") orelse "unknown"});
+        try std.fmt.format(buf.writer(alloc), "- Display Name: {s}\n", .{internal.json_util.getString(p, "display_name") orelse artifact_id});
+        try std.fmt.format(buf.writer(alloc), "- Path: {s}\n", .{internal.json_util.getString(p, "path") orelse "—"});
+        try std.fmt.format(buf.writer(alloc), "- Ingest Source: {s}\n", .{internal.json_util.getString(p, "ingest_source") orelse "—"});
+        try std.fmt.format(buf.writer(alloc), "- Last Ingested: {s}\n\n", .{internal.json_util.getString(p, "last_ingested_at") orelse "—"});
+    }
+
+    const extraction_summary = internal.json_util.getObjectField(parsed.value, "extraction_summary");
+    if (extraction_summary) |summary| {
+        try std.fmt.format(buf.writer(alloc), "- Requirements Seen: {d}\n", .{internal.json_util.getInt(summary, "requirements_seen") orelse 0});
+        try std.fmt.format(buf.writer(alloc), "- Null Text Rows: {d}\n", .{internal.json_util.getInt(summary, "null_text_count") orelse 0});
+        try std.fmt.format(buf.writer(alloc), "- Low Confidence Rows: {d}\n", .{internal.json_util.getInt(summary, "low_confidence_count") orelse 0});
+        try std.fmt.format(buf.writer(alloc), "- Ambiguous Rows: {d}\n\n", .{internal.json_util.getInt(summary, "ambiguous_within_artifact_count") orelse 0});
+    }
+
+    const new_ids = internal.json_util.getObjectField(parsed.value, "new_since_last_ingest");
+    if (new_ids != null and new_ids.? == .array and new_ids.?.array.items.len > 0) {
+        try buf.appendSlice(alloc, "## New Since Last Ingest\n");
+        for (new_ids.?.array.items) |item| {
+            if (item != .string) continue;
+            try std.fmt.format(buf.writer(alloc), "- `{s}`\n", .{item.string});
+        }
+        try buf.append(alloc, '\n');
+    }
+
+    const conflicts = internal.json_util.getObjectField(parsed.value, "conflicts");
+    if (conflicts != null and conflicts.? == .array and conflicts.?.array.items.len > 0) {
+        try buf.appendSlice(alloc, "## Cross-Source Conflicts\n");
+        for (conflicts.?.array.items) |item| {
+            const req_id = internal.json_util.getString(item, "req_id") orelse "unknown";
+            const other_artifact_id = internal.json_util.getString(item, "other_artifact_id") orelse "unknown";
+            const other_text = internal.json_util.getString(item, "other_text") orelse "—";
+            try std.fmt.format(buf.writer(alloc), "- `{s}` conflicts with `{s}` — {s}\n", .{ req_id, other_artifact_id, other_text });
+        }
+        try buf.append(alloc, '\n');
+    }
+
+    const assertions = internal.json_util.getObjectField(parsed.value, "assertions");
+    try buf.appendSlice(alloc, "## Assertions\n");
+    if (assertions == null or assertions.? != .array or assertions.?.array.items.len == 0) {
+        try buf.appendSlice(alloc, "- None\n");
+        return alloc.dupe(u8, buf.items);
+    }
+    for (assertions.?.array.items) |item| {
+        const req_id = internal.json_util.getString(item, "req_id") orelse internal.json_util.getString(item, "id") orelse "unknown";
+        const text = internal.json_util.getString(item, "text") orelse "—";
+        const status = internal.json_util.getString(item, "parse_status") orelse "ok";
+        const hash = internal.json_util.getString(item, "hash") orelse "";
+        if (hash.len > 0) {
+            try std.fmt.format(buf.writer(alloc), "- `{s}` — {s} [status={s}, hash={s}]\n", .{ req_id, text, status, hash });
+        } else {
+            try std.fmt.format(buf.writer(alloc), "- `{s}` — {s} [status={s}]\n", .{ req_id, text, status });
+        }
+    }
     return alloc.dupe(u8, buf.items);
 }
 
@@ -855,16 +1054,28 @@ pub fn reviewSummaryMarkdown(db: *internal.graph_live.GraphDb, profile_name: []c
     const arena = arena_state.allocator();
     const suspects_json = try internal.routes.handleSuspects(db, arena);
     const gaps_json = try internal.routes.handleChainGaps(db, profile_name, arena);
+    const requirements_json = try internal.routes.handleNodes(db, "Requirement", arena);
     var suspects_parsed = try std.json.parseFromSlice(std.json.Value, arena, suspects_json, .{});
     defer suspects_parsed.deinit();
     var gaps_parsed = try std.json.parseFromSlice(std.json.Value, arena, gaps_json, .{});
     defer gaps_parsed.deinit();
+    var requirements_parsed = try std.json.parseFromSlice(std.json.Value, arena, requirements_json, .{});
+    defer requirements_parsed.deinit();
+    var conflicting_requirements: usize = 0;
+    if (requirements_parsed.value == .array) {
+        for (requirements_parsed.value.array.items) |item| {
+            const props = internal.json_util.getObjectField(item, "properties") orelse continue;
+            if (std.mem.eql(u8, internal.json_util.getString(props, "text_status") orelse "", "conflict"))
+                conflicting_requirements += 1;
+        }
+    }
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.appendSlice(alloc, "# Review Summary\n\n");
-    try std.fmt.format(buf.writer(alloc), "- Suspect nodes: {d}\n- Chain gaps: {d}\n", .{
+    try std.fmt.format(buf.writer(alloc), "- Suspect nodes: {d}\n- Chain gaps: {d}\n- Requirements with source conflicts: {d}\n", .{
         if (suspects_parsed.value == .array) suspects_parsed.value.array.items.len else 0,
         if (gaps_parsed.value == .array) gaps_parsed.value.array.items.len else 0,
+        conflicting_requirements,
     });
     return alloc.dupe(u8, buf.items);
 }
@@ -917,16 +1128,51 @@ fn appendNodeCoreMarkdown(buf: *std.ArrayList(u8), node: std.json.Value, alloc: 
     const props = internal.json_util.getObjectField(node, "properties");
     if (props) |p| if (p == .object) {
         const statement = internal.json_util.getString(p, "statement");
+        const effective_statement = internal.json_util.getString(p, "effective_statement");
+        const effective_statement_source = internal.json_util.getString(p, "effective_statement_source");
+        const text_status = internal.json_util.getString(p, "text_status");
+        const authoritative_source = internal.json_util.getString(p, "authoritative_source");
         const status = internal.json_util.getString(p, "status");
         const description = internal.json_util.getString(p, "description");
         const path = internal.json_util.getString(p, "path");
         const message = internal.json_util.getString(p, "message");
         if (statement) |s| try std.fmt.format(buf.writer(alloc), "- Statement: {s}\n", .{s});
+        if (effective_statement) |s| if (statement == null or !std.mem.eql(u8, statement.?, s))
+            try std.fmt.format(buf.writer(alloc), "- Effective Text: {s}\n", .{s});
+        if (text_status) |s| try std.fmt.format(buf.writer(alloc), "- Text Status: {s}\n", .{s});
+        if (authoritative_source) |s| if (s.len > 0)
+            try std.fmt.format(buf.writer(alloc), "- Authoritative Source: `{s}`\n", .{s});
+        if (effective_statement_source) |s| if (s.len > 0 and (authoritative_source == null or !std.mem.eql(u8, authoritative_source.?, s)))
+            try std.fmt.format(buf.writer(alloc), "- Effective Text Source: `{s}`\n", .{s});
         if (description) |s| try std.fmt.format(buf.writer(alloc), "- Description: {s}\n", .{s});
         if (status) |s| try std.fmt.format(buf.writer(alloc), "- Status: {s}\n", .{s});
         if (path) |s| try std.fmt.format(buf.writer(alloc), "- Path: `{s}`\n", .{s});
         if (message) |s| try std.fmt.format(buf.writer(alloc), "- Message: {s}\n", .{s});
+        const source_count = internal.json_util.getInt(p, "source_count") orelse 0;
+        if (source_count > 0) {
+            try std.fmt.format(buf.writer(alloc), "- Source Assertions: {d}\n", .{source_count});
+            const source_assertions = internal.json_util.getObjectField(p, "source_assertions");
+            try appendSourceAssertionSection(buf, source_assertions, alloc);
+        }
     };
+    try buf.append(alloc, '\n');
+}
+
+fn appendSourceAssertionSection(buf: *std.ArrayList(u8), assertions: ?std.json.Value, alloc: internal.Allocator) !void {
+    if (assertions == null or assertions.? != .array or assertions.?.array.items.len == 0) return;
+    try buf.appendSlice(alloc, "## Source Assertions\n");
+    for (assertions.?.array.items) |item| {
+        const artifact_id = internal.json_util.getString(item, "artifact_id") orelse "unknown";
+        const source_kind = internal.json_util.getString(item, "source_kind") orelse "unknown";
+        const parse_status = internal.json_util.getString(item, "parse_status") orelse "ok";
+        const text = internal.json_util.getString(item, "text") orelse "—";
+        try std.fmt.format(buf.writer(alloc), "- `{s}` ({s}) [{s}] — {s}\n", .{
+            artifact_id,
+            source_kind,
+            parse_status,
+            text,
+        });
+    }
     try buf.append(alloc, '\n');
 }
 

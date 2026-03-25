@@ -10,6 +10,9 @@ const online_provider = @import("online_provider.zig");
 const log_sink = @import("log_sink.zig");
 const test_results_auth = @import("test_results_auth.zig");
 const external_ingest_inbox = @import("external_ingest_inbox.zig");
+const design_artifacts = @import("design_artifacts.zig");
+const provision_mod = @import("provision.zig");
+const sync_cycle = @import("sync/cycle.zig");
 const workbook = @import("workbook/mod.zig");
 const rtmify = @import("rtmify");
 const license = rtmify.license;
@@ -326,6 +329,8 @@ pub fn main() !void {
         },
         .alloc = gpa,
         .refresh_active_runtime_fn = refreshActiveRuntimeCallback,
+        .restart_active_workers_fn = restartActiveWorkersCallback,
+        .run_preview_sync_fn = runPreviewSyncCallback,
     };
     server.listen(actual_port, ctx) catch |e| return e;
 }
@@ -469,6 +474,15 @@ fn refreshActiveRuntimeCallback(
         };
         return;
     };
+    _ = design_artifacts.migrateLegacyRequirementStatements(
+        &runtime.db,
+        runtime.config.slug,
+        runtime.config.display_name,
+        runtime.config.db_path,
+        alloc,
+    ) catch |err| {
+        std.log.warn("legacy requirement-text migration skipped db={s}: {s}", .{ runtime.config.db_path, @errorName(err) });
+    };
     {
         const counts = runtime.db.countGraph() catch |err| {
             std.log.warn("graph load summary unavailable db={s}: {s}", .{ runtime.config.db_path, @errorName(err) });
@@ -485,6 +499,94 @@ fn refreshActiveRuntimeCallback(
     startActiveWorkers(registry, secure_store, license_service, alloc) catch |err| {
         std.log.warn("active workers start failed: {s}", .{@errorName(err)});
     };
+}
+
+fn restartActiveWorkersCallback(
+    registry: *workbook.registry.WorkbookRegistry,
+    secure_store: *secure_store_mod.Store,
+    license_service: *license.Service,
+    alloc: std.mem.Allocator,
+) void {
+    stopActiveWorkers(registry, alloc);
+    if (registry.active_runtime == null) return;
+    startActiveWorkers(registry, secure_store, license_service, alloc) catch |err| {
+        std.log.warn("active workers restart failed: {s}", .{@errorName(err)});
+    };
+}
+
+fn runPreviewSyncCallback(
+    registry: *workbook.registry.WorkbookRegistry,
+    secure_store: *secure_store_mod.Store,
+    license_service: *license.Service,
+    alloc: std.mem.Allocator,
+) void {
+    var license_status = license_service.getStatus(alloc) catch |err| {
+        std.log.warn("preview sync skipped: license status unavailable: {s}", .{@errorName(err)});
+        return;
+    };
+    defer license_status.deinit(alloc);
+    if (license_status.permits_use) return;
+
+    const runtime = registry.active() catch return;
+    var loaded = connection_mod.loadWorkbookConnection(runtime.config, secure_store, alloc) catch |err| {
+        std.log.warn("preview sync skipped: connection unavailable: {s}", .{@errorName(err)});
+        return;
+    };
+    defer loaded.deinit(alloc);
+    if (loaded != .active) return;
+
+    var provider_runtime = online_provider.ProviderRuntime.init(loaded.active, alloc) catch |err| {
+        std.log.warn("preview sync skipped: provider init failed: {s}", .{@errorName(err)});
+        return;
+    };
+    defer provider_runtime.deinit(alloc);
+
+    {
+        var prov_arena = std.heap.ArenaAllocator.init(alloc);
+        defer prov_arena.deinit();
+        const pa = prov_arena.allocator();
+        const prov_done = (runtime.db.getConfig("rtmify_provisioned", pa) catch null) orelse "";
+        if (prov_done.len == 0) {
+            const prof = profile_mod.get(profile_mod.fromString(runtime.config.profile) orelse .generic);
+            _ = provision_mod.provisionWorkbook(&provider_runtime, prof, pa) catch |err| blk: {
+                std.log.warn("preview sync provision failed: {s}", .{@errorName(err)});
+                break :blk @as([][]const u8, &.{});
+            };
+            runtime.db.storeConfig("rtmify_provisioned", "1") catch {};
+        }
+    }
+
+    runtime.sync_state.sync_in_progress.store(true, .seq_cst);
+    sync_cycle.runSyncCycle(
+        &runtime.db,
+        profile_mod.fromString(runtime.config.profile) orelse .generic,
+        runtime.config.slug,
+        runtime.config.slug,
+        runtime.config.id,
+        &provider_runtime,
+        &runtime.sync_state,
+        alloc,
+    ) catch |err| {
+        runtime.sync_state.sync_in_progress.store(false, .seq_cst);
+        const msg = @errorName(err);
+        runtime.sync_state.setError(msg);
+        runtime.db.storeConfig("last_sync_error", msg) catch {};
+        runtime.db.storeConfig("last_sync_ok", "0") catch {};
+        std.log.warn("preview sync failed: {s}", .{msg});
+        return;
+    };
+    runtime.sync_state.sync_in_progress.store(false, .seq_cst);
+
+    const synced_at = std.time.timestamp();
+    runtime.sync_state.last_sync_at.store(synced_at, .seq_cst);
+    _ = runtime.sync_state.sync_count.fetchAdd(1, .seq_cst);
+    runtime.sync_state.clearError();
+    const timestamp = std.fmt.allocPrint(alloc, "{d}", .{synced_at}) catch null;
+    defer if (timestamp) |value| alloc.free(value);
+    if (timestamp) |value| runtime.db.storeConfig("last_sync_at", value) catch {};
+    runtime.db.storeConfig("last_sync_error", "") catch {};
+    runtime.db.storeConfig("last_sync_ok", "1") catch {};
+    std.log.info("preview sync complete workbook={s}", .{runtime.config.display_name});
 }
 
 fn maybeStartSync(
@@ -534,6 +636,7 @@ fn startActiveWorkers(
     runtime.sync_state.product_enabled.store(license_status.permits_use, .seq_cst);
     if (!license_status.permits_use) {
         std.log.warn("license check: {s} — product routes will be gated", .{@tagName(license_status.state)});
+        return;
     }
 
     const control = try alloc.create(sync_live.WorkerControl);

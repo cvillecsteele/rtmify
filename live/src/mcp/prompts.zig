@@ -13,7 +13,10 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
     const alloc = req_ctx.alloc;
     const body = if (std.mem.eql(u8, name, "trace_requirement")) blk: {
         const id = try tools.requireStringArg(args, "id");
-        break :blk try std.fmt.allocPrint(alloc, "Trace requirement {s} using RTMify. Read requirement://{s} and design-history://{s}. If needed, call commit_history with req_id={s} and code_traceability. Produce sections: Overview, Upstream Need, Verification, Risks, Code & Commits, Chain Gaps, and Open Questions. Keep the output concise and call out any missing links explicitly.", .{ id, id, id, id });
+        break :blk try std.fmt.allocPrint(alloc, "Trace requirement {s} using RTMify. Read requirement://{s} and design-history://{s}. Pay attention to Effective Text, Text Status, Authoritative Source, and Source Assertions. If needed, call commit_history with req_id={s} and code_traceability. Produce sections: Overview, Source Provenance, Upstream Need, Verification, Risks, Code & Commits, Chain Gaps, and Open Questions. Keep the output concise and call out any missing links explicitly.", .{ id, id, id, id });
+    } else if (std.mem.eql(u8, name, "trace_design_artifact")) blk: {
+        const artifact_id = try tools.requireStringArg(args, "artifact_id");
+        break :blk try std.fmt.allocPrint(alloc, "Inspect design artifact {s} using RTMify. Read {s} and artifacts://. Return sections: Artifact Overview, Extracted Assertions, Conflicts or Null Text, Impacted Requirements, and Recommended Next Checks. Answer directly whether this artifact has extraction conflicts before adding detail.", .{ artifact_id, artifact_id });
     } else if (std.mem.eql(u8, name, "trace_user_need")) blk: {
         const id = try tools.requireStringArg(args, "id");
         break :blk try std.fmt.allocPrint(alloc, "Trace user need {s} using RTMify. Read user-need://{s} and impact://{s}. If needed, call get_user_needs, chain_gaps, and get_rtm to confirm downstream requirement and verification coverage. Produce sections: Overview, Derived Requirements, Verification Coverage, Risks, Chain Gaps, and Open Questions. Answer directly which requirements hang off this user need before adding extra commentary.", .{ id, id, id });
@@ -58,7 +61,7 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
         });
     } else if (std.mem.eql(u8, name, "requirement_change_review")) blk: {
         const id = try tools.requireStringArg(args, "id");
-        break :blk try std.fmt.allocPrint(alloc, "Review fallout from a requirement change for {s}. Read requirement://{s}, design-history://{s}, and impact://{s}. Call get_verification_status with requirement_ref={s}; if the node is suspect or has recent test evidence, call chain_gaps and get_test_results as needed. Return sections: Change Summary, Impacted Items, Potentially Stale Verification, Open Gaps, and Recommended Next Checks. Answer directly what appears stale or newly suspect before adding detail.", .{ id, id, id, id, id });
+        break :blk try std.fmt.allocPrint(alloc, "Review fallout from a requirement change for {s}. Read requirement://{s}, design-history://{s}, and impact://{s}. Pay attention to source provenance and any source conflicts. Call get_verification_status with requirement_ref={s}; if the node is suspect or has recent test evidence, call chain_gaps and get_test_results as needed. Return sections: Change Summary, Source Provenance, Impacted Items, Potentially Stale Verification, Open Gaps, and Recommended Next Checks. Answer directly what appears stale or newly suspect before adding detail.", .{ id, id, id, id, id });
     } else if (std.mem.eql(u8, name, "impact_of_change")) blk: {
         const id = try tools.requireStringArg(args, "id");
         break :blk try std.fmt.allocPrint(alloc, "Analyze the downstream impact of changing node {s}. Read impact://{s}. If the node is a requirement, also read requirement://{s}. Return: Summary, Directly Impacted Items, Likely Verification Fallout, and Suggested Next Checks. Distinguish real traceability impact from missing-data uncertainty.", .{ id, id, id });
@@ -68,7 +71,7 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
         break :blk try std.fmt.allocPrint(alloc, "Explain RTMify gap {d} for node {s}. Read gap://{d}/{s} and node://{s}. Return sections: What RTMify Checked, Why This Gap Exists, What To Inspect Next, and Likely Resolution. State whether this looks like a real model gap or a data-entry / ingestion issue.", .{ code, node_id, code, node_id, node_id });
     } else if (std.mem.eql(u8, name, "audit_readiness_summary")) blk: {
         const profile = try tools.requireStringArg(args, "profile");
-        break :blk try std.fmt.allocPrint(alloc, "Summarize RTMify audit readiness for the {s} profile. Read report://status and report://chain-gaps. Call chain_gaps with profile={s} if you need detail. Return: Current State, Critical Gaps, Medium Gaps, Evidence Strength, and Top 3 Next Actions.", .{ profile, profile });
+        break :blk try std.fmt.allocPrint(alloc, "Summarize RTMify audit readiness for the {s} profile. Read report://status, report://chain-gaps, report://rtm, and report://review. If design artifacts exist, read artifacts:// for provenance/conflict context. Call chain_gaps with profile={s} if you need detail. Return: Current State, Critical Gaps, Source-Provenance Risks, Evidence Strength, and Top 3 Next Actions.", .{ profile, profile });
     } else if (std.mem.eql(u8, name, "repo_coverage_summary")) blk: {
         const repo_note = if (args) |a| internal.json_util.getString(a, "repo") else null;
         if (repo_note) |repo| {
@@ -77,7 +80,7 @@ pub fn promptGetResult(name: []const u8, args: ?std.json.Value, req_ctx: *const 
         break :blk try alloc.dupe(u8, "Summarize repository-backed traceability coverage across all configured repos. Call code_traceability, unimplemented_requirements, and untested_source_files. Return: Coverage Summary, Gaps, Notable Files, and Recommended Next Steps.");
     } else if (std.mem.eql(u8, name, "design_history_summary")) blk: {
         const req_id = try tools.requireStringArg(args, "req_id");
-        break :blk try std.fmt.allocPrint(alloc, "Summarize design history for requirement {s}. Read design-history://{s}. Return: Requirement, Upstream Need, Design Inputs/Outputs, Configuration Control, Verification, Commits, and Open Traceability Gaps.", .{ req_id, req_id });
+        break :blk try std.fmt.allocPrint(alloc, "Summarize design history for requirement {s}. Read design-history://{s} and requirement://{s}. Return: Requirement, Source Provenance, Upstream Need, Design Inputs/Outputs, Configuration Control, Verification, Commits, and Open Traceability Gaps.", .{ req_id, req_id, req_id });
     } else if (std.mem.eql(u8, name, "inspect_bom_item_traceability")) blk: {
         const item_id = try bomItemSelectorArg(args, alloc);
         defer alloc.free(item_id);

@@ -4,8 +4,9 @@ pub const resources_json =
     \\[
     \\{"uri":"report://status","name":"Live Status","description":"Current sync and connection status.","mimeType":"text/markdown"},
     \\{"uri":"report://chain-gaps","name":"Chain Gap Summary","description":"Summary of current profile-specific traceability gaps.","mimeType":"text/markdown"},
-    \\{"uri":"report://rtm","name":"RTM Summary","description":"Summary of requirements traceability matrix coverage.","mimeType":"text/markdown"},
-    \\{"uri":"requirements://","name":"Requirements","description":"Requirement inventory with implementation and verification gap summary. Exact requirement://<id> resources are available for all requirement nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
+    \\{"uri":"report://rtm","name":"RTM Summary","description":"Summary of requirements traceability matrix coverage, including source-conflict counts.","mimeType":"text/markdown"},
+    \\{"uri":"requirements://","name":"Requirements","description":"Requirement inventory with implementation, verification, and source-provenance summary. Exact requirement://<id> resources are available for all requirement nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
+    \\{"uri":"artifacts://","name":"Design Artifacts","description":"Design artifact inventory with source provenance and requirement-text conflict counts. Exact artifact://<artifact_id> resources are available for all artifact nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
     \\{"uri":"user-needs://","name":"User Needs","description":"User need inventory with downstream requirement coverage. Exact user-need://<id> resources are available for all user needs even though the catalog lists only a small sample.","mimeType":"text/markdown"},
     \\{"uri":"tests://","name":"Tests","description":"Test and test group inventory with linked requirement coverage. Exact test://<id> and test-group://<id> resources are available for matching nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
     \\{"uri":"risks://","name":"Risks","description":"Risk inventory with linked requirements and mitigation status. Exact risk://<id> resources are available for all risk nodes even though the catalog lists only a small sample.","mimeType":"text/markdown"},
@@ -16,13 +17,14 @@ pub const resources_json =
     \\{"uri":"mcp-tools://","name":"MCP Tools","description":"Resource-readable catalog of callable MCP tools exposed by this server.","mimeType":"text/markdown"},
     \\{"uri":"mcp-prompts://","name":"MCP Prompts","description":"Resource-readable catalog of MCP prompts exposed by this server.","mimeType":"text/markdown"},
     \\{"uri":"report://code-traceability","name":"Code Traceability Summary","description":"Summary of source and test file traceability.","mimeType":"text/markdown"},
-    \\{"uri":"report://review","name":"Review Summary","description":"Summary of suspect items requiring review.","mimeType":"text/markdown"}
+    \\{"uri":"report://review","name":"Review Summary","description":"Summary of suspect items and requirement source conflicts requiring review.","mimeType":"text/markdown"}
     \\]
 ;
 
 pub const prompts_json =
     \\[
-    \\{"name":"trace_requirement","description":"Trace one requirement through tests, risks, code, commits, and gaps.","arguments":[{"name":"id","description":"Requirement ID (e.g. REQ-001)","required":true}]},
+    \\{"name":"trace_requirement","description":"Trace one requirement through source assertions, tests, risks, code, commits, and gaps.","arguments":[{"name":"id","description":"Requirement ID (e.g. REQ-001)","required":true}]},
+    \\{"name":"trace_design_artifact","description":"Inspect one design artifact's extracted requirement assertions, conflicts, and null-text rows.","arguments":[{"name":"artifact_id","description":"Artifact ID (e.g. artifact://srs_docx/core)","required":true}]},
     \\{"name":"trace_user_need","description":"Trace one user need to its downstream requirements, verification, risks, and gaps.","arguments":[{"name":"id","description":"User Need ID (e.g. UN-001)","required":true}]},
     \\{"name":"trace_test","description":"Trace one test or test group to linked requirements, latest results, and open coverage concerns.","arguments":[{"name":"id","description":"Test ID or Test Group ID (e.g. TC-ATP-004 or TG-ECG)","required":true}]},
     \\{"name":"trace_risk","description":"Trace one risk to linked requirements, mitigations, verification evidence, and open exposure.","arguments":[{"name":"id","description":"Risk ID (e.g. RSK-010)","required":true}]},
@@ -53,6 +55,9 @@ pub const tools_json =
     \\{"name":"list_workbooks","description":"List configured non-removed workbooks in this Live server.","inputSchema":{"type":"object","properties":{},"required":[]},"outputSchema":{"type":"object"}},
     \\{"name":"get_active_workbook","description":"Get the currently active workbook.","inputSchema":{"type":"object","properties":{},"required":[]},"outputSchema":{"type":"object"}},
     \\{"name":"switch_workbook","description":"Switch the active workbook by id or display name.","inputSchema":{"oneOf":[{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]},{"type":"object","properties":{"display_name":{"type":"string"}},"required":["display_name"]}]},"outputSchema":{"type":"object"}},
+    \\{"name":"list_design_artifacts","description":"List design artifacts and their requirement/conflict counts for the active workbook.","inputSchema":{"type":"object","properties":{},"required":[]},"outputSchema":{"type":"array"}},
+    \\{"name":"get_design_artifact","description":"Get one design artifact with extracted requirement assertions, parse status, and source metadata.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"}},"required":["artifact_id"]},"outputSchema":{"type":"object"}},
+    \\{"name":"reingest_design_artifact","description":"Re-run ingest for one previously stored design artifact.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"}},"required":["artifact_id"]},"outputSchema":{"type":"object"}},
     \\{"name":"get_rtm","description":"Get the Requirements Traceability Matrix. Optional limit/offset and suspect-only filtering.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"},"suspect_only":{"type":"boolean"}},"required":[]},"outputSchema":{"type":"array"}},
     \\{"name":"get_gaps","description":"Get requirements with no test linked. Optional limit and offset.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]},"outputSchema":{"type":"array"}},
     \\{"name":"get_suspects","description":"Get all suspect nodes. Optional limit and offset.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer"},"offset":{"type":"integer"}},"required":[]},"outputSchema":{"type":"array"}},

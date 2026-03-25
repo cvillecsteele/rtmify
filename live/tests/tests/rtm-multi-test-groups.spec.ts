@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
-import { insertEdge, insertNode, seedConfiguredGraph } from '../helpers/db-seed';
+import { insertEdge, insertNode, insertRequirementAssertion, seedConfiguredGraph } from '../helpers/db-seed';
+import { gotoWorkspace } from '../helpers/workspace';
 
 function makeDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtmify-live-db-'));
@@ -15,8 +16,17 @@ test('tests tab renders shared test groups against multiple linked requirements'
   const dbPath = makeDbPath();
   seedConfiguredGraph(dbPath, { requirementId: 'REQ-001', userNeedId: 'UN-001' });
   insertNode(dbPath, 'REQ-002', 'Requirement', {
-    statement: 'The system SHALL record an audit trail.',
     status: 'Approved',
+    text_status: 'single_source',
+    authoritative_source: 'artifact://rtm/fake-sheet',
+    source_count: 1,
+  });
+  insertRequirementAssertion(dbPath, {
+    requirementId: 'REQ-002',
+    text: 'The system SHALL record an audit trail.',
+    artifactKind: 'rtm_workbook',
+    logicalKey: 'fake-sheet',
+    displayName: 'fake-sheet',
   });
   insertNode(dbPath, 'TG-001', 'TestGroup', {});
   insertNode(dbPath, 'TG-002', 'TestGroup', {});
@@ -40,7 +50,7 @@ test('tests tab renders shared test groups against multiple linked requirements'
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
 
     const reqRows = page.locator('#req-body tr').filter({ hasText: 'REQ-001' });
     await expect(reqRows).toHaveCount(1);

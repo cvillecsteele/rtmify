@@ -6,6 +6,7 @@ import { seedConfiguredGraph } from '../helpers/db-seed';
 import { RepoFixture } from '../helpers/git-fixture';
 import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
+import { gotoWorkspace } from '../helpers/workspace';
 
 function makeDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtmify-live-db-'));
@@ -24,7 +25,7 @@ test('adding repo path shows it in Repo Status immediately', async ({ page }) =>
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await page.locator('#repo-path-input').fill(repo.path);
     await page.getByRole('button', { name: /^Add Repo$/ }).click();
@@ -45,7 +46,7 @@ test('invalid repo path shows dashboard validation error', async ({ page }) => {
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await page.locator('#repo-path-input').fill(missingPath);
     await page.getByRole('button', { name: /^Add Repo$/ }).click();
@@ -67,7 +68,7 @@ test('non-git directory shows dashboard validation error', async ({ page }) => {
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await page.locator('#repo-path-input').fill(plainDir);
     await page.getByRole('button', { name: /^Add Repo$/ }).click();
@@ -92,7 +93,7 @@ test('source annotations appear in Code tab for repo-backed requirement evidence
   const server = await startServer({ dbPath, port, repoPath: repo.path });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await expect(page.locator('#repos-list')).toContainText(repo.path);
     await expect(page.locator('#code-body')).toContainText('src/foo.c', { timeout: 15000 });
@@ -123,7 +124,7 @@ test('test-file annotations appear separately and historical deleted files stay 
   const server = await startServer({ dbPath, port, repoPath: repo.path });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await expect(page.locator('#code-body')).toContainText('tests/foo_test.c', { timeout: 15000 });
     await expect(page.locator('#code-body')).toContainText('TestFile');
@@ -148,7 +149,7 @@ test('deleting first repo preserves later repo entry', async ({ page }) => {
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
 
     await page.locator('#repo-path-input').fill(repo1.path);
@@ -181,7 +182,7 @@ test('repo added in dashboard persists across server restart and is rescanned', 
   let server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await page.locator('#repo-path-input').fill(repo.path);
     await page.getByRole('button', { name: /^Add Repo$/ }).click();
@@ -190,7 +191,7 @@ test('repo added in dashboard persists across server restart and is rescanned', 
     await server.stop();
     server = await startServer({ dbPath, port });
 
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await expect(page.locator('#repos-list')).toContainText(repo.path);
     await expect(page.locator('#code-body')).toContainText('src/foo.c', { timeout: 15000 });
@@ -214,7 +215,7 @@ test('multiple repos can be configured and both appear in Repo Status', async ({
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
 
     await page.locator('#repo-path-input').fill(repo1.path);

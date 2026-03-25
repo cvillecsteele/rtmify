@@ -314,7 +314,11 @@ test "handleNode returns node wrapper plus edge arrays" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
 
-    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Example\"}", null);
+    try db.addNode("artifact://rtm/demo", "Artifact", "{\"kind\":\"rtm_workbook\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("artifact://rtm/demo:REQ-001", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-001\",\"text\":\"Example\",\"normalized_text\":\"example\",\"hash\":\"abc\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try db.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://rtm/demo:REQ-001", "REQ-001", "ASSERTS");
     try db.addNode("TEST-001", "Test", "{\"result\":\"PASS\"}", null);
     try db.addEdge("REQ-001", "TEST-001", "TESTED_BY");
 
@@ -333,7 +337,11 @@ test "handleNode matches dashboard contract structurally" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
 
-    try db.addNode("REQ-001", "Requirement", "{\"statement\":\"Example\"}", null);
+    try db.addNode("artifact://rtm/demo", "Artifact", "{\"kind\":\"rtm_workbook\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("artifact://rtm/demo:REQ-001", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-001\",\"section\":\"Requirements\",\"text\":\"Example\",\"normalized_text\":\"example\",\"hash\":\"abc\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try db.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://rtm/demo:REQ-001", "REQ-001", "ASSERTS");
     try db.addNode("TEST-001", "Test", "{\"result\":\"PASS\"}", null);
     try db.addEdge("REQ-001", "TEST-001", "TESTED_BY");
     {
@@ -361,11 +369,12 @@ test "handleNode matches dashboard contract structurally" {
     const edges_out = root.get("edges_out").?.array.items;
     const edges_in = root.get("edges_in").?.array.items;
     try testing.expectEqual(@as(usize, 1), edges_out.len);
-    try testing.expectEqual(@as(usize, 0), edges_in.len);
+    try testing.expectEqual(@as(usize, 1), edges_in.len);
     try testing.expectEqualStrings("TESTED_BY", edges_out[0].object.get("label").?.string);
     try testing.expect(edges_out[0].object.get("node") != null);
     try testing.expectEqualStrings("TEST-001", edges_out[0].object.get("node").?.object.get("id").?.string);
     try testing.expectEqualStrings("Test", edges_out[0].object.get("node").?.object.get("type").?.string);
+    try testing.expectEqualStrings("ASSERTS", edges_in[0].object.get("label").?.string);
 }
 
 test "handleNode missing node returns not found" {

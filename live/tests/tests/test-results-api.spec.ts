@@ -5,6 +5,7 @@ import path from 'node:path';
 import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
 import { seedConfiguredGraph } from '../helpers/db-seed';
+import { gotoWorkspace } from '../helpers/workspace';
 
 function makeDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtmify-live-test-results-api-'));
@@ -18,9 +19,9 @@ test('MCP & AI tab shows the test-results endpoint and token can be regenerated'
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
 
-    await page.getByRole('button', { name: /^Guide$/ }).click();
+    await page.getByRole('button', { name: /^Guide/ }).click();
     await page.getByRole('button', { name: 'MCP & AI' }).click();
 
     await expect(page.locator('#test-results-endpoint')).toContainText('/api/v1/test-results');

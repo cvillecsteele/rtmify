@@ -6,6 +6,7 @@ import { seedConfiguredGraph } from '../helpers/db-seed';
 import { RepoFixture } from '../helpers/git-fixture';
 import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
+import { gotoWorkspace } from '../helpers/workspace';
 
 function makeDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtmify-live-db-'));
@@ -22,7 +23,7 @@ test('requirement detail renders upstream user needs separately from downstream 
   const server = await startServer({ dbPath, port, repoPath: repo.path });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await expect(page.locator('#req-body')).toContainText('REQ-001', { timeout: 15000 });
     await page.locator('#req-body tr').first().locator('.expand-btn').click();
     await expect(page.locator('.detail-row')).toContainText('src/foo.c', { timeout: 15000 });

@@ -566,11 +566,16 @@ pub fn handleGetProfile(registry: *workbook.registry.WorkbookRegistry, alloc: Al
 }
 
 pub fn handlePostProfile(registry: *workbook.registry.WorkbookRegistry, body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handlePostProfileResponse(registry, body, alloc);
+    const resp = try handlePostProfileResponse(registry, body, alloc, alloc);
     return resp.body;
 }
 
-pub fn handlePostProfileResponse(registry: *workbook.registry.WorkbookRegistry, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+pub fn handlePostProfileResponse(
+    registry: *workbook.registry.WorkbookRegistry,
+    body: []const u8,
+    alloc: Allocator,
+    persistent_alloc: Allocator,
+) !shared.JsonRouteResponse {
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid JSON\"}"), false);
     defer parsed.deinit();
@@ -580,14 +585,14 @@ pub fn handlePostProfileResponse(registry: *workbook.registry.WorkbookRegistry, 
     if (profile_mod.fromString(name) == null) {
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"unknown profile\"}"), false);
     }
-    try workbook.config.setActiveProfile(&registry.live_config, name, alloc);
+    try workbook.config.setActiveProfile(&registry.live_config, name, persistent_alloc);
     {
         const runtime = try registry.active();
-        runtime.config.deinit(alloc);
-        runtime.config = try (try registry.activeConfig()).clone(alloc);
+        runtime.config.deinit(persistent_alloc);
+        runtime.config = try (try registry.activeConfig()).clone(persistent_alloc);
         runtime.db.deleteConfig("rtmify_provisioned") catch {};
     }
-    try registry.save(alloc);
+    try registry.save(persistent_alloc);
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 
@@ -620,12 +625,18 @@ pub fn handleGetRepos(registry: *workbook.registry.WorkbookRegistry, db: *graph_
     return alloc.dupe(u8, buf.items);
 }
 
-pub fn handlePostRepo(registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handlePostRepoResponse(registry, db, body, alloc);
+pub fn handlePostRepo(registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, body: []const u8, alloc: Allocator, persist_alloc: Allocator) ![]const u8 {
+    const resp = try handlePostRepoResponse(registry, db, body, alloc, persist_alloc);
     return resp.body;
 }
 
-pub fn handlePostRepoResponse(registry: *workbook.registry.WorkbookRegistry, db: *graph_live.GraphDb, body: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+pub fn handlePostRepoResponse(
+    registry: *workbook.registry.WorkbookRegistry,
+    db: *graph_live.GraphDb,
+    body: []const u8,
+    alloc: Allocator,
+    persist_alloc: Allocator,
+) !shared.JsonRouteResponse {
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch
         return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid JSON\"}"), false);
     defer parsed.deinit();
@@ -695,35 +706,42 @@ pub fn handlePostRepoResponse(registry: *workbook.registry.WorkbookRegistry, db:
     if (cfg.repo_paths.len >= 64) {
         return shared.jsonRouteResponse(.conflict, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"too many repos\"}"), false);
     }
-    try workbook.config.addActiveRepoPath(&registry.live_config, path, alloc);
+    try workbook.config.addActiveRepoPath(&registry.live_config, path, persist_alloc);
     {
         const runtime = try registry.active();
-        runtime.config.deinit(alloc);
-        runtime.config = try (try registry.activeConfig()).clone(alloc);
+        runtime.config.deinit(persist_alloc);
+        runtime.config = try (try registry.activeConfig()).clone(persist_alloc);
     }
-    try registry.save(alloc);
+    try registry.syncActiveWorkbookIdFromRuntime(persist_alloc);
+    try registry.save(persist_alloc);
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 
-pub fn handleDeleteRepo(registry: *workbook.registry.WorkbookRegistry, idx_str: []const u8, alloc: Allocator) ![]const u8 {
-    const resp = try handleDeleteRepoResponse(registry, idx_str, alloc);
+pub fn handleDeleteRepo(registry: *workbook.registry.WorkbookRegistry, idx_str: []const u8, alloc: Allocator, persist_alloc: Allocator) ![]const u8 {
+    const resp = try handleDeleteRepoResponse(registry, idx_str, alloc, persist_alloc);
     return resp.body;
 }
 
-pub fn handleDeleteRepoResponse(registry: *workbook.registry.WorkbookRegistry, idx_str: []const u8, alloc: Allocator) !shared.JsonRouteResponse {
+pub fn handleDeleteRepoResponse(
+    registry: *workbook.registry.WorkbookRegistry,
+    idx_str: []const u8,
+    alloc: Allocator,
+    persist_alloc: Allocator,
+) !shared.JsonRouteResponse {
     const idx = std.fmt.parseInt(usize, idx_str, 10) catch {
         return shared.jsonRouteResponse(.not_found, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"repo not found\",\"slot\":{s}}}", .{idx_str}), false);
     };
-    const removed = try workbook.config.deleteActiveRepoAt(&registry.live_config, idx, alloc);
+    const removed = try workbook.config.deleteActiveRepoAt(&registry.live_config, idx, persist_alloc);
     if (!removed) {
         return shared.jsonRouteResponse(.not_found, try std.fmt.allocPrint(alloc, "{{\"ok\":false,\"error\":\"repo not found\",\"slot\":{s}}}", .{idx_str}), false);
     }
     {
         const runtime = try registry.active();
-        runtime.config.deinit(alloc);
-        runtime.config = try (try registry.activeConfig()).clone(alloc);
+        runtime.config.deinit(persist_alloc);
+        runtime.config = try (try registry.activeConfig()).clone(persist_alloc);
     }
-    try registry.save(alloc);
+    try registry.syncActiveWorkbookIdFromRuntime(persist_alloc);
+    try registry.save(persist_alloc);
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 

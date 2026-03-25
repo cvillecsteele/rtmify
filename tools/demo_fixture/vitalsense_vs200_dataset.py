@@ -82,7 +82,7 @@ USER_NEEDS: list[dict[str, str]] = [
 ]
 
 
-REQUIREMENTS: list[dict[str, Any]] = [
+_REQUIREMENTS_WITH_TEXT: list[dict[str, Any]] = [
     {
         "id": "REQ-001",
         "statement": "The system shall measure SpO2 in the range 70-100% with accuracy +/-2% (Arms)",
@@ -367,6 +367,140 @@ REQUIREMENTS: list[dict[str, Any]] = [
         "risk_ids": ["RSK-009"],
     },
 ]
+
+
+REQUIREMENT_TEXTS: dict[str, str] = {item["id"]: item["statement"] for item in _REQUIREMENTS_WITH_TEXT}
+PREVIOUS_RTM_TEXTS: dict[str, str] = {
+    item["id"]: item["previous_statement"]
+    for item in _REQUIREMENTS_WITH_TEXT
+    if "previous_statement" in item
+}
+
+REQUIREMENTS: list[dict[str, Any]] = [
+    {
+        key: value
+        for key, value in item.items()
+        if key not in {"statement", "previous_statement"}
+    }
+    for item in _REQUIREMENTS_WITH_TEXT
+]
+
+RTM_ARTIFACT_LOGICAL_KEY = "vitalsense-vs200-demo"
+RTM_ARTIFACT_ID = f"artifact://rtm/{RTM_ARTIFACT_LOGICAL_KEY}"
+RTM_ARTIFACT_DISPLAY_NAME = "VitalSense VS-200 RTM Workbook"
+RTM_ARTIFACT_PATH_HINT = "workbook://vitalsense-vs200-demo"
+
+SRS_ARTIFACT_LOGICAL_KEY = "vitalsense-vs200-srs"
+SRS_ARTIFACT_ID = f"artifact://srs_docx/{SRS_ARTIFACT_LOGICAL_KEY}"
+SRS_ARTIFACT_DISPLAY_NAME = "VitalSense VS-200 Software Requirements Specification"
+
+SYSRD_ARTIFACT_LOGICAL_KEY = "vitalsense-vs200-sysrd"
+SYSRD_ARTIFACT_ID = f"artifact://sysrd_docx/{SYSRD_ARTIFACT_LOGICAL_KEY}"
+SYSRD_ARTIFACT_DISPLAY_NAME = "VitalSense VS-200 System Requirements Document"
+
+ARTIFACT_INGESTED_AT = "2026-03-18T12:00:00Z"
+
+ARTIFACTS: list[dict[str, str]] = [
+    {
+        "id": RTM_ARTIFACT_ID,
+        "kind": "rtm_workbook",
+        "logical_key": RTM_ARTIFACT_LOGICAL_KEY,
+        "display_name": RTM_ARTIFACT_DISPLAY_NAME,
+        "ingest_source": "fixture_rtm_seed",
+        "last_ingested_at": ARTIFACT_INGESTED_AT,
+    },
+    {
+        "id": SRS_ARTIFACT_ID,
+        "kind": "srs_docx",
+        "logical_key": SRS_ARTIFACT_LOGICAL_KEY,
+        "display_name": SRS_ARTIFACT_DISPLAY_NAME,
+        "ingest_source": "fixture_generated_docx",
+        "last_ingested_at": ARTIFACT_INGESTED_AT,
+    },
+    {
+        "id": SYSRD_ARTIFACT_ID,
+        "kind": "sysrd_docx",
+        "logical_key": SYSRD_ARTIFACT_LOGICAL_KEY,
+        "display_name": SYSRD_ARTIFACT_DISPLAY_NAME,
+        "ingest_source": "fixture_generated_docx",
+        "last_ingested_at": ARTIFACT_INGESTED_AT,
+    },
+]
+
+
+def _make_assertions(
+    artifact_id: str,
+    source_kind: str,
+    req_ids: list[str],
+    *,
+    section: str,
+    text_overrides: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    overrides = text_overrides or {}
+    return [
+        {
+            "req_id": req_id,
+            "artifact_id": artifact_id,
+            "source_kind": source_kind,
+            "section": section,
+            "text": overrides.get(req_id, REQUIREMENT_TEXTS[req_id]),
+            "parse_status": "ok",
+            "occurrence_count": 1,
+        }
+        for req_id in req_ids
+    ]
+
+
+RTM_ASSERTION_REQ_IDS = [f"REQ-00{i}" for i in range(1, 8)] + [f"SRS-0{i:02d}" for i in range(1, 16)]
+SRS_ASSERTION_REQ_IDS = [f"SRS-0{i:02d}" for i in range(1, 18)]
+SYSRD_ASSERTION_REQ_IDS = [f"REQ-00{i}" for i in range(1, 8)]
+
+REQUIREMENT_TEXT_ASSERTIONS: dict[str, list[dict[str, Any]]] = {
+    RTM_ARTIFACT_ID: _make_assertions(
+        RTM_ARTIFACT_ID,
+        "rtm_workbook",
+        RTM_ASSERTION_REQ_IDS,
+        section="Requirements",
+    ),
+    SRS_ARTIFACT_ID: _make_assertions(
+        SRS_ARTIFACT_ID,
+        "srs_docx",
+        SRS_ASSERTION_REQ_IDS,
+        section="paragraph",
+        text_overrides={"SRS-015": PREVIOUS_RTM_TEXTS["SRS-015"]},
+    ),
+    SYSRD_ARTIFACT_ID: _make_assertions(
+        SYSRD_ARTIFACT_ID,
+        "sysrd_docx",
+        SYSRD_ASSERTION_REQ_IDS,
+        section="table",
+    ),
+}
+
+
+def artifact_assertions_for(artifact_id: str) -> list[dict[str, Any]]:
+    return REQUIREMENT_TEXT_ASSERTIONS[artifact_id]
+
+
+def requirement_text_node_id(artifact_id: str, req_id: str) -> str:
+    for assertion in REQUIREMENT_TEXT_ASSERTIONS[artifact_id]:
+        if assertion["req_id"] == req_id:
+            return f"{artifact_id}:{req_id}"
+    raise KeyError(f"no assertion for {req_id} under {artifact_id}")
+
+
+SRS_DOC_PARAGRAPHS: list[str] = [
+    f"{assertion['req_id']} - {assertion['text']}"
+    for assertion in REQUIREMENT_TEXT_ASSERTIONS[SRS_ARTIFACT_ID]
+]
+SYSRD_DOC_ROWS: list[tuple[str, str]] = [
+    (assertion["req_id"], assertion["text"])
+    for assertion in REQUIREMENT_TEXT_ASSERTIONS[SYSRD_ARTIFACT_ID]
+]
+
+EXPECTED_CONFLICT_REQUIREMENTS = ["SRS-015"]
+EXPECTED_SINGLE_SOURCE_REQUIREMENTS = ["SRS-016", "SRS-017"]
+EXPECTED_MISSING_RTM_REQUIREMENTS = ["SRS-016", "SRS-017"]
 
 
 TEST_GROUPS: list[dict[str, str]] = [
@@ -704,6 +838,11 @@ DEMO_DIAGNOSTICS: list[dict[str, Any]] = [
     {"dedupe_key": "demo:req:srs-016:no-implementation-evidence", "code": 9007, "severity": "warn", "title": "Requirement missing implementation evidence", "message": "SRS-016 has no IMPLEMENTED_IN source evidence.", "source": "fixture", "subject": "SRS-016"},
     {"dedupe_key": "demo:req:srs-017:no-implementation-evidence", "code": 9008, "severity": "warn", "title": "Requirement missing implementation evidence", "message": "SRS-017 has no IMPLEMENTED_IN source evidence.", "source": "fixture", "subject": "SRS-017"},
     {"dedupe_key": "demo:unit:1246:atp-failure", "code": 9009, "severity": "err", "title": "Production ATP failure", "message": "UNIT-1246 failed TC-ATP-004 because alarm latency exceeded the 10s requirement window.", "source": "fixture", "subject": "execution://ate-vs200-revc-unit1246-20260317T08:44:00Z"},
+    {"dedupe_key": "demo:req:srs-015:text-mismatch", "code": 9010, "severity": "warn", "title": "Requirement text mismatch", "message": "SRS-015 differs between the RTM workbook and SRS design artifact. RTM remains authoritative.", "source": "fixture", "subject": "SRS-015"},
+    {"dedupe_key": "demo:req:srs-016:single-source", "code": 9011, "severity": "info", "title": "Requirement asserted by one source only", "message": "SRS-016 is present only in the SRS artifact, with no corroborating RTM assertion.", "source": "fixture", "subject": "SRS-016"},
+    {"dedupe_key": "demo:req:srs-017:single-source", "code": 9012, "severity": "info", "title": "Requirement asserted by one source only", "message": "SRS-017 is present only in the SRS artifact, with no corroborating RTM assertion.", "source": "fixture", "subject": "SRS-017"},
+    {"dedupe_key": "demo:req:srs-016:missing-rtm", "code": 9013, "severity": "warn", "title": "Requirement missing RTM assertion", "message": "SRS-016 has no RTM workbook assertion even though it exists in the SRS artifact.", "source": "fixture", "subject": "SRS-016"},
+    {"dedupe_key": "demo:req:srs-017:missing-rtm", "code": 9014, "severity": "warn", "title": "Requirement missing RTM assertion", "message": "SRS-017 has no RTM workbook assertion even though it exists in the SRS artifact.", "source": "fixture", "subject": "SRS-017"},
 ]
 
 
@@ -711,6 +850,8 @@ EXPECTED_DEMO_MOMENTS = {
     "untested_requirements": ["SRS-016", "SRS-017"],
     "unimplemented_requirements": ["SRS-016", "SRS-017"],
     "stale_requirement": "SRS-015",
+    "conflicting_requirement": "SRS-015",
+    "missing_rtm_requirements": ["SRS-016", "SRS-017"],
     "failed_unit": "UNIT-1246",
     "open_risk": "RSK-010",
     "eol_part": "BSS138LT1G",

@@ -155,13 +155,10 @@ pub fn collectNodesViaOutgoingEdge(
     try st.bindText(2, edge_label);
     try st.bindText(3, node_type);
     while (try st.step()) {
-        try addUniqueNode(result, .{
-            .id = try alloc.dupe(u8, st.columnText(0)),
-            .type = try alloc.dupe(u8, st.columnText(1)),
-            .properties = try alloc.dupe(u8, st.columnText(2)),
-            .suspect = st.columnInt(3) != 0,
-            .suspect_reason = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
-        }, alloc);
+        const node_id = st.columnText(0);
+        if (try db.getNode(node_id, alloc)) |node| {
+            try addUniqueNode(result, node, alloc);
+        }
     }
 }
 
@@ -184,13 +181,10 @@ pub fn collectNodesViaIncomingEdge(
     try st.bindText(2, edge_label);
     try st.bindText(3, node_type);
     while (try st.step()) {
-        try addUniqueNode(result, .{
-            .id = try alloc.dupe(u8, st.columnText(0)),
-            .type = try alloc.dupe(u8, st.columnText(1)),
-            .properties = try alloc.dupe(u8, st.columnText(2)),
-            .suspect = st.columnInt(3) != 0,
-            .suspect_reason = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
-        }, alloc);
+        const node_id = st.columnText(0);
+        if (try db.getNode(node_id, alloc)) |node| {
+            try addUniqueNode(result, node, alloc);
+        }
     }
 }
 

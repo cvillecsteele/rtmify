@@ -3,6 +3,7 @@ const internal = @import("internal.zig");
 const protocol = @import("protocol.zig");
 const workbooks = @import("workbooks.zig");
 const markdown = @import("markdown.zig");
+const design_artifacts = @import("../design_artifacts.zig");
 
 pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.Allocator) ![]u8 {
     var arena_state = std.heap.ArenaAllocator.init(alloc);
@@ -47,15 +48,16 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
         }
     }
 
-    const rtm_json = internal.routes.handleRtm(db, arena) catch null;
-    if (rtm_json) |rjson| {
+    const requirements_json = internal.routes.handleNodes(db, "Requirement", arena) catch null;
+    if (requirements_json) |rjson| {
         var parsed = try std.json.parseFromSlice(std.json.Value, arena, rjson, .{});
         defer parsed.deinit();
         if (parsed.value == .array and parsed.value.array.items.len > 0) {
             _ = buf.pop();
             for (parsed.value.array.items, 0..) |item, idx| {
                 if (idx >= 5) break;
-                const req_id = internal.json_util.getString(item, "req_id") orelse continue;
+                const req_id = internal.json_util.getString(item, "id") orelse continue;
+                const props = internal.json_util.getObjectField(item, "properties");
                 try buf.append(alloc, ',');
                 try buf.appendSlice(alloc, "{\"uri\":");
                 const req_uri = try std.fmt.allocPrint(arena, "requirement://{s}", .{req_id});
@@ -63,7 +65,7 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
                 try buf.appendSlice(alloc, ",\"name\":");
                 try internal.json_util.appendJsonQuoted(&buf, req_id, alloc);
                 try buf.appendSlice(alloc, ",\"description\":");
-                try internal.json_util.appendJsonQuoted(&buf, internal.json_util.getString(item, "statement") orelse "Requirement trace record. This is a sampled entry; exact requirement://<id> works for all requirements.", alloc);
+                try internal.json_util.appendJsonQuoted(&buf, if (props) |p| internal.json_util.getString(p, "statement") orelse "Requirement trace record. This is a sampled entry; exact requirement://<id> works for all requirements." else "Requirement trace record. This is a sampled entry; exact requirement://<id> works for all requirements.", alloc);
                 try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
             }
             try buf.append(alloc, ']');
@@ -87,6 +89,30 @@ pub fn resourcesListResult(db: *internal.graph_live.GraphDb, alloc: internal.All
                 try internal.json_util.appendJsonQuoted(&buf, user_need_id, alloc);
                 try buf.appendSlice(alloc, ",\"description\":");
                 try internal.json_util.appendJsonQuoted(&buf, internal.json_util.getString(item, "statement") orelse "User need trace record. This is a sampled entry; exact user-need://<id> works for all user needs.", alloc);
+                try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
+            }
+            try buf.append(alloc, ']');
+        }
+    }
+
+    const artifacts_json = design_artifacts.listArtifactsJson(db, arena) catch null;
+    if (artifacts_json) |ajson| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, arena, ajson, .{});
+        defer parsed.deinit();
+        if (parsed.value == .array and parsed.value.array.items.len > 0) {
+            _ = buf.pop();
+            for (parsed.value.array.items, 0..) |item, idx| {
+                if (idx >= 5) break;
+                const artifact_id = internal.json_util.getString(item, "artifact_id") orelse continue;
+                const display_name = internal.json_util.getString(item, "display_name") orelse artifact_id;
+                try buf.append(alloc, ',');
+                try buf.appendSlice(alloc, "{\"uri\":");
+                const artifact_uri = try std.fmt.allocPrint(arena, "artifact://{s}", .{artifact_id});
+                try internal.json_util.appendJsonQuoted(&buf, artifact_uri, alloc);
+                try buf.appendSlice(alloc, ",\"name\":");
+                try internal.json_util.appendJsonQuoted(&buf, display_name, alloc);
+                try buf.appendSlice(alloc, ",\"description\":");
+                try internal.json_util.appendJsonQuoted(&buf, "Design artifact detail. This is a sampled entry; exact artifact://<artifact_id> works for all design artifacts.", alloc);
                 try buf.appendSlice(alloc, ",\"mimeType\":\"text/markdown\"}");
             }
             try buf.append(alloc, ']');
@@ -418,6 +444,8 @@ pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestConte
     const alloc = req_ctx.alloc;
     const text = if (std.mem.startsWith(u8, uri, "design-bom://"))
         try designBomMarkdown(uri["design-bom://".len..], runtime_ctx.db, alloc)
+    else if (std.mem.eql(u8, uri, "artifacts://"))
+        try markdown.artifactsIndexMarkdown(runtime_ctx.db, alloc)
     else if (std.mem.eql(u8, uri, "requirements://"))
         try markdown.requirementsIndexMarkdown(runtime_ctx.db, alloc)
     else if (std.mem.eql(u8, uri, "user-needs://"))
@@ -460,6 +488,8 @@ pub fn resourceReadResult(uri: []const u8, req_ctx: *const internal.RequestConte
         try bomItemTraceMarkdown(uri, runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "requirement://"))
         try markdown.requirementTraceMarkdown(uri[14..], runtime_ctx.db, runtime_ctx.profile_name, alloc)
+    else if (std.mem.startsWith(u8, uri, "artifact://"))
+        try markdown.artifactMarkdown(uri["artifact://".len..], runtime_ctx.db, alloc)
     else if (std.mem.startsWith(u8, uri, "user-need://"))
         try markdown.userNeedMarkdown(uri[12..], runtime_ctx.db, runtime_ctx.profile_name, alloc)
     else if (std.mem.startsWith(u8, uri, "risk://"))

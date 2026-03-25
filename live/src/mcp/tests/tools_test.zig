@@ -60,6 +60,42 @@ test "get_node honors include_edges and include_properties flags" {
     try testing.expect(internal.json_util.getObjectField(internal.json_util.getObjectField(parsed_no_props.value, "node").?, "properties") == null);
 }
 
+test "design artifact tools expose artifact inventory and detail" {
+    var db = try internal.graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("artifact://srs_docx/core", "Artifact", "{\"kind\":\"srs_docx\",\"display_name\":\"Core SRS\",\"path\":\"/tmp/core.docx\",\"logical_key\":\"core\",\"last_ingested_at\":\"123\",\"ingest_source\":\"test\"}", null);
+    try db.addNode("REQ-001", "Requirement", "{\"text_status\":\"single_source\"}", null);
+    try db.addNode("artifact://srs_docx/core:REQ-001", "RequirementText", "{\"req_id\":\"REQ-001\",\"artifact_id\":\"artifact://srs_docx/core\",\"source_kind\":\"srs_docx\",\"section\":\"4.1\",\"text\":\"Example text\",\"normalized_text\":\"example text\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try db.addEdge("artifact://srs_docx/core", "artifact://srs_docx/core:REQ-001", "CONTAINS");
+    try db.addEdge("artifact://srs_docx/core:REQ-001", "REQ-001", "ASSERTS");
+
+    var state: internal.sync_live.SyncState = .{};
+    var store = try internal.secure_store.initTestMemory(testing.allocator);
+    defer store.deinit(testing.allocator);
+    var registry = try support.makeTestRegistry(testing.allocator, &store, "generic");
+    defer registry.deinit(testing.allocator);
+
+    const list_dispatch = try support.buildToolPayloadForTest("list_design_artifacts", null, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer list_dispatch.deinit(testing.allocator);
+    const list_payload = switch (list_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, list_payload.text, "\"artifact_id\":\"artifact://srs_docx/core\"") != null);
+
+    var args_obj = std.json.ObjectMap.init(testing.allocator);
+    defer args_obj.deinit();
+    try args_obj.put("artifact_id", .{ .string = "artifact://srs_docx/core" });
+    const get_dispatch = try support.buildToolPayloadForTest("get_design_artifact", .{ .object = args_obj }, &registry, &db, &store, &state, "generic", testing.allocator);
+    defer get_dispatch.deinit(testing.allocator);
+    const get_payload = switch (get_dispatch) {
+        .payload => |payload| payload,
+        else => return error.TestUnexpectedResult,
+    };
+    try testing.expect(std.mem.indexOf(u8, get_payload.text, "\"req_id\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, get_payload.text, "\"kind\":\"srs_docx\"") != null);
+}
+
 test "get_bom_item invalid selector returns specific message" {
     var db = try internal.graph_live.GraphDb.init(":memory:");
     defer db.deinit();

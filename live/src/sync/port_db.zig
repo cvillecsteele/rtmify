@@ -9,7 +9,7 @@ pub fn portGraphToDb(db: *internal.GraphDb, g: *internal.graph_mod.Graph, alloc:
     var node_iter = g.nodes.iterator();
     while (node_iter.next()) |entry| {
         const node = entry.value_ptr.*;
-        const props_json = try serializeProperties(&node.properties, a);
+        const props_json = try serializeNodeProperties(node.node_type.toString(), &node.properties, a);
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
         hasher.update(props_json);
         var digest: [32]u8 = undefined;
@@ -25,13 +25,31 @@ pub fn portGraphToDb(db: *internal.GraphDb, g: *internal.graph_mod.Graph, alloc:
     }
 }
 
+fn serializeNodeProperties(node_type: []const u8, props: *const std.StringHashMapUnmanaged([]const u8), alloc: internal.Allocator) ![]const u8 {
+    if (std.mem.eql(u8, node_type, "Requirement")) {
+        return serializePropertiesFiltered(props, alloc, "statement");
+    }
+    return serializeProperties(props, alloc);
+}
+
 pub fn serializeProperties(props: *const std.StringHashMapUnmanaged([]const u8), alloc: internal.Allocator) ![]const u8 {
+    return serializePropertiesFiltered(props, alloc, null);
+}
+
+fn serializePropertiesFiltered(
+    props: *const std.StringHashMapUnmanaged([]const u8),
+    alloc: internal.Allocator,
+    skip_key: ?[]const u8,
+) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try buf.append(alloc, '{');
     var it = props.iterator();
     var first = true;
     while (it.next()) |kv| {
+        if (skip_key) |key| {
+            if (std.mem.eql(u8, kv.key_ptr.*, key)) continue;
+        }
         if (!first) try buf.append(alloc, ',');
         first = false;
         try buf.append(alloc, '"');

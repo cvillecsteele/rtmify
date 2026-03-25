@@ -102,6 +102,43 @@ pub const GraphCounts = struct {
     edges: i64,
 };
 
+pub const RequirementSourceAssertion = struct {
+    text_id: []const u8,
+    artifact_id: ?[]const u8,
+    source_kind: ?[]const u8,
+    section: ?[]const u8,
+    text: ?[]const u8,
+    normalized_text: ?[]const u8,
+    hash: ?[]const u8,
+    parse_status: ?[]const u8,
+    occurrence_count: usize,
+};
+
+pub const RequirementTextResolution = struct {
+    effective_statement: ?[]const u8,
+    authoritative_source: ?[]const u8,
+    text_status: []const u8,
+    source_count: usize,
+    assertions: []RequirementSourceAssertion,
+
+    pub fn deinit(self: *RequirementTextResolution, alloc: Allocator) void {
+        if (self.effective_statement) |value| alloc.free(value);
+        if (self.authoritative_source) |value| alloc.free(value);
+        alloc.free(self.text_status);
+        for (self.assertions) |assertion| {
+            alloc.free(assertion.text_id);
+            if (assertion.artifact_id) |value| alloc.free(value);
+            if (assertion.source_kind) |value| alloc.free(value);
+            if (assertion.section) |value| alloc.free(value);
+            if (assertion.text) |value| alloc.free(value);
+            if (assertion.normalized_text) |value| alloc.free(value);
+            if (assertion.hash) |value| alloc.free(value);
+            if (assertion.parse_status) |value| alloc.free(value);
+        }
+        alloc.free(self.assertions);
+    }
+};
+
 // ---------------------------------------------------------------------------
 // Suspect propagation rules (mirrors graph.py)
 // ---------------------------------------------------------------------------
@@ -146,6 +183,40 @@ fn isImpactForward(label: []const u8) bool {
 fn isImpactBackward(label: []const u8) bool {
     for (IMPACT_BACKWARD) |l| if (std.mem.eql(u8, l, label)) return true;
     return false;
+}
+
+fn sanitizeNodePropertiesJson(node_type: []const u8, properties_json: []const u8, alloc: Allocator) ![]u8 {
+    if (!std.mem.eql(u8, node_type, "Requirement")) return alloc.dupe(u8, properties_json);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, properties_json, .{}) catch {
+        return alloc.dupe(u8, properties_json);
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return alloc.dupe(u8, properties_json);
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    try buf.append(alloc, '{');
+    var first = true;
+    var it = parsed.value.object.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (std.mem.eql(u8, key, "statement") or
+            std.mem.eql(u8, key, "effective_statement") or
+            std.mem.eql(u8, key, "effective_statement_source") or
+            std.mem.eql(u8, key, "source_assertions"))
+        {
+            continue;
+        }
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try appendJsonQuoted(&buf, key, alloc);
+        try buf.append(alloc, ':');
+        try appendJsonValue(&buf, entry.value_ptr.*, alloc);
+    }
+    try buf.append(alloc, '}');
+    return alloc.dupe(u8, buf.items);
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +264,8 @@ pub const GraphDb = struct {
     pub fn addNode(g: *GraphDb, id: []const u8, node_type: []const u8, properties_json: []const u8, row_hash: ?[]const u8) !void {
         g.db.write_mu.lock();
         defer g.db.write_mu.unlock();
+        const sanitized_properties = try sanitizeNodePropertiesJson(node_type, properties_json, std.heap.page_allocator);
+        defer std.heap.page_allocator.free(sanitized_properties);
         const now = std.time.timestamp();
         var st = try g.db.prepare(
             \\INSERT OR IGNORE INTO nodes (id, type, properties, row_hash, created_at, updated_at)
@@ -201,7 +274,7 @@ pub const GraphDb = struct {
         defer st.finalize();
         try st.bindText(1, id);
         try st.bindText(2, node_type);
-        try st.bindText(3, properties_json);
+        try st.bindText(3, sanitized_properties);
         if (row_hash) |h| try st.bindText(4, h) else try st.bindNull(4);
         try st.bindInt(5, now);
         try st.bindInt(6, now);
@@ -210,6 +283,14 @@ pub const GraphDb = struct {
 
     pub fn updateNode(g: *GraphDb, id: []const u8, properties_json: []const u8, row_hash: ?[]const u8) !void {
         // Caller must hold write_mu; we acquire it here for internal calls.
+        var type_stmt = try g.db.prepare("SELECT type FROM nodes WHERE id=?");
+        defer type_stmt.finalize();
+        try type_stmt.bindText(1, id);
+        if (!try type_stmt.step()) return;
+        const node_type = type_stmt.columnText(0);
+        const sanitized_properties = try sanitizeNodePropertiesJson(node_type, properties_json, std.heap.page_allocator);
+        defer std.heap.page_allocator.free(sanitized_properties);
+
         const now = std.time.timestamp();
         {
             var hist = try g.db.prepare(
@@ -226,7 +307,7 @@ pub const GraphDb = struct {
                 \\UPDATE nodes SET properties=?, row_hash=?, updated_at=? WHERE id=?
             );
             defer upd.finalize();
-            try upd.bindText(1, properties_json);
+            try upd.bindText(1, sanitized_properties);
             if (row_hash) |h| try upd.bindText(2, h) else try upd.bindNull(2);
             try upd.bindInt(3, now);
             try upd.bindText(4, id);
@@ -248,6 +329,8 @@ pub const GraphDb = struct {
 
         if (!has_row) {
             // Insert new node (no propagation for new nodes)
+            const sanitized_properties = try sanitizeNodePropertiesJson(node_type, properties_json, std.heap.page_allocator);
+            defer std.heap.page_allocator.free(sanitized_properties);
             const now = std.time.timestamp();
             var ins = try g.db.prepare(
                 \\INSERT OR IGNORE INTO nodes (id, type, properties, row_hash, created_at, updated_at)
@@ -256,7 +339,7 @@ pub const GraphDb = struct {
             defer ins.finalize();
             try ins.bindText(1, id);
             try ins.bindText(2, node_type);
-            try ins.bindText(3, properties_json);
+            try ins.bindText(3, sanitized_properties);
             if (row_hash) |h| try ins.bindText(4, h) else try ins.bindNull(4);
             try ins.bindInt(5, now);
             try ins.bindInt(6, now);
@@ -285,7 +368,7 @@ pub const GraphDb = struct {
         defer st.finalize();
         try st.bindText(1, id);
         if (!try st.step()) return null;
-        return try stmtToNode(&st, alloc);
+        return try stmtToNodeResolved(g, &st, alloc);
     }
 
     pub fn allNodes(g: *GraphDb, alloc: Allocator, result: *std.ArrayList(Node)) !void {
@@ -294,7 +377,7 @@ pub const GraphDb = struct {
         );
         defer st.finalize();
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -305,7 +388,7 @@ pub const GraphDb = struct {
         defer st.finalize();
         try st.bindText(1, node_type);
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -319,7 +402,7 @@ pub const GraphDb = struct {
         defer st.finalize();
         try st.bindText(1, node_type);
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -339,6 +422,133 @@ pub const GraphDb = struct {
         }
     }
 
+    pub fn requirementSourceAssertions(
+        g: *GraphDb,
+        req_id: []const u8,
+        alloc: Allocator,
+        result: *std.ArrayList(RequirementSourceAssertion),
+    ) !void {
+        var st = try g.db.prepare(
+            \\SELECT
+            \\  rt.id,
+            \\  art.id,
+            \\  json_extract(rt.properties, '$.source_kind'),
+            \\  json_extract(rt.properties, '$.section'),
+            \\  json_extract(rt.properties, '$.text'),
+            \\  json_extract(rt.properties, '$.normalized_text'),
+            \\  json_extract(rt.properties, '$.hash'),
+            \\  json_extract(rt.properties, '$.parse_status'),
+            \\  COALESCE(CAST(json_extract(rt.properties, '$.occurrence_count') AS INTEGER), 0)
+            \\FROM nodes rt
+            \\JOIN edges e_assert ON e_assert.from_id = rt.id AND e_assert.to_id = ? AND e_assert.label = 'ASSERTS'
+            \\LEFT JOIN edges e_contains ON e_contains.to_id = rt.id AND e_contains.label = 'CONTAINS'
+            \\LEFT JOIN nodes art ON art.id = e_contains.from_id AND art.type = 'Artifact'
+            \\WHERE rt.type = 'RequirementText'
+            \\ORDER BY
+            \\  CASE WHEN json_extract(rt.properties, '$.source_kind') = 'rtm_workbook' THEN 0 ELSE 1 END,
+            \\  art.id,
+            \\  rt.id
+        );
+        defer st.finalize();
+        try st.bindText(1, req_id);
+        while (try st.step()) {
+            try result.append(alloc, .{
+                .text_id = try alloc.dupe(u8, st.columnText(0)),
+                .artifact_id = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
+                .source_kind = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
+                .section = if (st.columnIsNull(3)) null else try alloc.dupe(u8, st.columnText(3)),
+                .text = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
+                .normalized_text = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
+                .hash = if (st.columnIsNull(6)) null else try alloc.dupe(u8, st.columnText(6)),
+                .parse_status = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
+                .occurrence_count = @intCast(st.columnInt(8)),
+            });
+        }
+    }
+
+    pub fn resolveRequirementText(g: *GraphDb, req_id: []const u8, alloc: Allocator) !RequirementTextResolution {
+        var assertions: std.ArrayList(RequirementSourceAssertion) = .empty;
+        try g.requirementSourceAssertions(req_id, alloc, &assertions);
+
+        var text_status: []const u8 = try alloc.dupe(u8, "no_source");
+        var effective_statement: ?[]const u8 = null;
+        var authoritative_source: ?[]const u8 = null;
+
+        var rtm_assertion: ?RequirementSourceAssertion = null;
+        var first_non_rtm_text: ?[]const u8 = null;
+        var first_non_rtm_normalized: ?[]const u8 = null;
+        var non_rtm_count: usize = 0;
+        var non_rtm_conflict = false;
+
+        for (assertions.items) |assertion| {
+            const assertion_text = assertion.text orelse "";
+            const normalized = assertion.normalized_text orelse assertion_text;
+            if (assertion.source_kind) |source_kind| {
+                if (std.mem.eql(u8, source_kind, "rtm_workbook") and assertion_text.len > 0) {
+                    rtm_assertion = assertion;
+                    continue;
+                }
+            }
+            if (assertion_text.len == 0) continue;
+            non_rtm_count += 1;
+            if (first_non_rtm_text == null) {
+                first_non_rtm_text = assertion_text;
+                first_non_rtm_normalized = normalized;
+                if (assertion.artifact_id) |artifact_id| authoritative_source = try alloc.dupe(u8, artifact_id);
+            } else if (!std.mem.eql(u8, first_non_rtm_normalized.?, normalized)) {
+                non_rtm_conflict = true;
+            }
+        }
+
+        if (rtm_assertion) |assertion| {
+            const rtm_text = assertion.text orelse "";
+            effective_statement = try alloc.dupe(u8, rtm_text);
+            if (assertion.artifact_id) |artifact_id| {
+                if (authoritative_source) |value| alloc.free(value);
+                authoritative_source = try alloc.dupe(u8, artifact_id);
+            }
+            const rtm_normalized = assertion.normalized_text orelse rtm_text;
+            var conflict = false;
+            for (assertions.items) |candidate| {
+                if (candidate.source_kind) |source_kind| {
+                    if (std.mem.eql(u8, source_kind, "rtm_workbook")) continue;
+                }
+                const candidate_text = candidate.text orelse "";
+                if (candidate_text.len == 0) continue;
+                const candidate_normalized = candidate.normalized_text orelse candidate_text;
+                if (!std.mem.eql(u8, rtm_normalized, candidate_normalized)) {
+                    conflict = true;
+                    break;
+                }
+            }
+            alloc.free(text_status);
+            text_status = try alloc.dupe(u8, if (conflict) "conflict" else "aligned");
+        } else if (non_rtm_count == 1 and first_non_rtm_text != null) {
+            effective_statement = try alloc.dupe(u8, first_non_rtm_text.?);
+            alloc.free(text_status);
+            text_status = try alloc.dupe(u8, "single_source");
+        } else if (non_rtm_count > 1 and !non_rtm_conflict and first_non_rtm_text != null) {
+            effective_statement = try alloc.dupe(u8, first_non_rtm_text.?);
+            alloc.free(text_status);
+            text_status = try alloc.dupe(u8, "aligned");
+        } else if (non_rtm_count > 1 and non_rtm_conflict) {
+            if (authoritative_source) |value| {
+                alloc.free(value);
+                authoritative_source = null;
+            }
+            alloc.free(text_status);
+            text_status = try alloc.dupe(u8, "conflict");
+        }
+
+        return .{
+            .effective_statement = effective_statement,
+            .authoritative_source = authoritative_source,
+            .text_status = text_status,
+            .source_count = assertions.items.len,
+            .assertions = try assertions.toOwnedSlice(alloc),
+        };
+    }
+
     /// Returns SourceFile and TestFile nodes whose properties contain
     /// `"repo": "<repo_path>"`.
     pub fn nodesByRepo(g: *GraphDb, repo_path: []const u8, alloc: Allocator, result: *std.ArrayList(Node)) !void {
@@ -352,7 +562,7 @@ pub const GraphDb = struct {
         defer st.finalize();
         try st.bindText(1, repo_path);
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -629,7 +839,7 @@ pub const GraphDb = struct {
         );
         defer st.finalize();
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -717,7 +927,7 @@ pub const GraphDb = struct {
         try st.bindText(1, node_type);
         try st.bindText(2, edge_label);
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -768,7 +978,7 @@ pub const GraphDb = struct {
         );
         defer st.finalize();
         while (try st.step()) {
-            try result.append(alloc, .{
+            var row: RtmRow = .{
                 .req_id = try alloc.dupe(u8, st.columnText(0)),
                 .statement = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
                 .status = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
@@ -781,7 +991,12 @@ pub const GraphDb = struct {
                 .result = if (st.columnIsNull(9)) null else try alloc.dupe(u8, st.columnText(9)),
                 .req_suspect = st.columnInt(10) != 0,
                 .req_suspect_reason = if (st.columnIsNull(11)) null else try alloc.dupe(u8, st.columnText(11)),
-            });
+            };
+            var resolution = try g.resolveRequirementText(row.req_id, alloc);
+            defer resolution.deinit(alloc);
+            if (row.statement) |value| alloc.free(value);
+            row.statement = if (resolution.effective_statement) |statement| try alloc.dupe(u8, statement) else null;
+            try result.append(alloc, row);
         }
     }
 
@@ -805,7 +1020,7 @@ pub const GraphDb = struct {
         );
         defer st.finalize();
         while (try st.step()) {
-            try result.append(alloc, .{
+            var row: RiskRow = .{
                 .risk_id = try alloc.dupe(u8, st.columnText(0)),
                 .description = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
                 .initial_severity = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
@@ -815,7 +1030,14 @@ pub const GraphDb = struct {
                 .residual_likelihood = if (st.columnIsNull(6)) null else try alloc.dupe(u8, st.columnText(6)),
                 .req_id = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
                 .req_statement = if (st.columnIsNull(8)) null else try alloc.dupe(u8, st.columnText(8)),
-            });
+            };
+            if (row.req_id) |req_id| {
+                var resolution = try g.resolveRequirementText(req_id, alloc);
+                defer resolution.deinit(alloc);
+                if (row.req_statement) |value| alloc.free(value);
+                row.req_statement = if (resolution.effective_statement) |statement| try alloc.dupe(u8, statement) else null;
+            }
+            try result.append(alloc, row);
         }
     }
 
@@ -865,7 +1087,7 @@ pub const GraphDb = struct {
         );
         defer st.finalize();
         while (try st.step()) {
-            try join_rows.append(alloc, .{
+            var row: JoinRow = .{
                 .test_group_id = try alloc.dupe(u8, st.columnText(0)),
                 .test_id = if (st.columnIsNull(1)) null else try alloc.dupe(u8, st.columnText(1)),
                 .test_type = if (st.columnIsNull(2)) null else try alloc.dupe(u8, st.columnText(2)),
@@ -874,7 +1096,14 @@ pub const GraphDb = struct {
                 .req_statement = if (st.columnIsNull(5)) null else try alloc.dupe(u8, st.columnText(5)),
                 .test_suspect = st.columnInt(6) != 0,
                 .test_suspect_reason = if (st.columnIsNull(7)) null else try alloc.dupe(u8, st.columnText(7)),
-            });
+            };
+            if (row.req_id) |req_id| {
+                var resolution = try g.resolveRequirementText(req_id, alloc);
+                defer resolution.deinit(alloc);
+                if (row.req_statement) |value| alloc.free(value);
+                row.req_statement = if (resolution.effective_statement) |statement| try alloc.dupe(u8, statement) else null;
+            }
+            try join_rows.append(alloc, row);
         }
 
         for (join_rows.items) |row| {
@@ -954,15 +1183,33 @@ pub const GraphDb = struct {
     pub fn search(g: *GraphDb, query: []const u8, alloc: Allocator, result: *std.ArrayList(Node)) !void {
         var st = try g.db.prepare(
             \\SELECT id, type, properties, suspect, suspect_reason FROM nodes
-            \\WHERE lower(properties) LIKE lower(?) OR lower(id) LIKE lower(?)
+            \\WHERE (
+            \\       type != 'RequirementText'
+            \\       AND (
+            \\           lower(properties) LIKE lower(?)
+            \\           OR lower(id) LIKE lower(?)
+            \\       )
+            \\   )
+            \\   OR (
+            \\       type = 'Requirement'
+            \\       AND EXISTS (
+            \\           SELECT 1
+            \\           FROM edges e
+            \\           JOIN nodes rt ON rt.id = e.from_id AND rt.type = 'RequirementText'
+            \\           WHERE e.to_id = nodes.id
+            \\             AND e.label = 'ASSERTS'
+            \\             AND lower(COALESCE(json_extract(rt.properties, '$.text'), '')) LIKE lower(?)
+            \\       )
+            \\   )
             \\ORDER BY type, id
         );
         defer st.finalize();
         const like = try std.fmt.allocPrint(alloc, "%{s}%", .{query});
         try st.bindText(1, like);
         try st.bindText(2, like);
+        try st.bindText(3, like);
         while (try st.step()) {
-            try result.append(alloc, try stmtToNode(&st, alloc));
+            try result.append(alloc, try stmtToNodeResolved(g, &st, alloc));
         }
     }
 
@@ -1160,14 +1407,146 @@ pub const GraphDb = struct {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn stmtToNode(st: *Stmt, alloc: Allocator) !Node {
+fn appendJsonEscaped(buf: *std.ArrayList(u8), s: []const u8, alloc: Allocator) !void {
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(alloc, "\\\""),
+            '\\' => try buf.appendSlice(alloc, "\\\\"),
+            '\n' => try buf.appendSlice(alloc, "\\n"),
+            '\r' => try buf.appendSlice(alloc, "\\r"),
+            '\t' => try buf.appendSlice(alloc, "\\t"),
+            else => try buf.append(alloc, c),
+        }
+    }
+}
+
+fn appendJsonQuoted(buf: *std.ArrayList(u8), s: []const u8, alloc: Allocator) !void {
+    try buf.append(alloc, '"');
+    try appendJsonEscaped(buf, s, alloc);
+    try buf.append(alloc, '"');
+}
+
+fn stmtToNodeResolved(g: *GraphDb, st: *Stmt, alloc: Allocator) !Node {
+    const node_id = st.columnText(0);
+    const node_type = st.columnText(1);
+    const raw_properties = st.columnText(2);
+    const properties = if (std.mem.eql(u8, node_type, "Requirement"))
+        augmentRequirementPropertiesJson(g, node_id, raw_properties, alloc) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => try alloc.dupe(u8, raw_properties),
+        }
+    else
+        try alloc.dupe(u8, raw_properties);
     return .{
-        .id = try alloc.dupe(u8, st.columnText(0)),
-        .type = try alloc.dupe(u8, st.columnText(1)),
-        .properties = try alloc.dupe(u8, st.columnText(2)),
+        .id = try alloc.dupe(u8, node_id),
+        .type = try alloc.dupe(u8, node_type),
+        .properties = properties,
         .suspect = st.columnInt(3) != 0,
         .suspect_reason = if (st.columnIsNull(4)) null else try alloc.dupe(u8, st.columnText(4)),
     };
+}
+
+fn augmentRequirementPropertiesJson(g: *GraphDb, req_id: []const u8, base_json: []const u8, alloc: Allocator) ![]const u8 {
+    var resolution = try g.resolveRequirementText(req_id, alloc);
+    defer resolution.deinit(alloc);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, base_json, .{});
+    defer parsed.deinit();
+    const legacy_statement = if (parsed.value == .object)
+        switch (parsed.value.object.get("statement") orelse .null) {
+            .string => |value| value,
+            else => null,
+        }
+    else
+        null;
+    const effective_statement = resolution.effective_statement orelse legacy_statement;
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    try buf.append(alloc, '{');
+    var first = true;
+    if (parsed.value == .object) {
+        var it = parsed.value.object.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (std.mem.eql(u8, key, "statement") or
+                std.mem.eql(u8, key, "effective_statement") or
+                std.mem.eql(u8, key, "effective_statement_source") or
+                std.mem.eql(u8, key, "text_status") or
+                std.mem.eql(u8, key, "authoritative_source") or
+                std.mem.eql(u8, key, "source_count") or
+                std.mem.eql(u8, key, "source_assertions"))
+            {
+                continue;
+            }
+            if (!first) try buf.append(alloc, ',');
+            first = false;
+            try appendJsonQuoted(&buf, key, alloc);
+            try buf.append(alloc, ':');
+            try appendJsonValue(&buf, entry.value_ptr.*, alloc);
+        }
+    }
+    if (!first) try buf.append(alloc, ',');
+    try buf.appendSlice(alloc, "\"statement\":");
+    if (effective_statement) |statement|
+        try appendJsonQuoted(&buf, statement, alloc)
+    else
+        try buf.appendSlice(alloc, "null");
+    try buf.appendSlice(alloc, ",\"effective_statement\":");
+    if (effective_statement) |statement|
+        try appendJsonQuoted(&buf, statement, alloc)
+    else
+        try buf.appendSlice(alloc, "null");
+    try buf.appendSlice(alloc, ",\"effective_statement_source\":");
+    if (resolution.authoritative_source) |source|
+        try appendJsonQuoted(&buf, source, alloc)
+    else
+        try buf.appendSlice(alloc, "null");
+    try buf.appendSlice(alloc, ",\"text_status\":");
+    try appendJsonQuoted(&buf, resolution.text_status, alloc);
+    try buf.appendSlice(alloc, ",\"authoritative_source\":");
+    if (resolution.authoritative_source) |source|
+        try appendJsonQuoted(&buf, source, alloc)
+    else
+        try buf.appendSlice(alloc, "null");
+    try std.fmt.format(buf.writer(alloc), ",\"source_count\":{d}", .{resolution.source_count});
+    try buf.appendSlice(alloc, ",\"source_assertions\":[");
+    for (resolution.assertions, 0..) |assertion, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"id\":");
+        try appendJsonQuoted(&buf, assertion.text_id, alloc);
+        try buf.appendSlice(alloc, ",\"artifact_id\":");
+        if (assertion.artifact_id) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try buf.appendSlice(alloc, ",\"source_kind\":");
+        if (assertion.source_kind) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try buf.appendSlice(alloc, ",\"section\":");
+        if (assertion.section) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try buf.appendSlice(alloc, ",\"text\":");
+        if (assertion.text) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try buf.appendSlice(alloc, ",\"normalized_text\":");
+        if (assertion.normalized_text) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try buf.appendSlice(alloc, ",\"hash\":");
+        if (assertion.hash) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try buf.appendSlice(alloc, ",\"parse_status\":");
+        if (assertion.parse_status) |value| try appendJsonQuoted(&buf, value, alloc) else try buf.appendSlice(alloc, "null");
+        try std.fmt.format(buf.writer(alloc), ",\"occurrence_count\":{d}", .{assertion.occurrence_count});
+        try buf.append(alloc, '}');
+    }
+    try buf.appendSlice(alloc, "]}");
+    return alloc.dupe(u8, buf.items);
+}
+
+fn appendJsonValue(buf: *std.ArrayList(u8), value: std.json.Value, alloc: Allocator) !void {
+    switch (value) {
+        .null => try buf.appendSlice(alloc, "null"),
+        .bool => |v| try buf.appendSlice(alloc, if (v) "true" else "false"),
+        .integer => |v| try std.fmt.format(buf.writer(alloc), "{d}", .{v}),
+        .float => |v| try std.fmt.format(buf.writer(alloc), "{d}", .{v}),
+        .number_string => |v| try buf.appendSlice(alloc, v),
+        .string => |v| try appendJsonQuoted(buf, v, alloc),
+        else => try appendJsonQuoted(buf, "", alloc),
+    }
 }
 
 fn stmtToEdge(st: *Stmt, alloc: Allocator) !Edge {
@@ -1244,7 +1623,10 @@ test "addNode idempotent" {
     try g.addNode("REQ-001", "Requirement", "{\"statement\":\"second\"}", "h2");
     const node = try g.getNode("REQ-001", alloc);
     // INSERT OR IGNORE: first insert wins
-    try testing.expectEqualStrings("{\"statement\":\"first\"}", node.?.properties);
+    try testing.expectEqualStrings(
+        "{\"statement\":null,\"effective_statement\":null,\"effective_statement_source\":null,\"text_status\":\"no_source\",\"authoritative_source\":null,\"source_count\":0,\"source_assertions\":[]}",
+        node.?.properties,
+    );
 }
 
 test "getNode missing returns null" {
@@ -1267,7 +1649,10 @@ test "upsertNode creates on first call" {
     try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v1\"}", "hash1");
     const node = try g.getNode("REQ-001", alloc);
     try testing.expect(node != null);
-    try testing.expectEqualStrings("{\"statement\":\"v1\"}", node.?.properties);
+    try testing.expectEqualStrings(
+        "{\"statement\":null,\"effective_statement\":null,\"effective_statement_source\":null,\"text_status\":\"no_source\",\"authoritative_source\":null,\"source_count\":0,\"source_assertions\":[]}",
+        node.?.properties,
+    );
 }
 
 test "upsertNode updates on hash change" {
@@ -1280,7 +1665,10 @@ test "upsertNode updates on hash change" {
     try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v1\"}", "hash1");
     try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v2\"}", "hash2");
     const node = try g.getNode("REQ-001", alloc);
-    try testing.expectEqualStrings("{\"statement\":\"v2\"}", node.?.properties);
+    try testing.expectEqualStrings(
+        "{\"statement\":null,\"effective_statement\":null,\"effective_statement_source\":null,\"text_status\":\"no_source\",\"authoritative_source\":null,\"source_count\":0,\"source_assertions\":[]}",
+        node.?.properties,
+    );
 }
 
 test "upsertNode no-op on same hash" {
@@ -1294,7 +1682,10 @@ test "upsertNode no-op on same hash" {
     try g.upsertNode("REQ-001", "Requirement", "{\"statement\":\"v2\"}", "hash1");
     const node = try g.getNode("REQ-001", alloc);
     // Same hash → no update → v1 still there
-    try testing.expectEqualStrings("{\"statement\":\"v1\"}", node.?.properties);
+    try testing.expectEqualStrings(
+        "{\"statement\":null,\"effective_statement\":null,\"effective_statement_source\":null,\"text_status\":\"no_source\",\"authoritative_source\":null,\"source_count\":0,\"source_assertions\":[]}",
+        node.?.properties,
+    );
 }
 
 test "upsertNode updates hashless nodes on later overwrite" {
@@ -1500,8 +1891,15 @@ test "search" {
 
     var g = try GraphDb.init(":memory:");
     defer g.deinit();
-    try g.addNode("REQ-001", "Requirement", "{\"statement\":\"sterile packaging required\"}", null);
-    try g.addNode("REQ-002", "Requirement", "{\"statement\":\"unrelated\"}", null);
+    try g.addNode("artifact://rtm/demo", "Artifact", "{\"kind\":\"rtm_workbook\"}", null);
+    try g.addNode("REQ-001", "Requirement", "{}", null);
+    try g.addNode("REQ-002", "Requirement", "{}", null);
+    try g.addNode("artifact://rtm/demo:REQ-001", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-001\",\"text\":\"sterile packaging required\",\"normalized_text\":\"sterile packaging required\",\"hash\":\"abc\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try g.addNode("artifact://rtm/demo:REQ-002", "RequirementText", "{\"artifact_id\":\"artifact://rtm/demo\",\"source_kind\":\"rtm_workbook\",\"req_id\":\"REQ-002\",\"text\":\"unrelated\",\"normalized_text\":\"unrelated\",\"hash\":\"def\",\"parse_status\":\"ok\",\"occurrence_count\":1}", null);
+    try g.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-001", "CONTAINS");
+    try g.addEdge("artifact://rtm/demo", "artifact://rtm/demo:REQ-002", "CONTAINS");
+    try g.addEdge("artifact://rtm/demo:REQ-001", "REQ-001", "ASSERTS");
+    try g.addEdge("artifact://rtm/demo:REQ-002", "REQ-002", "ASSERTS");
 
     var results: std.ArrayList(Node) = .empty;
     try g.search("sterile", alloc, &results);

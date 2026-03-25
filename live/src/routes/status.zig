@@ -11,6 +11,7 @@ const secure_store_mod = @import("../secure_store.zig");
 const online_provider = @import("../online_provider.zig");
 const test_results_auth = @import("../test_results_auth.zig");
 const workbook = @import("../workbook/mod.zig");
+const workspace_state = @import("../workspace_state.zig");
 const shared = @import("shared.zig");
 
 pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store: *secure_store_mod.Store, state: *sync_live.SyncState, license_service: *license.Service, alloc: Allocator) ![]const u8 {
@@ -34,6 +35,9 @@ pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store:
         var loaded = try connection_mod.loadWorkbookConnection(workbook_cfg.*, secure_store, alloc);
         defer loaded.deinit(alloc);
         const configured = loaded == .active;
+        const workspace_ready = try workspace_state.readWorkspaceReady(&active_runtime.db, configured, alloc);
+        const source_of_truth = (try workspace_state.readSourceOfTruth(&active_runtime.db, alloc)) orelse if (configured) workspace_state.SourceOfTruth.workbook_first else null;
+        const attach_workbook_prompt_dismissed = try workspace_state.readAttachWorkbookPromptDismissed(&active_runtime.db, alloc);
         const block_reason: ?provider_common.ConnectionBlockReason = if (loaded == .blocked) loaded.blocked else null;
 
         const platform_str = if (configured)
@@ -69,8 +73,12 @@ pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store:
 
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(alloc);
-        try std.fmt.format(buf.writer(alloc), "{{\"configured\":{s},\"last_sync_at\":{d},\"has_error\":{s},\"error\":", .{
-            if (configured) "true" else "false", last_sync, if (has_error) "true" else "false",
+        try std.fmt.format(buf.writer(alloc), "{{\"configured\":{s},\"workspace_ready\":{s},\"connection_configured\":{s},\"last_sync_at\":{d},\"has_error\":{s},\"error\":", .{
+            if (workspace_ready) "true" else "false",
+            if (workspace_ready) "true" else "false",
+            if (configured) "true" else "false",
+            last_sync,
+            if (has_error) "true" else "false",
         });
         try shared.appendJsonStr(&buf, err_str, alloc);
         try buf.appendSlice(alloc, ",\"license\":");
@@ -85,6 +93,27 @@ pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store:
         try shared.appendJsonStrOpt(&buf, workbook_label, alloc);
         try buf.appendSlice(alloc, ",\"workbook_url\":");
         try shared.appendJsonStrOpt(&buf, workbook_url, alloc);
+        try buf.appendSlice(alloc, ",\"source_of_truth\":");
+        try shared.appendJsonStrOpt(&buf, if (source_of_truth) |value| value.asString() else null, alloc);
+        try std.fmt.format(buf.writer(alloc), ",\"hobbled_mode\":{s}", .{
+            if (!license_valid) "true" else "false",
+        });
+        try buf.appendSlice(alloc, ",\"license_required_features\":[");
+        const feature_list = [_][]const u8{
+            "MCP",
+            "Reports",
+            "Repository Scanning",
+            "Code Traceability",
+            "Background Sync",
+        };
+        for (feature_list, 0..) |feature, idx| {
+            if (idx > 0) try buf.append(alloc, ',');
+            try shared.appendJsonStr(&buf, feature, alloc);
+        }
+        try buf.append(alloc, ']');
+        try std.fmt.format(buf.writer(alloc), ",\"attach_workbook_prompt_dismissed\":{s}", .{
+            if (attach_workbook_prompt_dismissed) "true" else "false",
+        });
         try buf.appendSlice(alloc, ",\"connection_block_reason\":");
         try shared.appendJsonStrOpt(&buf, if (block_reason) |value| @tagName(value) else null, alloc);
         try buf.appendSlice(alloc, ",\"secure_storage_backend\":");
@@ -108,10 +137,11 @@ pub fn handleStatus(registry: *workbook.registry.WorkbookRegistry, secure_store:
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
-    try std.fmt.format(buf.writer(alloc), "{{\"configured\":false,\"last_sync_at\":0,\"has_error\":false,\"error\":\"\",\"license\":", .{});
+    try std.fmt.format(buf.writer(alloc), "{{\"configured\":false,\"workspace_ready\":false,\"connection_configured\":false,\"last_sync_at\":0,\"has_error\":false,\"error\":\"\",\"license\":", .{});
     try appendLicenseStatusJson(&buf, license_status, alloc);
-    try std.fmt.format(buf.writer(alloc), ",\"sync_count\":0,\"license_valid\":{s},\"platform\":null,\"credential_display\":null,\"workbook_label\":null,\"workbook_url\":null,\"connection_block_reason\":null,\"secure_storage_backend\":", .{
+    try std.fmt.format(buf.writer(alloc), ",\"sync_count\":0,\"license_valid\":{s},\"platform\":null,\"credential_display\":null,\"workbook_label\":null,\"workbook_url\":null,\"source_of_truth\":null,\"hobbled_mode\":{s},\"license_required_features\":[\"MCP\",\"Reports\",\"Repository Scanning\",\"Code Traceability\",\"Background Sync\"],\"attach_workbook_prompt_dismissed\":false,\"connection_block_reason\":null,\"secure_storage_backend\":", .{
         if (license_valid) "true" else "false",
+        if (!license_valid) "true" else "false",
     });
     try shared.appendJsonStr(&buf, secure_store_mod.backendName(secure_store.backend), alloc);
     try buf.appendSlice(alloc, ",\"profile\":null,\"last_scan_at\":\"never\",\"repo_scan_in_progress\":false,\"repo_scan_last_started_at\":0,\"repo_scan_last_finished_at\":0,\"active_workbook\":null}");
@@ -170,6 +200,28 @@ pub fn handleInfo(registry: *workbook.registry.WorkbookRegistry, auth: *test_res
     }
     try buf.append(alloc, '}');
     return alloc.dupe(u8, buf.items);
+}
+
+pub fn handlePostWorkspacePrefsResponse(
+    db: *graph_live.GraphDb,
+    body: []const u8,
+    alloc: Allocator,
+) !shared.JsonRouteResponse {
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_json\"}"), false);
+    };
+    defer parsed.deinit();
+    const root = parsed.value;
+    if (root != .object) {
+        return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_json\"}"), false);
+    }
+    if (root.object.get("attach_workbook_prompt_dismissed")) |value| {
+        if (value != .bool) {
+            return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_attach_workbook_prompt_dismissed\"}"), false);
+        }
+        try workspace_state.writeAttachWorkbookPromptDismissed(db, value.bool);
+    }
+    return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 
 fn appendActiveWorkbookJson(buf: *std.ArrayList(u8), summary: workbook.registry.WorkbookSummary, alloc: Allocator) !void {

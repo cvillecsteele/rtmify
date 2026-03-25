@@ -5,6 +5,7 @@ import path from 'node:path';
 import { findFreePort } from '../helpers/ports';
 import { startServer } from '../helpers/server';
 import { insertNode, insertEdge, insertRuntimeDiagnostic, seedConfiguredGraph, setConfig } from '../helpers/db-seed';
+import { gotoWorkspace } from '../helpers/workspace';
 
 function makeDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rtmify-live-guide-db-'));
@@ -27,7 +28,7 @@ test('runtime diagnostic link opens the Guide entry', async ({ page }) => {
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Code$/ }).click();
     await page.getByRole('link', { name: 'E901' }).click();
     await expect(page.locator('#tab-guide-errors')).toHaveClass(/active/);
@@ -50,7 +51,7 @@ test('chain gap link opens the exact guide variant and Explain button is gone', 
   const server = await startServer({ dbPath, port, extraArgs: ['--profile', 'aerospace'] });
 
   try {
-    await page.goto(server.baseUrl);
+    await gotoWorkspace(page, server.baseUrl);
     await page.getByRole('button', { name: /^Analysis/ }).click();
     const row = page.locator('#chain-gaps-body tr', { hasText: 'uncommitted_requirement' }).first();
     await expect(row).toBeVisible();
@@ -72,7 +73,7 @@ test('direct guide hash opens the Guide tab on load', async ({ page }) => {
   const server = await startServer({ dbPath, port });
 
   try {
-    await page.goto(`${server.baseUrl}/#guide-code-1206-uncommitted_requirement`);
+    await gotoWorkspace(page, `${server.baseUrl}/#guide-code-1206-uncommitted_requirement`);
     await expect(page.locator('#tab-guide-errors')).toHaveClass(/active/);
     await expect(page.locator('#guide-code-1206-uncommitted_requirement')).toBeVisible();
   } finally {

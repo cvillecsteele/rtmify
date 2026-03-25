@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const design_history = @import("design_history.zig");
 const graph_live = @import("graph_live.zig");
 const chain_mod = @import("chain.zig");
+const dh_routes = @import("routes/design_history.zig");
 
 const PAGE_W: f32 = 612.0;
 const PAGE_H: f32 = 792.0;
@@ -489,50 +490,12 @@ test "renderReport includes downstream design history content" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var report = design_history.DhrReport{
-        .profile = .medical,
-        .user_need_sections = try alloc.alloc(design_history.UserNeedHistory, 1),
-        .unlinked_requirements = try alloc.alloc(design_history.RequirementHistory, 0),
-    };
-    defer design_history.deinitDhrReport(&report, alloc);
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try dh_routes.seedDhrFixture(&db);
 
-    report.user_need_sections[0] = .{
-        .user_need = .{
-            .id = try alloc.dupe(u8, "UN-001"),
-            .type = try alloc.dupe(u8, "UserNeed"),
-            .properties = try alloc.dupe(u8, "{\"statement\":\"Need GPS\"}"),
-            .suspect = false,
-            .suspect_reason = null,
-        },
-        .requirements = try alloc.alloc(design_history.RequirementHistory, 1),
-    };
-    report.user_need_sections[0].requirements[0] = .{
-        .requirement = .{
-            .id = try alloc.dupe(u8, "REQ-001"),
-            .type = try alloc.dupe(u8, "Requirement"),
-            .properties = try alloc.dupe(u8, "{\"statement\":\"Detect GPS loss\"}"),
-            .suspect = false,
-            .suspect_reason = null,
-        },
-        .user_needs = try alloc.alloc(graph_live.Node, 0),
-        .risks = try alloc.alloc(graph_live.Node, 0),
-        .design_inputs = try alloc.alloc(graph_live.Node, 1),
-        .design_outputs = try alloc.alloc(graph_live.Node, 0),
-        .configuration_items = try alloc.alloc(graph_live.Node, 0),
-        .source_files = try alloc.alloc(graph_live.Node, 0),
-        .test_files = try alloc.alloc(graph_live.Node, 0),
-        .annotations = try alloc.alloc(graph_live.Node, 0),
-        .commits = try alloc.alloc(graph_live.Node, 0),
-        .chain_gaps = try alloc.alloc(chain_mod.Gap, 0),
-        .profile = .medical,
-    };
-    report.user_need_sections[0].requirements[0].design_inputs[0] = .{
-        .id = try alloc.dupe(u8, "DI-001"),
-        .type = try alloc.dupe(u8, "DesignInput"),
-        .properties = try alloc.dupe(u8, "{\"description\":\"Timing spec\"}"),
-        .suspect = false,
-        .suspect_reason = null,
-    };
+    var report = try design_history.buildDhrReport(&db, "medical", alloc);
+    defer design_history.deinitDhrReport(&report, alloc);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -541,6 +504,7 @@ test "renderReport includes downstream design history content" {
     try testing.expect(std.mem.indexOf(u8, buf.items, "Design History Record") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "REQ-001") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Detect GPS loss") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Design Inputs") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Timing spec") != null);
 }

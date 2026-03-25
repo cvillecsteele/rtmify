@@ -130,7 +130,7 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
         }
 
         cfg.state.sync_in_progress.store(true, .seq_cst);
-        cycle.runSyncCycle(cfg.db, cfg.profile, &runtime, cfg.state, alloc) catch |e| {
+        cycle.runSyncCycle(cfg.db, cfg.profile, cfg.workbook_slug, cfg.workbook_slug, cfg.workbook_id, &runtime, cfg.state, alloc) catch |e| {
             cfg.state.sync_in_progress.store(false, .seq_cst);
             const msg = @errorName(e);
             cfg.state.setError(msg);

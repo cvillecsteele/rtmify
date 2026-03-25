@@ -1,11 +1,12 @@
   const CHEVRON_SVG = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 1.5l4 3.5-4 3.5"/></svg>`;
   let licenseStatusCache = null;
+  let currentStatus = null;
 
   // --- Tab switching ---
 
   // Tab → group mapping
   const TAB_GROUP = {
-    'requirements': 'data', 'user-needs': 'data', 'tests': 'data',
+    'requirements': 'data', 'user-needs': 'data', 'design-artifacts': 'data', 'tests': 'data',
     'risks': 'data', 'rtm': 'data',
     'design-boms': 'bom', 'bom-components': 'bom', 'bom-coverage': 'bom', 'bom-usage': 'bom', 'bom-gaps': 'bom', 'bom-impact': 'bom',
     'software-boms': 'soup', 'soup-components': 'soup', 'soup-gaps': 'soup', 'soup-licenses': 'soup', 'soup-safety': 'soup',
@@ -17,7 +18,7 @@
 
   // Default sub-tab per group
   const GROUP_DEFAULTS = {
-    data: 'requirements',
+    data: 'user-needs',
     bom: 'design-boms',
     soup: 'software-boms',
     analysis: 'chain-gaps',
@@ -43,6 +44,11 @@
     softwareBoms: [],
     selectedProduct: null,
     selectedBomName: null,
+  };
+
+  const artifactState = {
+    artifacts: [],
+    selectedArtifactId: null,
   };
 
   let guideErrorsCache = null;
@@ -77,6 +83,7 @@
     });
 
     if (name === 'review') loadSuspects();
+    if (name === 'design-artifacts') loadDesignArtifacts();
     if (name === 'design-boms') loadDesignBomWorkspace();
     if (name === 'bom-components') loadBomComponents();
     if (name === 'bom-coverage') loadBomCoverage();
@@ -165,6 +172,14 @@
       case 'select-software-bom':
         e.preventDefault();
         void selectSoftwareBom(actionEl.dataset.product || '', actionEl.dataset.bomName || '');
+        return true;
+      case 'select-design-artifact':
+        e.preventDefault();
+        void selectDesignArtifact(actionEl.dataset.artifactId || '');
+        return true;
+      case 'reingest-design-artifact':
+        e.preventDefault();
+        void reingestDesignArtifact(actionEl.dataset.artifactId || '');
         return true;
       case 'inspect-bom-component':
         e.preventDefault();
@@ -378,17 +393,11 @@
   // --- Data loading ---
 
   async function loadData() {
-    try {
-      const licenseStatus = await loadLicenseStatus(true);
-      if (licenseStatus && licenseStatus.permits_use === false) {
-        showLicenseGate(licenseStatus);
-        return;
-      }
-    } catch (_) {}
     _closeAllExpanded();
     await Promise.all([renderRequirements(), renderUserNeeds(), renderTests(), renderRTM(), renderRisks(), refreshSuspectBadge()]);
     await loadProfileState();
     await loadWorkbooksState();
+    await loadDesignArtifacts();
     await loadDesignBomWorkspace();
     loadMcpHelp();
     loadInfo();
@@ -1949,6 +1958,213 @@
     return info.test_results_token;
   }
 
+  async function loadDesignArtifacts(force = false) {
+    const errEl = document.getElementById('design-artifacts-error');
+    const detailEl = document.getElementById('design-artifact-detail');
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const res = await fetch('/api/v1/design-artifacts', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      artifactState.artifacts = Array.isArray(data) ? data : [];
+      const stillSelected = artifactState.artifacts.some(item => item.artifact_id === artifactState.selectedArtifactId);
+      if (force || !stillSelected) artifactState.selectedArtifactId = artifactState.artifacts[0]?.artifact_id || null;
+      renderDesignArtifactList();
+      if (artifactState.selectedArtifactId) {
+        await loadSelectedDesignArtifactDetail();
+      } else if (detailEl) {
+        detailEl.innerHTML = '<div class="empty-state">No design artifacts ingested yet.</div>';
+      }
+    } catch (e) {
+      artifactState.artifacts = [];
+      artifactState.selectedArtifactId = null;
+      renderDesignArtifactList();
+      if (detailEl) detailEl.innerHTML = `<div class="empty-state">Failed to load design artifacts: ${esc(e.message)}</div>`;
+      if (errEl) {
+        errEl.textContent = 'Failed to load design artifacts: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  function renderDesignArtifactList() {
+    const bodyEl = document.getElementById('design-artifact-list-body');
+    if (!bodyEl) return;
+    if (!artifactState.artifacts.length) {
+      bodyEl.innerHTML = '<tr><td colspan="9" class="empty-state">No design artifacts available for the active workbook.</td></tr>';
+      return;
+    }
+    bodyEl.innerHTML = artifactState.artifacts.map(item => {
+      const selected = item.artifact_id === artifactState.selectedArtifactId;
+      const canReingest = !!item.reingestable;
+      const reingestLabel = canReingest ? 'Re-ingest' : ((item.kind === 'rtm_workbook' && (item.ingest_source || '') === 'workbook_sync') ? 'Provider-managed' : 'Read-only');
+      return `<tr${selected ? ' class="warning"' : ''}>
+        <td>${esc(formatDesignArtifactKind(item.kind))}</td>
+        <td>${esc(item.display_name || '—')}</td>
+        <td><span class="req-id">${esc(item.logical_key || '—')}</span></td>
+        <td>${esc(String(item.requirement_count || 0))}</td>
+        <td>${esc(String(item.conflict_count || 0))}</td>
+        <td>${esc(String(item.null_text_count || 0))}</td>
+        <td>${esc(String(item.low_confidence_count || 0))}</td>
+        <td>${esc(formatUnixTimestamp(item.last_ingested_at))}</td>
+        <td>
+          <div class="bom-inline-actions">
+            <button class="btn" data-action="select-design-artifact" data-artifact-id="${esc(item.artifact_id || '')}">${selected ? 'Selected' : 'Inspect'}</button>
+            <button class="btn" data-action="reingest-design-artifact" data-artifact-id="${esc(item.artifact_id || '')}"${canReingest ? '' : ' disabled title="This artifact cannot be re-ingested from the dashboard."'}>${reingestLabel}</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function selectDesignArtifact(artifactId) {
+    artifactState.selectedArtifactId = artifactId || null;
+    renderDesignArtifactList();
+    await loadSelectedDesignArtifactDetail();
+  }
+
+  async function loadSelectedDesignArtifactDetail() {
+    const detailEl = document.getElementById('design-artifact-detail');
+    if (!detailEl) return;
+    if (!artifactState.selectedArtifactId) {
+      detailEl.innerHTML = '<div class="empty-state">Select a design artifact to inspect it.</div>';
+      return;
+    }
+    detailEl.innerHTML = '<div class="empty-state">Loading design artifact detail…</div>';
+    try {
+      const res = await fetch(`/api/v1/design-artifacts/${encodeURIComponent(artifactState.selectedArtifactId)}`, { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      const props = propsObj(data.properties);
+      const assertions = Array.isArray(data.assertions) ? data.assertions : [];
+      const extractionSummary = data.extraction_summary || {};
+      const conflictRows = Array.isArray(data.conflicts) ? data.conflicts : [];
+      const nullTextRows = assertions.filter(item => !item.text || item.parse_status === 'null_text');
+      const lowConfidenceRows = assertions.filter(item => String(item.parse_status || '').startsWith('low_confidence_'));
+      const newIds = Array.isArray(data.new_since_last_ingest) ? data.new_since_last_ingest : [];
+      const ingestSummary = data.ingest_summary || null;
+      detailEl.innerHTML = `
+        <div class="toolbar card-toolbar">
+          <span class="card-title">${esc(props.display_name || artifactState.selectedArtifactId || '')}</span>
+        </div>
+        <div class="bom-metrics">
+          <div class="bom-metric"><div class="bom-metric-label">Kind</div><div class="bom-metric-value">${esc(formatDesignArtifactKind(props.kind || ''))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Requirements</div><div class="bom-metric-value">${esc(String(assertions.length))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Conflicts</div><div class="bom-metric-value">${esc(String(conflictRows.length))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Null Text</div><div class="bom-metric-value">${esc(String(nullTextRows.length))}</div></div>
+          <div class="bom-metric"><div class="bom-metric-label">Low Confidence</div><div class="bom-metric-value">${esc(String(extractionSummary.low_confidence_count || lowConfidenceRows.length || 0))}</div></div>
+        </div>
+        <div class="repo-row repo-row--block">
+          <div><strong>Path</strong> ${esc(props.path || '—')}</div>
+          <div class="text-sm-subtle">Logical key ${esc(props.logical_key || '—')} · source ${esc(props.ingest_source || '—')} · last ingested ${esc(formatUnixTimestamp(props.last_ingested_at))}</div>
+        </div>
+        ${ingestSummary ? `<div class="repo-row repo-row--block"><div><strong>Last Ingest</strong> ${esc(String(ingestSummary.disposition || ''))}</div><div class="text-sm-subtle">seen ${esc(String(ingestSummary.requirements_seen || 0))} · added ${esc(String(ingestSummary.nodes_added || 0))} · updated ${esc(String(ingestSummary.nodes_updated || 0))} · deleted ${esc(String(ingestSummary.nodes_deleted || 0))} · unchanged ${esc(String(ingestSummary.unchanged || 0))}</div></div>` : ''}
+        ${newIds.length ? `<div class="repo-row repo-row--block"><div><strong>New Since Last Ingest</strong></div><div class="text-sm-subtle">${newIds.map(id => `<span class="req-id">${esc(id)}</span>`).join(' ')}</div></div>` : ''}
+        ${conflictRows.length ? `<div class="table-scroll mb-12"><table><thead><tr><th>Requirement</th><th>Other Artifact</th><th>Kind</th><th>Other Text</th></tr></thead><tbody>${conflictRows.map(item => `<tr><td><span class="req-id">${esc(item.req_id || '—')}</span></td><td>${esc(item.other_artifact_id || '—')}</td><td>${esc(formatDesignArtifactKind(item.other_source_kind || ''))}</td><td>${esc(item.other_text || '—')}</td></tr>`).join('')}</tbody></table></div>` : ''}
+        ${nullTextRows.length ? `<div class="repo-row repo-row--block"><div><strong>Null Text Rows</strong></div><div class="text-sm-subtle">${nullTextRows.map(item => `<span class="req-id">${esc(item.req_id || '—')}</span>`).join(' ')}</div></div>` : ''}
+        ${lowConfidenceRows.length ? `<div class="repo-row repo-row--block"><div><strong>Low Confidence Rows</strong></div><div class="text-sm-subtle">${lowConfidenceRows.map(item => `<span class="req-id">${esc(item.req_id || '—')}</span> (${esc(item.parse_status || '')})`).join(' · ')}</div></div>` : ''}
+        ${assertions.length ? `<div class="table-scroll"><table>
+          <thead>
+            <tr>
+              <th>Requirement</th>
+              <th>Section</th>
+              <th>Text</th>
+              <th>Hash</th>
+              <th>Status</th>
+              <th>Occurrences</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${assertions.map(item => `<tr>
+              <td><span class="req-id">${esc(item.req_id || '—')}</span></td>
+              <td>${esc(item.section || '—')}</td>
+              <td>${esc(item.text || '—')}</td>
+              <td>${esc(item.hash || '—')}</td>
+              <td>${esc(item.parse_status || 'ok')}</td>
+              <td>${esc(String(item.occurrence_count || 0))}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table></div>` : '<div class="empty-state">No extracted requirement assertions.</div>'}
+      `;
+    } catch (e) {
+      detailEl.innerHTML = `<div class="empty-state">Failed to load design artifact detail: ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function uploadDesignArtifactFile(file) {
+    const resultEl = document.getElementById('design-artifact-upload-result');
+    const errEl = document.getElementById('design-artifacts-error');
+    const kindEl = document.getElementById('design-artifact-kind');
+    const displayNameEl = document.getElementById('design-artifact-display-name');
+    if (!resultEl || !kindEl) return;
+    if (errEl) errEl.style.display = 'none';
+    resultEl.textContent = `Uploading ${file.name}…`;
+    try {
+      const token = await currentIngestToken();
+      const formData = new FormData();
+      formData.append('file', file, file.name);
+      formData.append('kind', kindEl.value || 'srs_docx');
+      if (displayNameEl?.value.trim()) formData.append('display_name', displayNameEl.value.trim());
+      const res = await fetch('/api/v1/design-artifacts/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      resultEl.innerHTML = renderDesignArtifactUploadResult(data, file.name);
+      await loadDesignArtifacts(true);
+      if (data.artifact_id) {
+        artifactState.selectedArtifactId = data.artifact_id;
+        renderDesignArtifactList();
+        await loadSelectedDesignArtifactDetail();
+      }
+    } catch (e) {
+      resultEl.textContent = '';
+      if (errEl) {
+        errEl.textContent = 'Design artifact upload failed: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  function renderDesignArtifactUploadResult(data, fallbackName) {
+    return `<div class="repo-row repo-row--block">
+      <div><strong>${esc(data.artifact_id || fallbackName || 'artifact')}</strong></div>
+      <div class="text-sm-subtle">${esc(formatDesignArtifactKind(data.kind || ''))} · stored at ${esc(data.path || '—')}</div>
+      ${data.ingest_summary ? `<div class="text-sm-subtle">seen ${esc(String(data.ingest_summary.requirements_seen || 0))} · conflicts ${esc(String(data.ingest_summary.conflicts_detected || 0))} · null text ${esc(String(data.ingest_summary.null_text_count || 0))} · low confidence ${esc(String(data.ingest_summary.low_confidence_count || 0))}</div>` : ''}
+    </div>`;
+  }
+
+  async function reingestDesignArtifact(artifactId) {
+    if (!artifactId) return;
+    const errEl = document.getElementById('design-artifacts-error');
+    if (errEl) errEl.style.display = 'none';
+    try {
+      const token = await currentIngestToken();
+      const res = await fetch(`/api/v1/design-artifacts/${encodeURIComponent(artifactId)}/reingest`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      artifactState.selectedArtifactId = artifactId;
+      await loadDesignArtifacts();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = 'Re-ingest failed: ' + e.message;
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  function formatDesignArtifactKind(kind) {
+    if (kind === 'rtm_workbook') return 'RTM Workbook';
+    if (kind === 'srs_docx') return 'SRS';
+    if (kind === 'sysrd_docx') return 'SysRD / SRD';
+    return kind || '—';
+  }
+
   async function uploadBomArtifactFile(file) {
     const resultEl = document.getElementById('bom-upload-result');
     const errEl = document.getElementById('design-boms-error');
@@ -2498,31 +2714,21 @@
     document.getElementById('lobby').classList.add('visible');
     _trapLobby();
     try {
-      const res = await fetch('/api/status');
-      const status = await res.json();
-      licenseStatusCache = status.license || null;
-      if (status.license && status.license.permits_use === false) {
-        showLicenseGate(status.license);
-        return;
-      }
+      const status = await loadStatus(true);
       applyStatus(status);
       resetLobbyScreens(1);
       lobbyCurrentScreen = 1;
+      if (mode === 'add') {
+        lobbyState.sourceOfTruth = 'workbook_first';
+      }
+      if (lobbyState.sourceOfTruth) {
+        selectSourceOfTruth(lobbyState.sourceOfTruth);
+      } else {
+        selectSourceOfTruth(mode === 'add' ? 'workbook_first' : null);
+      }
       updateLobbyNav();
-      if (status.connection_block_reason && status.workbook_url && status.platform && lobbyState.profileId) {
-        lobbyCurrentScreen = 1;
-        showScreen(3, 'forward');
-        return;
-      }
-      if (!status.connection_block_reason && status.workbook_url && status.platform && lobbyState.profileId) {
-        lobbyCurrentScreen = 1;
-        showScreen(4, 'forward');
-        return;
-      }
       return;
     } catch (_) {}
-    lobbyState.displayName = '';
-    document.getElementById('lobby-display-name').value = '';
     resetLobbyScreens(1);
     lobbyCurrentScreen = 1;
     updateLobbyNav();
@@ -2530,7 +2736,6 @@
 
   function clearProfileSelection() {
     lobbyState.profileId = null;
-    lobbyState.prefilledConnection = false;
     document.querySelectorAll('.profile-row').forEach(row => {
       row.classList.remove('selected');
       row.setAttribute('aria-selected', 'false');
@@ -2544,68 +2749,20 @@
     document.querySelector(`.lobby-screen[data-screen="${activeScreen}"]`)?.classList.add('active');
   }
 
-  function applyStatus(status) {
-    lobbyState.localWorkspace = Boolean(status.active_workbook && !status.platform && !status.workbook_url);
-    if (status.active_workbook && status.active_workbook.display_name) {
-      lobbyState.displayName = status.active_workbook.display_name;
-      const displayNameEl = document.getElementById('lobby-display-name');
-      if (displayNameEl) displayNameEl.value = status.active_workbook.display_name;
-    }
-    if (status.platform) {
-      lobbyState.provider = status.platform;
-      selectProvider(status.platform);
-    } else if (lobbyState.localWorkspace) {
-      lobbyState.provider = 'local';
-      selectProvider('local');
-    }
-    if (status.workbook_url) {
-      lobbyState.workbookUrl = status.workbook_url;
-      document.getElementById('lobby-url').value = status.workbook_url;
-    }
-    lobbyState.prefilledConnection = Boolean(status.platform && status.workbook_url);
-    if (status.platform === 'google' && status.credential_display) {
-      lobbyState.googleCredentialEmail = status.credential_display;
-      document.getElementById('sa-loaded-email').textContent = status.credential_display;
-      document.getElementById('sa-upload-zone').style.display = 'none';
-      document.getElementById('sa-loaded-chip').style.display = '';
-      document.getElementById('lobby-share-hint').style.display = 'block';
-    }
-    if (status.profile) {
-      const backendToUi = { medical:'medical', aerospace:'aerospace', automotive:'automotive', generic:null };
-      const uiId = backendToUi[status.profile] ?? null;
-      if (uiId !== null) {
-        lobbyState.profileId = uiId;
-        document.querySelectorAll('.profile-row').forEach(row => {
-          row.classList.toggle('selected', row.dataset.profileId === uiId);
-          row.setAttribute('aria-selected', row.dataset.profileId === uiId ? 'true' : 'false');
-        });
-      } else {
-        clearProfileSelection();
-      }
-      // generic → profileId stays null, user must re-select from the expanded list
-    } else {
-      clearProfileSelection();
-    }
-    updateLobbyConnectionMessage(status);
-  }
-
   function connectionBlockMessage(status) {
     switch (status?.connection_block_reason) {
       case 'legacy_plaintext_credentials':
         return status?.platform === 'excel'
-          ? 'This workspace was configured before secure credential storage. Reconnect on Step 3 by entering the Excel Online tenant ID, client ID, and client secret again.'
-          : 'This workspace was configured before secure credential storage. Reconnect on Step 3 by uploading the Google service-account JSON again.';
+          ? 'Stored Excel Online credentials need to be re-entered before this workbook can sync.'
+          : 'Stored Google Sheets credentials need to be re-uploaded before this workbook can sync.';
       case 'secure_storage_unsupported':
-        return 'Secure credential storage is not available on this platform. RTMify Live cannot save provider credentials here.';
+        return 'Secure credential storage is not available on this platform.';
       case 'secret_not_found':
       case 'secret_store_error':
-        return status?.platform === 'excel'
-          ? 'Stored Excel Online credentials are unavailable. Reconnect on Step 3 by entering the tenant ID, client ID, and client secret again.'
-          : 'Stored Google Sheets credentials are unavailable. Reconnect on Step 3 by uploading the service-account JSON again.';
       case 'credential_ref_missing':
         return status?.platform === 'excel'
-          ? 'Stored Excel Online credentials are incomplete. Reconnect on Step 3 by entering the tenant ID, client ID, and client secret again.'
-          : 'Stored Google Sheets credentials are incomplete. Reconnect on Step 3 by uploading the service-account JSON again.';
+          ? 'Stored Excel Online credentials are unavailable. Re-enter them to continue.'
+          : 'Stored Google Sheets credentials are unavailable. Re-upload the service-account JSON to continue.';
       default:
         return '';
     }
@@ -2615,8 +2772,9 @@
     const errEl = document.getElementById('lobby-error');
     if (!errEl) return;
     const msg = connectionBlockMessage(status);
+    if (!msg) return;
     errEl.textContent = msg;
-    errEl.style.display = msg ? 'block' : 'none';
+    errEl.style.display = 'block';
   }
 
   function connectionErrorMessage(code, platform) {
@@ -2697,9 +2855,6 @@
     const gate = document.getElementById('license-gate');
     const stateEl = document.getElementById('license-gate-state');
     const errEl = document.getElementById('license-gate-error');
-    const lobby = document.getElementById('lobby');
-    if (lobby) lobby.classList.remove('visible');
-    _releaseLobby();
     if (stateEl) stateEl.textContent = licenseStateMessage(status);
     if (errEl) {
       const message = errorMessage || status?.message || '';
@@ -2723,28 +2878,6 @@
     licenseStatusCache = data.license || null;
     syncLicenseInfo(licenseStatusCache);
     return licenseStatusCache;
-  }
-
-  async function continueLicensedBoot(statusPayload = null) {
-    const status = statusPayload || await (async () => {
-      const res = await fetch('/api/status', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    })();
-
-    licenseStatusCache = status.license || licenseStatusCache;
-    syncLicenseInfo(licenseStatusCache);
-    hideLicenseGate();
-
-    if (status.configured) {
-      document.getElementById('lobby').classList.remove('visible');
-      _releaseLobby();
-      await loadData();
-      await handleGuideHash();
-      return;
-    }
-
-    await showLobby();
   }
 
   function chooseLicenseFile() {
@@ -2775,7 +2908,8 @@
         showLicenseGate(status, status?.message || `License import failed (HTTP ${res.status})`);
         return;
       }
-      await continueLicensedBoot();
+      hideLicenseGate();
+      await refreshLicenseStatus();
     } catch (e) {
       showLicenseGate(licenseStatusCache, e.message);
     } finally {
@@ -2802,13 +2936,13 @@
 
   async function refreshLicenseStatus() {
     try {
-      const status = await loadLicenseStatus(true);
-      licenseStatusCache = status;
-      syncLicenseInfo(status);
-      if (status?.permits_use) {
-        await continueLicensedBoot();
+      const status = await loadStatus(true);
+      if (status.workspace_ready && document.getElementById('lobby').classList.contains('visible')) {
+        showSuccess(status);
+      } else if (status.workspace_ready) {
+        await enterWorkspace(status);
       } else {
-        showLicenseGate(status, status?.message || '');
+        hideLicenseGate();
       }
     } catch (e) {
       showLicenseGate(licenseStatusCache, e.message);
@@ -2818,96 +2952,6 @@
   document.getElementById('license-file-input')?.addEventListener('change', (event) => {
     const file = event.target?.files?.[0] || null;
     void importLicenseFile(file);
-  });
-
-  // --- Service-account drag and drop ---
-
-  function onSaDragOver(e) {
-    e.preventDefault();
-    document.getElementById('sa-upload-zone').classList.add('drag-over');
-  }
-
-  function onSaDragLeave(e) {
-    if (!e.currentTarget.contains(e.relatedTarget)) {
-      document.getElementById('sa-upload-zone').classList.remove('drag-over');
-    }
-  }
-
-  async function onSaDrop(e) {
-    e.preventDefault();
-    document.getElementById('sa-upload-zone').classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (lobbyState.provider === 'google' && file) await uploadSaFile(file);
-  }
-
-  async function uploadSaFile(file) {
-    const errEl = document.getElementById('lobby-error');
-    errEl.style.display = 'none';
-
-    let text;
-    try {
-      text = await file.text();
-    } catch {
-      errEl.textContent = 'Could not read that file.';
-      errEl.style.display = 'block';
-      return;
-    }
-
-    try {
-      const parsed = parseGoogleServiceAccountJson(text);
-      lobbyState.googleCredentialEmail = parsed.client_email;
-      lobbyState.googleCredentialJson = text;
-    } catch (err) {
-      errEl.textContent = err.message || 'Invalid Google service-account JSON.';
-      errEl.style.display = 'block';
-      return;
-    }
-
-    document.getElementById('sa-loaded-email').textContent = lobbyState.googleCredentialEmail;
-    document.getElementById('sa-upload-zone').style.display = 'none';
-    document.getElementById('sa-loaded-chip').style.display = '';
-    document.getElementById('lobby-share-hint').style.display = 'block';
-  }
-
-  function parseGoogleServiceAccountJson(text) {
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error('Invalid JSON file.');
-    }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('That file is JSON, but it is not a Google service-account credential.');
-    }
-    if (parsed.type !== 'service_account') {
-      throw new Error('That file is JSON, but it is not a Google service-account credential.');
-    }
-    if (typeof parsed.client_email !== 'string' || !parsed.client_email.trim()) {
-      throw new Error('Google service-account JSON is missing client_email.');
-    }
-    if (typeof parsed.private_key !== 'string' || !parsed.private_key.trim()) {
-      throw new Error('Google service-account JSON is missing private_key.');
-    }
-    return parsed;
-  }
-
-  function validateExcelCredentials(tenantId, clientId, clientSecret) {
-    if (!tenantId || !clientId || !clientSecret) {
-      throw new Error('Enter all Azure credentials to continue.');
-    }
-    if (!tenantId.trim() || !clientId.trim() || !clientSecret.trim()) {
-      throw new Error('Excel Online credentials cannot be blank.');
-    }
-    return {
-      tenantId: tenantId.trim(),
-      clientId: clientId.trim(),
-      clientSecret: clientSecret.trim(),
-    };
-  }
-
-  document.getElementById('sa-file-input').addEventListener('change', function() {
-    if (this.files[0]) uploadSaFile(this.files[0]);
-    this.value = '';
   });
 
   // --- Node drawer ---
@@ -3294,17 +3338,17 @@
   // --- Lobby ---
 
   const lobbyState = {
-    displayName: '',
     profileId: null,
+    sourceOfTruth: null,
     provider: 'google',
-    localWorkspace: false,
     googleCredentialJson: '',
     googleCredentialEmail: '',
     excelTenantId: '',
     excelClientId: '',
     excelClientSecret: '',
     workbookUrl: '',
-    prefilledConnection: false,
+    sourceArtifactFileName: '',
+    sourceArtifactKind: '',
   };
 
   let lobbyCurrentScreen = 1;
@@ -3348,7 +3392,6 @@
 
   function selectProfile(id) {
     lobbyState.profileId = id;
-    lobbyState.prefilledConnection = false;
     document.querySelectorAll('.profile-row').forEach(row => {
       const isSelected = row.dataset.profileId === id;
       row.classList.toggle('selected', isSelected);
@@ -3358,18 +3401,58 @@
 
   function selectProvider(provider) {
     lobbyState.provider = provider;
-    lobbyState.prefilledConnection = false;
-    document.getElementById('tile-google').classList.toggle('selected', provider === 'google');
-    document.getElementById('tile-excel').classList.toggle('selected', provider === 'excel');
-    document.getElementById('tile-local').classList.toggle('selected', provider === 'local');
-    document.getElementById('tile-local').style.display = lobbyState.localWorkspace ? '' : 'none';
-    document.getElementById('s3-google').style.display = provider === 'google' ? '' : 'none';
-    document.getElementById('s3-excel').style.display = provider === 'excel' ? '' : 'none';
-    document.getElementById('s3-local').style.display = provider === 'local' ? '' : 'none';
-    document.getElementById('lobby-url-wrap').style.display = provider === 'local' ? 'none' : '';
-    document.getElementById('lobby-url').placeholder = provider === 'excel'
-      ? 'https://tenant.sharepoint.com/:x:/r/sites/…'
-      : 'https://docs.google.com/spreadsheets/d/…';
+    const googleTile = document.getElementById('tile-google');
+    const excelTile = document.getElementById('tile-excel');
+    const googlePanel = document.getElementById('s3-google');
+    const excelPanel = document.getElementById('s3-excel');
+    const urlInput = document.getElementById('lobby-url');
+    if (googleTile) googleTile.classList.toggle('selected', provider === 'google');
+    if (excelTile) excelTile.classList.toggle('selected', provider === 'excel');
+    if (googlePanel) googlePanel.style.display = provider === 'google' ? '' : 'none';
+    if (excelPanel) excelPanel.style.display = provider === 'excel' ? '' : 'none';
+    if (urlInput) {
+      urlInput.placeholder = provider === 'excel'
+        ? 'https://tenant.sharepoint.com/:x:/r/sites/…'
+        : 'https://docs.google.com/spreadsheets/d/…';
+    }
+  }
+
+  function selectSourceOfTruth(source) {
+    lobbyState.sourceOfTruth = source;
+    const docTile = document.getElementById('tile-document-source');
+    const workbookTile = document.getElementById('tile-workbook-source');
+    if (docTile) docTile.classList.toggle('selected', source === 'document_first');
+    if (workbookTile) workbookTile.classList.toggle('selected', source === 'workbook_first');
+    const uploadPanel = document.getElementById('source-upload-panel');
+    if (uploadPanel) uploadPanel.style.display = source === 'document_first' ? '' : 'none';
+    if (lobbyMode === 'add') {
+      document.getElementById('source-screen-headline').textContent = 'Connect another workbook';
+      document.getElementById('source-tiles')?.classList.add('provider-tiles-single');
+      if (docTile) docTile.style.display = 'none';
+      if (workbookTile) workbookTile.style.display = '';
+    } else {
+      document.getElementById('source-screen-headline').textContent = 'What is your source of truth?';
+      document.getElementById('source-tiles')?.classList.remove('provider-tiles-single');
+      if (docTile) docTile.style.display = '';
+      if (workbookTile) workbookTile.style.display = '';
+    }
+  }
+
+  function visibleLobbyScreens() {
+    if (lobbyMode === 'add') return [1, 3, 4];
+    if (lobbyState.sourceOfTruth === 'document_first') return [1, 2, 4];
+    return [1, 2, 3, 4];
+  }
+
+  function renderLobbyDots() {
+    const dots = document.getElementById('lobby-dots');
+    const screens = visibleLobbyScreens();
+    dots.innerHTML = screens.map((screen) => `<div class="lobby-dot${screen === lobbyCurrentScreen ? ' active' : ''}" data-dot="${screen}"></div>`).join('');
+    dots.style.visibility = lobbyCurrentScreen === 5 ? 'hidden' : '';
+    document.getElementById('lobby-screen-label-1').textContent = `Step 1 of ${screens.length}`;
+    document.getElementById('lobby-screen-label-2').textContent = `Step ${Math.max(2, screens.indexOf(2) + 1 || 2)} of ${screens.length}`;
+    document.getElementById('lobby-screen-label-3').textContent = `Step ${screens.indexOf(3) + 1} of ${screens.length}`;
+    document.getElementById('lobby-screen-label-4').textContent = `Step ${screens.indexOf(4) + 1} of ${screens.length}`;
   }
 
   function showScreen(n, direction) {
@@ -3395,82 +3478,77 @@
 
     lobbyCurrentScreen = n;
     updateLobbyNav();
-    if (n === 4) renderMissionBrief();
+    if (n === 4) renderLicenseStep();
   }
 
   function updateLobbyNav() {
     const backBtn = document.getElementById('lobby-back-btn');
-    const dots = document.getElementById('lobby-dots');
     const onSuccess = lobbyCurrentScreen === 5;
-    backBtn.classList.toggle('visible', lobbyCurrentScreen > 1 && !onSuccess);
-    dots.style.visibility = onSuccess ? 'hidden' : '';
-    document.querySelectorAll('.lobby-dot').forEach(dot => {
-      dot.classList.toggle('active', Number(dot.dataset.dot) === lobbyCurrentScreen);
-    });
+    backBtn.classList.toggle('visible', visibleLobbyScreens()[0] !== lobbyCurrentScreen && !onSuccess);
+    renderLobbyDots();
   }
 
-  function lobbyNext(fromScreen) {
+  async function persistLobbyProfileSelection() {
+    const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
+    if (!profile) throw new Error('Select a profile to continue.');
+    const res = await fetch('/api/profile', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ profile: profile.backendId }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+  }
+
+  async function lobbyNext(fromScreen) {
     const errEl = document.getElementById('lobby-error');
     errEl.style.display = 'none';
     if (fromScreen === 1) {
-      if (!lobbyState.displayName) {
-        errEl.textContent = 'Enter a workbook display name to continue.';
-        errEl.style.display = 'block';
-        return;
-      }
       if (!lobbyState.profileId) {
         errEl.textContent = 'Select a profile to continue.';
         errEl.style.display = 'block';
         return;
       }
-      showScreen(2, 'forward');
-    } else if (fromScreen === 2) {
-      showScreen(3, 'forward');
-    } else if (fromScreen === 3) {
-      lobbyStateFromInputs();
-      if (lobbyState.provider === 'google') {
-        if (!lobbyState.googleCredentialJson) {
-          errEl.textContent = 'Upload a service-account.json file to continue.';
-          errEl.style.display = 'block';
-          return;
-        }
-      } else if (lobbyState.provider === 'excel') {
-        try {
-          validateExcelCredentials(lobbyState.excelTenantId, lobbyState.excelClientId, lobbyState.excelClientSecret);
-        } catch (err) {
-          errEl.textContent = err.message || 'Enter all Azure credentials to continue.';
-          errEl.style.display = 'block';
-          return;
-        }
-      }
-      if (lobbyState.provider !== 'local' && !lobbyState.workbookUrl) {
-        errEl.textContent = 'Enter a workbook URL to continue.';
+      try {
+        await persistLobbyProfileSelection();
+      } catch (err) {
+        errEl.textContent = 'Failed to save profile: ' + (err.message || err);
         errEl.style.display = 'block';
         return;
       }
-      showScreen(4, 'forward');
+      showScreen(lobbyMode === 'add' ? 3 : 2, 'forward');
+    } else if (fromScreen === 2) {
+      if (!lobbyState.sourceOfTruth) {
+        errEl.textContent = 'Choose a source of truth to continue.';
+        errEl.style.display = 'block';
+        return;
+      }
+      if (lobbyState.sourceOfTruth === 'document_first') {
+        errEl.textContent = 'Upload a requirements artifact to continue.';
+        errEl.style.display = 'block';
+        return;
+      }
+      showScreen(3, 'forward');
+    } else if (fromScreen === 3) {
+      await connectWorkbookSource();
     }
   }
 
   function lobbyBack() {
-    if (lobbyCurrentScreen > 1) showScreen(lobbyCurrentScreen - 1, 'back');
+    const screens = visibleLobbyScreens();
+    const idx = screens.indexOf(lobbyCurrentScreen);
+    if (idx > 0) showScreen(screens[idx - 1], 'back');
   }
 
   function lobbyStateFromInputs() {
-    lobbyState.displayName = document.getElementById('lobby-display-name').value.trim();
     const workbookUrl = document.getElementById('lobby-url').value.trim();
-    if (workbookUrl !== lobbyState.workbookUrl) lobbyState.prefilledConnection = false;
     lobbyState.workbookUrl = workbookUrl;
     if (lobbyState.provider === 'excel') {
-      const tenantId = document.getElementById('excel-tenant-id').value.trim();
-      const clientId = document.getElementById('excel-client-id').value.trim();
-      const clientSecret = document.getElementById('excel-client-secret').value.trim();
-      if (tenantId !== lobbyState.excelTenantId || clientId !== lobbyState.excelClientId || clientSecret !== lobbyState.excelClientSecret) {
-        lobbyState.prefilledConnection = false;
-      }
-      lobbyState.excelTenantId     = tenantId;
-      lobbyState.excelClientId     = clientId;
-      lobbyState.excelClientSecret = clientSecret;
+      lobbyState.excelTenantId = document.getElementById('excel-tenant-id').value.trim();
+      lobbyState.excelClientId = document.getElementById('excel-client-id').value.trim();
+      lobbyState.excelClientSecret = document.getElementById('excel-client-secret').value.trim();
     }
   }
 
@@ -3482,71 +3560,74 @@
     eye.style.opacity = isPassword ? '0.4' : '1';
   }
 
-  function renderMissionBrief() {
-    const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
-    if (!profile) return;
-    const authorizeLabel = document.getElementById('authorize-label');
-    const authorizeFill = document.getElementById('authorize-fill');
-    const authorizeBtn = document.getElementById('authorize-btn');
-    if (authorizeLabel) authorizeLabel.textContent = lobbyState.provider === 'local' ? 'Open Workspace' : 'Authorize & Connect';
-    if (authorizeFill) authorizeFill.style.width = '0%';
-    if (authorizeBtn) authorizeBtn.disabled = false;
-    document.getElementById('brief-headline').textContent = profile.tagline;
-    const urlDisplay = lobbyState.workbookUrl.length > 44
-      ? '…' + lobbyState.workbookUrl.slice(-42) : lobbyState.workbookUrl;
-    const accountDisplay = lobbyState.provider === 'google'
-      ? (lobbyState.googleCredentialEmail || '—')
-      : lobbyState.provider === 'excel'
-        ? (lobbyState.excelTenantId || '—')
-        : 'Not applicable';
-    const providerLabel = lobbyState.provider === 'google'
-      ? 'Google Sheets'
-      : lobbyState.provider === 'excel'
-        ? 'Excel Online'
-        : 'Existing Local DB';
-    document.getElementById('mission-brief').innerHTML = `
-      <div class="brief-row"><span class="brief-key">Profile</span><span class="brief-val plain">${profile.label}</span></div>
-      <div class="brief-row"><span class="brief-key">Standard</span><span class="brief-val plain">${profile.standards}</span></div>
-      <div class="brief-row"><span class="brief-key">Provider</span><span class="brief-val plain">${providerLabel}</span></div>
-      <div class="brief-row"><span class="brief-key">Account</span><span class="brief-val">${esc(accountDisplay)}</span></div>
-      <div class="brief-row"><span class="brief-key">${lobbyState.provider === 'local' ? 'Workspace' : 'Workbook'}</span><span class="brief-val">${esc(lobbyState.provider === 'local' ? lobbyState.displayName : urlDisplay)}</span></div>`;
+  function renderLicenseStep() {
+    const status = currentStatus || {};
+    const locked = (status.license_required_features || []).join(', ') || 'Reports, MCP, repository scanning, code traceability, and background sync';
+    document.getElementById('license-step-mode').textContent = status.license?.permits_use ? 'Licensed' : 'Preview';
+    document.getElementById('license-step-status').textContent = status.license?.permits_use ? 'A valid license is installed.' : 'No active license is installed. You can continue in preview mode.';
+    document.getElementById('license-step-locked').textContent = locked;
   }
 
-  function showSuccess() {
+  function showSuccess(status = currentStatus || {}) {
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId) || { label: '—', standards: '—' };
-    document.getElementById('success-sub').textContent =
-      `${profile.label} · ${lobbyState.provider === 'google' ? 'Google Sheets' : lobbyState.provider === 'excel' ? 'Excel Online' : 'Existing Local DB'}`;
+    const sourceLabel = status.source_of_truth === 'document_first'
+      ? 'Requirements Artifact'
+      : `${lobbyState.provider === 'google' ? 'Google Sheets' : 'Excel Online'} Workbook`;
+    document.getElementById('success-title').textContent = status.hobbled_mode ? 'Preview workspace ready.' : 'Workspace ready.';
+    document.getElementById('success-sub').textContent = `${profile.label} · ${sourceLabel}`;
     document.getElementById('success-detail').innerHTML = `
       <div class="success-detail-row"><span class="success-detail-key">Standard</span><span class="success-detail-val">${esc(profile.standards)}</span></div>
-      <div class="success-detail-row"><span class="success-detail-key">${lobbyState.provider === 'local' ? 'Workspace' : 'Account'}</span><span class="success-detail-val">${esc(lobbyState.provider === 'google' ? (lobbyState.googleCredentialEmail || '—') : lobbyState.provider === 'excel' ? (lobbyState.excelTenantId || '—') : (lobbyState.displayName || '—'))}</span></div>
-      <div class="success-detail-row"><span class="success-detail-key">${lobbyState.provider === 'local' ? 'State' : 'Sync'}</span><span class="success-detail-val">${lobbyState.provider === 'local' ? 'Ready' : 'Starting…'}</span></div>`;
+      <div class="success-detail-row"><span class="success-detail-key">Source</span><span class="success-detail-val">${esc(sourceLabel)}</span></div>
+      <div class="success-detail-row"><span class="success-detail-key">Mode</span><span class="success-detail-val">${status.hobbled_mode ? 'Preview mode' : 'Licensed mode'}</span></div>`;
     showScreen(5, 'forward');
   }
 
-  function openWorkspace() {
+  async function enterWorkspace(status = null) {
+    if (!status) status = currentStatus || await loadStatus(true);
+    hideLicenseGate();
     document.getElementById('lobby').classList.remove('visible');
     _releaseLobby();
-    loadWorkbooksState();
-    loadData();
+    syncPreviewUi(status);
+    await loadWorkbooksState();
+    await loadData();
+    await handleGuideHash();
+  }
+
+  async function openWorkspace() {
+    const status = await loadStatus(true).catch(() => currentStatus || {});
+    document.getElementById('lobby').classList.remove('visible');
+    _releaseLobby();
+    syncPreviewUi(status);
+    await loadWorkbooksState();
+    await loadData();
+    await handleGuideHash();
   }
 
   function openAddWorkbook() {
     showSettingsTab('workbooks');
-    showLobby('add');
+    void showLobby('add');
   }
 
   function clearCredential() {
     lobbyState.googleCredentialJson = '';
     lobbyState.googleCredentialEmail = '';
-    lobbyState.prefilledConnection = false;
     document.getElementById('sa-upload-zone').style.display = '';
     document.getElementById('sa-loaded-chip').style.display = 'none';
     document.getElementById('lobby-share-hint').style.display = 'none';
   }
 
+  function clearSourceArtifact() {
+    lobbyState.sourceArtifactFileName = '';
+    lobbyState.sourceArtifactKind = '';
+    document.getElementById('source-upload-chip').classList.remove('visible');
+    document.getElementById('source-artifact-zone').style.display = '';
+  }
+
   function _trapLobby() {
     document.querySelector('main').inert = true;
     document.querySelector('header').inert = true;
+    document.getElementById('preview-banner')?.classList.remove('visible');
+    document.getElementById('attach-workbook-prompt')?.classList.remove('visible');
     document.querySelector('nav.nav-primary').inert = true;
     document.querySelectorAll('.nav-sub').forEach(n => { n.inert = true; });
     const first = document.querySelector('#lobby .profile-row');
@@ -3560,41 +3641,6 @@
     document.querySelectorAll('.nav-sub').forEach(n => { n.inert = false; });
   }
 
-  async function initApp() {
-    let status;
-    try {
-      const res = await fetch('/api/status');
-      status = await res.json();
-      licenseStatusCache = status.license || null;
-      syncLicenseInfo(licenseStatusCache);
-    } catch (e) {
-      // Server unreachable — show main app and let loadData handle errors
-      await loadData();
-      await handleGuideHash();
-      return;
-    }
-
-    if (status.license && status.license.permits_use === false) {
-      showLicenseGate(status.license);
-      return;
-    }
-
-    if (status.configured) {
-      await loadWorkbooksState();
-      await loadData();
-      await handleGuideHash();
-      return;
-    }
-
-    // Show lobby
-    const lobby = document.getElementById('lobby');
-    lobby.classList.add('visible');
-    _trapLobby();
-
-    applyStatus(status);
-    await loadWorkbooksState();
-  }
-
   const PROFILE_DESCRIPTIONS = {
     generic: 'Basic requirements traceability',
     medical: 'ISO 13485 / IEC 62304 / FDA 21 CFR Part 11',
@@ -3602,12 +3648,100 @@
     automotive: 'ISO 26262 / ASPICE',
   };
 
+  function applyStatus(status) {
+    currentStatus = status || null;
+    licenseStatusCache = status?.license || null;
+    syncLicenseInfo(licenseStatusCache);
+    syncPreviewUi(status || {});
+    if (status?.platform) {
+      lobbyState.provider = status.platform;
+      selectProvider(status.platform);
+    } else {
+      selectProvider(lobbyState.provider || 'google');
+    }
+    if (status?.workbook_url) {
+      lobbyState.workbookUrl = status.workbook_url;
+      document.getElementById('lobby-url').value = status.workbook_url;
+    }
+    if (status?.platform === 'google' && status?.credential_display) {
+      lobbyState.googleCredentialEmail = status.credential_display;
+      document.getElementById('sa-loaded-email').textContent = status.credential_display;
+      document.getElementById('sa-upload-zone').style.display = 'none';
+      document.getElementById('sa-loaded-chip').style.display = '';
+      document.getElementById('lobby-share-hint').style.display = 'block';
+    }
+    if (status?.profile) {
+      const backendToUi = { medical: 'medical', aerospace: 'aerospace', automotive: 'automotive', generic: null };
+      const uiId = backendToUi[status.profile] ?? null;
+      if (uiId) selectProfile(uiId);
+      else clearProfileSelection();
+    } else {
+      clearProfileSelection();
+    }
+    if (status?.source_of_truth) {
+      lobbyState.sourceOfTruth = status.source_of_truth;
+    }
+    updateLobbyConnectionMessage(status);
+  }
+
+  async function loadStatus(force = false) {
+    const res = await fetch('/api/status', { cache: force ? 'no-store' : 'default' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const status = await res.json();
+    applyStatus(status);
+    return status;
+  }
+
+  function syncPreviewUi(status) {
+    const preview = document.getElementById('preview-banner');
+    const prompt = document.getElementById('attach-workbook-prompt');
+    const locked = status.license_required_features || [];
+    if (preview) {
+      preview.classList.toggle('visible', Boolean(status.hobbled_mode));
+      document.getElementById('preview-banner-sub').textContent = status.hobbled_mode
+        ? `Locked in preview: ${locked.join(', ') || 'Reports, MCP, repository scanning, code traceability, and background sync'}.`
+        : 'Licensed features are active.';
+    }
+    if (prompt) {
+      const showPrompt = status.source_of_truth === 'document_first' &&
+        !status.connection_configured &&
+        !status.attach_workbook_prompt_dismissed &&
+        !document.getElementById('lobby').classList.contains('visible');
+      prompt.classList.toggle('visible', Boolean(showPrompt));
+    }
+
+    const restricted = Boolean(status.hobbled_mode);
+    document.querySelectorAll('button[data-group="code"], button[data-group="reports"], .nav-sub [data-tab="mcp-ai"]').forEach((btn) => {
+      btn.disabled = restricted;
+      btn.title = restricted ? 'Requires a license' : '';
+    });
+    if (restricted && (document.getElementById('tab-code').classList.contains('active') || document.getElementById('tab-reports').classList.contains('active') || document.getElementById('tab-mcp-ai').classList.contains('active'))) {
+      showGroup('data');
+    }
+  }
+
+  function showPreviewFeatureHelp() {
+    const locked = (currentStatus?.license_required_features || []).join(', ') || 'Reports, MCP, repository scanning, code traceability, and background sync';
+    window.alert(`Preview mode keeps the graph readable, but these features require a license: ${locked}.`);
+  }
+
+  async function dismissAttachWorkbookPrompt() {
+    const prompt = document.getElementById('attach-workbook-prompt');
+    prompt?.classList.remove('visible');
+    try {
+      await fetch('/api/workspace/preferences', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ attach_workbook_prompt_dismissed: true }),
+      });
+    } catch (_) {}
+  }
+
   function buildDraftConnection() {
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
     if (!profile) return null;
-    if (lobbyState.provider === 'local') return null;
     const draft = {
-      display_name: lobbyState.displayName,
+      display_name: currentStatus?.active_workbook?.display_name || 'Workspace',
       platform: lobbyState.provider,
       profile: profile.backendId,
       workbook_url: lobbyState.workbookUrl,
@@ -3631,84 +3765,215 @@
     return draft;
   }
 
-  async function connectSheet() {
-    const btn    = document.getElementById('authorize-btn');
-    const fill   = document.getElementById('authorize-fill');
-    const label  = document.getElementById('authorize-label');
-    const errEl  = document.getElementById('lobby-error');
-    const draft  = buildDraftConnection();
-
-    if (lobbyState.provider === 'local' && lobbyState.localWorkspace) {
-      errEl.style.display = 'none';
-      btn.disabled = true;
-      fill.style.width = '100%';
-      label.textContent = 'Opening workspace…';
-      try {
-        await loadWorkbooksState();
-        await loadData();
-        await handleGuideHash();
-        openWorkspace();
-      } catch (e) {
-        errEl.textContent = 'Failed to open workspace: ' + e.message;
-        errEl.style.display = 'block';
-        btn.disabled = false;
-        fill.style.width = '0%';
-        label.textContent = 'Open Workspace';
-      }
-      return;
-    }
-
-    if (!draft && lobbyState.prefilledConnection && lobbyState.profileId && lobbyState.provider && lobbyState.workbookUrl) {
-      errEl.style.display = 'none';
-      btn.disabled = true;
-      fill.style.width = '100%';
-      label.textContent = 'Using saved connection…';
-      await new Promise(r => setTimeout(r, 150));
-      showSuccess();
-      await loadWorkbooksState();
-      await loadData();
-      await handleGuideHash();
-      return;
-    }
-
+  async function connectWorkbookSource() {
+    const errEl = document.getElementById('lobby-error');
+    const btn = document.getElementById('s3-continue-btn');
+    const labelEl = btn?.querySelector('.authorize-btn-label');
+    const draft = buildDraftConnection();
     if (!draft) {
-      errEl.textContent = 'Complete all fields before connecting.';
+      errEl.textContent = 'Complete all connection fields before continuing.';
       errEl.style.display = 'block';
       return;
     }
     errEl.style.display = 'none';
     btn.disabled = true;
-    fill.style.width = '25%';
-    label.textContent = 'Verifying credentials…';
-
+    if (labelEl) labelEl.textContent = 'Connecting…';
     try {
       const res = await fetch(lobbyMode === 'add' ? '/api/workbooks' : '/api/connection', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(draft),
       });
-      fill.style.width = '70%';
-      label.textContent = 'Reading workbook…';
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
-        throw new Error(formatDiagnosticsError(data) || connectionErrorMessage(data.error, draft?.platform) || data.detail || data.error || `HTTP ${res.status}`);
+        throw new Error(formatDiagnosticsError(data) || connectionErrorMessage(data.error, draft.platform) || data.detail || data.error || `HTTP ${res.status}`);
       }
-    } catch (e) {
-      errEl.textContent = 'Failed to connect: ' + e.message;
+      lobbyState.sourceOfTruth = 'workbook_first';
+      await loadStatus(true);
+      showScreen(4, 'forward');
+    } catch (err) {
+      errEl.textContent = 'Failed to connect: ' + (err.message || err);
       errEl.style.display = 'block';
+    } finally {
       btn.disabled = false;
-      fill.style.width = '0%';
-      label.textContent = 'Authorize & Connect';
+      if (labelEl) labelEl.textContent = 'Review →';
+    }
+  }
+
+  async function continueInPreviewMode() {
+    const errEl = document.getElementById('lobby-error');
+    errEl.style.display = 'none';
+    try {
+      const status = await loadStatus(true);
+      if (!status.workspace_ready) {
+        throw new Error('Finish seeding the workspace before continuing.');
+      }
+      showSuccess(status);
+    } catch (err) {
+      errEl.textContent = err.message || String(err);
+      errEl.style.display = 'block';
+    }
+  }
+
+  function updateSourceArtifactChip(name, meta) {
+    const chip = document.getElementById('source-upload-chip');
+    document.getElementById('source-upload-name').textContent = name;
+    document.getElementById('source-upload-meta').textContent = meta;
+    chip.classList.add('visible');
+    document.getElementById('source-artifact-zone').style.display = 'none';
+  }
+
+  async function uploadOnboardingSourceArtifact(file) {
+    if (!file) return;
+    const errEl = document.getElementById('lobby-error');
+    errEl.style.display = 'none';
+    const form = new FormData();
+    form.append('file', file);
+    form.append('display_name', file.name);
+    try {
+      const res = await fetch('/api/onboarding/source-artifact', {
+        method: 'POST',
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+      }
+      lobbyState.sourceArtifactFileName = file.name;
+      lobbyState.sourceArtifactKind = data.kind || '';
+      lobbyState.sourceOfTruth = data.source_of_truth || 'document_first';
+      updateSourceArtifactChip(file.name, `Classified as ${data.kind || 'artifact'} and ingested into the preview workspace.`);
+      await loadStatus(true);
+      showScreen(4, 'forward');
+    } catch (err) {
+      errEl.textContent = 'Failed to ingest artifact: ' + (err.message || err);
+      errEl.style.display = 'block';
+    }
+  }
+
+  function onSourceArtifactDragOver(e) {
+    e.preventDefault();
+    document.getElementById('source-artifact-zone').classList.add('drag-over');
+  }
+
+  function onSourceArtifactDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      document.getElementById('source-artifact-zone').classList.remove('drag-over');
+    }
+  }
+
+  async function onSourceArtifactDrop(e) {
+    e.preventDefault();
+    document.getElementById('source-artifact-zone').classList.remove('drag-over');
+    const file = e.dataTransfer.files?.[0] || null;
+    if (file) await uploadOnboardingSourceArtifact(file);
+  }
+
+  function onSaDragOver(e) {
+    e.preventDefault();
+    document.getElementById('sa-upload-zone').classList.add('drag-over');
+  }
+
+  function onSaDragLeave(e) {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      document.getElementById('sa-upload-zone').classList.remove('drag-over');
+    }
+  }
+
+  async function onSaDrop(e) {
+    e.preventDefault();
+    document.getElementById('sa-upload-zone').classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (lobbyState.provider === 'google' && file) await uploadSaFile(file);
+  }
+
+  async function uploadSaFile(file) {
+    const errEl = document.getElementById('lobby-error');
+    errEl.style.display = 'none';
+
+    let text;
+    try {
+      text = await file.text();
+    } catch {
+      errEl.textContent = 'Could not read that file.';
+      errEl.style.display = 'block';
       return;
     }
 
-    fill.style.width = '100%';
-    label.textContent = 'Connected.';
-    await new Promise(r => setTimeout(r, 300));
-    showSuccess();
-    await loadWorkbooksState();
-    await loadData();
-    await handleGuideHash();
+    try {
+      const parsed = parseGoogleServiceAccountJson(text);
+      lobbyState.googleCredentialEmail = parsed.client_email;
+      lobbyState.googleCredentialJson = text;
+    } catch (err) {
+      errEl.textContent = err.message || 'Invalid Google service-account JSON.';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    document.getElementById('sa-loaded-email').textContent = lobbyState.googleCredentialEmail;
+    document.getElementById('sa-upload-zone').style.display = 'none';
+    document.getElementById('sa-loaded-chip').style.display = '';
+    document.getElementById('lobby-share-hint').style.display = 'block';
+  }
+
+  function parseGoogleServiceAccountJson(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('Invalid JSON file.');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('That file is JSON, but it is not a Google service-account credential.');
+    }
+    if (parsed.type !== 'service_account') {
+      throw new Error('That file is JSON, but it is not a Google service-account credential.');
+    }
+    if (typeof parsed.client_email !== 'string' || !parsed.client_email.trim()) {
+      throw new Error('Google service-account JSON is missing client_email.');
+    }
+    if (typeof parsed.private_key !== 'string' || !parsed.private_key.trim()) {
+      throw new Error('Google service-account JSON is missing private_key.');
+    }
+    return parsed;
+  }
+
+  function validateExcelCredentials(tenantId, clientId, clientSecret) {
+    if (!tenantId || !clientId || !clientSecret) {
+      throw new Error('Enter all Azure credentials to continue.');
+    }
+    if (!tenantId.trim() || !clientId.trim() || !clientSecret.trim()) {
+      throw new Error('Excel Online credentials cannot be blank.');
+    }
+    return {
+      tenantId: tenantId.trim(),
+      clientId: clientId.trim(),
+      clientSecret: clientSecret.trim(),
+    };
+  }
+
+  document.getElementById('sa-file-input').addEventListener('change', function() {
+    if (this.files[0]) uploadSaFile(this.files[0]);
+    this.value = '';
+  });
+
+  document.getElementById('source-artifact-file-input')?.addEventListener('change', function() {
+    if (this.files?.[0]) void uploadOnboardingSourceArtifact(this.files[0]);
+    this.value = '';
+  });
+
+  async function initApp() {
+    try {
+      const status = await loadStatus(true);
+      await loadWorkbooksState();
+      if (status.workspace_ready) {
+        await enterWorkspace(status);
+      } else {
+        await showLobby();
+      }
+    } catch (e) {
+      await showLobby();
+    }
   }
 
   // --- Chain Gaps tab ---
@@ -4163,6 +4428,29 @@
       soupUploadZone.classList.remove('drag-over');
       const file = event.dataTransfer?.files?.[0];
       if (file) await uploadSoupArtifactFile(file);
+    });
+  }
+  const designArtifactUploadInput = document.getElementById('design-artifact-upload-input');
+  if (designArtifactUploadInput) {
+    designArtifactUploadInput.addEventListener('change', async function () {
+      if (this.files && this.files[0]) await uploadDesignArtifactFile(this.files[0]);
+      this.value = '';
+    });
+  }
+  const designArtifactUploadZone = document.getElementById('design-artifact-upload-zone');
+  if (designArtifactUploadZone) {
+    designArtifactUploadZone.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      designArtifactUploadZone.classList.add('drag-over');
+    });
+    designArtifactUploadZone.addEventListener('dragleave', () => {
+      designArtifactUploadZone.classList.remove('drag-over');
+    });
+    designArtifactUploadZone.addEventListener('drop', async (event) => {
+      event.preventDefault();
+      designArtifactUploadZone.classList.remove('drag-over');
+      const file = event.dataTransfer?.files?.[0];
+      if (file) await uploadDesignArtifactFile(file);
     });
   }
   window.addEventListener('hashchange', () => {

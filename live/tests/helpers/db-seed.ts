@@ -1,8 +1,24 @@
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const DEV_LICENSE_HMAC_KEY_HEX = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
+
+function resolveLicenseHmacKeyHex(): string {
+  const candidates = [
+    process.env.RTMIFY_LICENSE_HMAC_KEY_FILE,
+    path.join(os.homedir(), '.rtmify', 'secrets', 'license-hmac-key.txt'),
+  ].filter((value): value is string => Boolean(value));
+
+  for (const filePath of candidates) {
+    if (!fs.existsSync(filePath)) continue;
+    const value = fs.readFileSync(filePath, 'utf8').trim();
+    if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
+  }
+  return DEV_LICENSE_HMAC_KEY_HEX;
+}
 
 function sqlQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
@@ -30,6 +46,10 @@ export function secureStoreFilePath(dbPath: string): string {
   return `${dbPath}.secure-store.json`;
 }
 
+export function liveConfigFilePath(dbPath: string): string {
+  return `${dbPath}.live.json`;
+}
+
 export function writeSecureCredential(dbPath: string, credentialRef: string, secretJson: string): void {
   const filePath = secureStoreFilePath(dbPath);
   let current: Record<string, string> = {};
@@ -45,8 +65,52 @@ export function clearSecureStoreFile(dbPath: string): void {
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 }
 
+export function clearLiveConfigFile(dbPath: string): void {
+  const filePath = liveConfigFilePath(dbPath);
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+}
+
 export function licenseFilePath(dbPath: string): string {
   return `${dbPath}.license.json`;
+}
+
+function writeLiveConfigFile(dbPath: string, input: {
+  workbookId?: string;
+  slug?: string;
+  displayName?: string;
+  profile?: string;
+  platform?: 'google' | 'excel' | null;
+  workbookUrl?: string | null;
+  workbookLabel?: string | null;
+  credentialRef?: string | null;
+  credentialDisplay?: string | null;
+  googleSheetId?: string | null;
+  repoPaths?: string[];
+}): void {
+  const slug = input.slug ?? 'fake-sheet';
+  const inboxDir = `${dbPath}.inbox`;
+  const payload = {
+    schema_version: 2,
+    active_workbook_id: input.workbookId ?? 'wb_seeded',
+    workbooks: [
+      {
+        id: input.workbookId ?? 'wb_seeded',
+        slug,
+        display_name: input.displayName ?? 'fake-sheet',
+        profile: input.profile ?? 'generic',
+        repo_paths: input.repoPaths ?? [],
+        db_path: dbPath,
+        inbox_dir: inboxDir,
+        platform: input.platform ?? null,
+        workbook_url: input.workbookUrl ?? null,
+        workbook_label: input.workbookLabel ?? null,
+        credential_ref: input.credentialRef ?? null,
+        credential_display: input.credentialDisplay ?? null,
+        google_sheet_id: input.googleSheetId ?? null,
+      },
+    ],
+  };
+  fs.writeFileSync(liveConfigFilePath(dbPath), JSON.stringify(payload));
 }
 
 type TestLicenseProduct = 'live' | 'trace';
@@ -94,7 +158,7 @@ export function writeTestLicenseFile(dbPath: string, options?: {
   };
 
   const canonical = canonicalPayloadJson(payload);
-  const sig = crypto.createHmac('sha256', Buffer.from(DEV_LICENSE_HMAC_KEY_HEX, 'hex')).update(canonical).digest('hex');
+  const sig = crypto.createHmac('sha256', Buffer.from(resolveLicenseHmacKeyHex(), 'hex')).update(canonical).digest('hex');
   const filePath = licenseFilePath(dbPath);
   fs.writeFileSync(filePath, JSON.stringify({ payload, sig }));
   return filePath;
@@ -178,6 +242,58 @@ VALUES (${sqlQuote(edgeId(fromId, toId, label))}, ${sqlQuote(fromId)}, ${sqlQuot
 `);
 }
 
+type DesignArtifactKind = 'rtm_workbook' | 'srs_docx' | 'sysrd_docx';
+
+function artifactIdFor(kind: DesignArtifactKind, logicalKey: string): string {
+  if (kind === 'rtm_workbook') return `artifact://rtm/${logicalKey}`;
+  return `artifact://${kind}/${logicalKey}`;
+}
+
+function requirementTextIdFor(artifactId: string, requirementId: string): string {
+  return `${artifactId}:${requirementId}`;
+}
+
+export function insertRequirementAssertion(dbPath: string, input: {
+  requirementId: string;
+  text: string;
+  artifactKind?: DesignArtifactKind;
+  logicalKey?: string;
+  artifactId?: string;
+  displayName?: string;
+  section?: string;
+  hash?: string;
+  parseStatus?: string;
+  occurrenceCount?: number;
+}): { artifactId: string; requirementTextId: string } {
+  const artifactKind = input.artifactKind ?? 'rtm_workbook';
+  const logicalKey = input.logicalKey ?? 'fake-sheet';
+  const artifactId = input.artifactId ?? artifactIdFor(artifactKind, logicalKey);
+  const requirementTextId = requirementTextIdFor(artifactId, input.requirementId);
+  const normalizedText = input.text.trim().toLowerCase();
+  insertNode(dbPath, artifactId, 'Artifact', {
+    kind: artifactKind,
+    display_name: input.displayName ?? logicalKey,
+    logical_key: logicalKey,
+    ingest_source: artifactKind === 'rtm_workbook' ? 'workbook_sync' : 'dashboard_upload',
+    path: artifactKind === 'rtm_workbook' ? `/tmp/${logicalKey}.xlsx` : `/tmp/${logicalKey}.docx`,
+    last_ingested_at: nowTs(),
+  });
+  insertNode(dbPath, requirementTextId, 'RequirementText', {
+    artifact_id: artifactId,
+    source_kind: artifactKind,
+    req_id: input.requirementId,
+    section: input.section ?? 'Requirements',
+    text: input.text,
+    normalized_text: normalizedText,
+    hash: input.hash ?? crypto.createHash('sha256').update(normalizedText).digest('hex'),
+    parse_status: input.parseStatus ?? 'ok',
+    occurrence_count: input.occurrenceCount ?? 1,
+  });
+  insertEdge(dbPath, artifactId, requirementTextId, 'CONTAINS');
+  insertEdge(dbPath, requirementTextId, input.requirementId, 'ASSERTS');
+  return { artifactId, requirementTextId };
+}
+
 export function insertRuntimeDiagnostic(dbPath: string, input: {
   dedupeKey: string;
   code: number;
@@ -213,10 +329,22 @@ export function seedConfiguredGraph(dbPath: string, options?: {
 }): { requirementId: string; userNeedId: string } {
   initSchema(dbPath);
   clearSecureStoreFile(dbPath);
+  clearLiveConfigFile(dbPath);
   const requirementId = options?.requirementId || 'REQ-001';
   const userNeedId = options?.userNeedId || 'UN-001';
   const credentialRef = 'cred_google_seeded';
   writeSecureCredential(dbPath, credentialRef, '{"platform":"google","client_email":"svc@example.com","private_key":"pem"}');
+  writeLiveConfigFile(dbPath, {
+    displayName: 'fake-sheet',
+    slug: 'fake-sheet',
+    profile: 'generic',
+    platform: 'google',
+    workbookUrl: 'https://docs.google.com/spreadsheets/d/fake-sheet/edit',
+    workbookLabel: 'fake-sheet',
+    credentialRef,
+    credentialDisplay: 'svc@example.com',
+    googleSheetId: 'fake-sheet',
+  });
   runSql(dbPath, `
 INSERT OR REPLACE INTO config (key, value) VALUES
 ('platform', 'google'),
@@ -227,7 +355,9 @@ INSERT OR REPLACE INTO config (key, value) VALUES
 ('credential_ref', '${credentialRef}'),
 ('credential_backend', 'test_memory'),
 ('credential_store_version', '1'),
-('profile', 'generic');
+('profile', 'generic'),
+('workspace_ready', '1'),
+('workspace_source_of_truth', 'workbook_first');
 `);
   insertNode(dbPath, userNeedId, 'UserNeed', {
     statement: options?.userNeedStatement || 'The system shall be easy to install by a non-technical user.',
@@ -235,10 +365,17 @@ INSERT OR REPLACE INTO config (key, value) VALUES
     priority: 'High',
   });
   insertNode(dbPath, requirementId, 'Requirement', {
-    statement: options?.requirementStatement || 'The mobile app SHALL display a notification within 1 seconds of a breach.',
     status: 'Approved',
-    test_group: 'TG-001',
-    result: 'PENDING',
+    text_status: 'single_source',
+    authoritative_source: 'artifact://rtm/fake-sheet',
+    source_count: 1,
+  });
+  insertRequirementAssertion(dbPath, {
+    requirementId,
+    artifactKind: 'rtm_workbook',
+    logicalKey: 'fake-sheet',
+    displayName: 'fake-sheet',
+    text: options?.requirementStatement || 'The mobile app SHALL display a notification within 1 seconds of a breach.',
   });
   insertEdge(dbPath, requirementId, userNeedId, 'DERIVES_FROM');
   return { requirementId, userNeedId };
@@ -247,6 +384,17 @@ INSERT OR REPLACE INTO config (key, value) VALUES
 export function seedLegacyPlaintextConnection(dbPath: string): void {
   initSchema(dbPath);
   clearSecureStoreFile(dbPath);
+  clearLiveConfigFile(dbPath);
+  writeLiveConfigFile(dbPath, {
+    displayName: 'fake-sheet',
+    slug: 'fake-sheet',
+    profile: 'generic',
+    platform: 'google',
+    workbookUrl: 'https://docs.google.com/spreadsheets/d/fake-sheet/edit',
+    workbookLabel: 'fake-sheet',
+    credentialDisplay: 'svc@example.com',
+    googleSheetId: 'fake-sheet',
+  });
   const now = nowTs();
   runSql(dbPath, `
 INSERT OR REPLACE INTO credentials (id, content, created_at)
