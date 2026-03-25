@@ -1218,7 +1218,7 @@
             <svg width="28" height="28" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="4" fill="#0F9D58"/><path d="M12 16h24v16H12z" fill="#fff" opacity=".9"/><path d="M12 20h24M12 24h24M12 28h24M20 16v16M28 16v16" stroke="#0F9D58" stroke-width="1.5"/><path d="M12 16h24v3H12z" fill="#0F9D58"/></svg>
           </div>
           <div class="provider-tile-name">Connected RTM Workbook</div>
-          <div class="provider-tile-sub">Connect Google Sheets or Excel Online and let Live build the graph from the workbook.</div>
+          <div class="provider-tile-sub">Connect Google Sheets, Excel Online, or continue with a local DB-backed workspace.</div>
         </div>
       </div>
       <div id="source-upload-panel" class="source-upload-panel" style="display:none">
@@ -1250,6 +1250,20 @@
     <div class="lobby-screen" data-screen="3">
       <p class="screen-label" id="lobby-screen-label-3">Step 3</p>
       <h2 class="screen-headline">Connect your workbook</h2>
+      <div class="provider-tiles" id="connection-provider-tiles">
+        <div class="provider-tile" id="tile-google" onclick="selectProvider('google')">
+          <div class="provider-tile-name">Google Sheets</div>
+          <div class="provider-tile-sub">Upload a service-account key and point Live at your RTM workbook URL.</div>
+        </div>
+        <div class="provider-tile" id="tile-excel" onclick="selectProvider('excel')">
+          <div class="provider-tile-name">Excel Online</div>
+          <div class="provider-tile-sub">Enter Azure app credentials and the workbook URL.</div>
+        </div>
+        <div class="provider-tile" id="tile-local" onclick="selectProvider('local')">
+          <div class="provider-tile-name">Local DB</div>
+          <div class="provider-tile-sub">Use the currently opened local workspace DB. No credentials required.</div>
+        </div>
+      </div>
       <!-- Google path -->
       <div id="s3-google">
         <div class="sa-upload-zone" id="sa-upload-zone"
@@ -1283,6 +1297,13 @@
           </button>
         </div>
         <div style="margin-bottom:16px"></div>
+      </div>
+      <div id="s3-local" style="display:none">
+        <div class="mission-brief">
+          <div class="brief-row"><span class="brief-key">Source</span><span class="brief-val plain">Local DB</span></div>
+          <div class="brief-row"><span class="brief-key">Workspace</span><span class="brief-val plain" id="local-db-name">Current workspace database</span></div>
+          <div class="brief-row"><span class="brief-key">Setup</span><span class="brief-val plain">No credentials required. Continue to use the DB-backed workspace opened with Live.</span></div>
+        </div>
       </div>
       <div id="lobby-url-wrap">
         <input id="lobby-url" class="lobby-input" type="text"

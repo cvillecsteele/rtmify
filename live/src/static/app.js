@@ -1,6 +1,7 @@
   const CHEVRON_SVG = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 1.5l4 3.5-4 3.5"/></svg>`;
   let licenseStatusCache = null;
   let currentStatus = null;
+  const PENDING_WORKSPACE_TAB_KEY = 'rtmify.pendingWorkspaceTab';
 
   // --- Tab switching ---
 
@@ -3403,17 +3404,27 @@
     lobbyState.provider = provider;
     const googleTile = document.getElementById('tile-google');
     const excelTile = document.getElementById('tile-excel');
+    const localTile = document.getElementById('tile-local');
     const googlePanel = document.getElementById('s3-google');
     const excelPanel = document.getElementById('s3-excel');
+    const localPanel = document.getElementById('s3-local');
     const urlInput = document.getElementById('lobby-url');
+    const urlWrap = document.getElementById('lobby-url-wrap');
     if (googleTile) googleTile.classList.toggle('selected', provider === 'google');
     if (excelTile) excelTile.classList.toggle('selected', provider === 'excel');
+    if (localTile) localTile.classList.toggle('selected', provider === 'local');
     if (googlePanel) googlePanel.style.display = provider === 'google' ? '' : 'none';
     if (excelPanel) excelPanel.style.display = provider === 'excel' ? '' : 'none';
+    if (localPanel) localPanel.style.display = provider === 'local' ? '' : 'none';
+    if (urlWrap) urlWrap.style.display = provider === 'local' ? 'none' : '';
     if (urlInput) {
       urlInput.placeholder = provider === 'excel'
         ? 'https://tenant.sharepoint.com/:x:/r/sites/…'
         : 'https://docs.google.com/spreadsheets/d/…';
+    }
+    const localName = document.getElementById('local-db-name');
+    if (localName) {
+      localName.textContent = currentStatus?.active_workbook?.display_name || 'Current workspace database';
     }
   }
 
@@ -3572,7 +3583,9 @@
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId) || { label: '—', standards: '—' };
     const sourceLabel = status.source_of_truth === 'document_first'
       ? 'Requirements Artifact'
-      : `${lobbyState.provider === 'google' ? 'Google Sheets' : 'Excel Online'} Workbook`;
+      : `${lobbyState.provider === 'google'
+          ? 'Google Sheets'
+          : (lobbyState.provider === 'local' ? 'Local DB' : 'Excel Online')} Workbook`;
     document.getElementById('success-title').textContent = status.hobbled_mode ? 'Preview workspace ready.' : 'Workspace ready.';
     document.getElementById('success-sub').textContent = `${profile.label} · ${sourceLabel}`;
     document.getElementById('success-detail').innerHTML = `
@@ -3590,6 +3603,11 @@
     syncPreviewUi(status);
     await loadWorkbooksState();
     await loadData();
+    const pendingTab = sessionStorage.getItem(PENDING_WORKSPACE_TAB_KEY);
+    if (pendingTab && !window.location.hash.startsWith('#guide-code-')) {
+      sessionStorage.removeItem(PENDING_WORKSPACE_TAB_KEY);
+      showTab(pendingTab);
+    }
     await handleGuideHash();
   }
 
@@ -3600,6 +3618,11 @@
     syncPreviewUi(status);
     await loadWorkbooksState();
     await loadData();
+    const pendingTab = sessionStorage.getItem(PENDING_WORKSPACE_TAB_KEY);
+    if (pendingTab && !window.location.hash.startsWith('#guide-code-')) {
+      sessionStorage.removeItem(PENDING_WORKSPACE_TAB_KEY);
+      showTab(pendingTab);
+    }
     await handleGuideHash();
   }
 
@@ -3656,6 +3679,9 @@
     if (status?.platform) {
       lobbyState.provider = status.platform;
       selectProvider(status.platform);
+    } else if (status?.source_of_truth === 'workbook_first') {
+      lobbyState.provider = 'local';
+      selectProvider('local');
     } else {
       selectProvider(lobbyState.provider || 'google');
     }
@@ -3740,6 +3766,15 @@
   function buildDraftConnection() {
     const profile = LOBBY_PROFILES.find(p => p.id === lobbyState.profileId);
     if (!profile) return null;
+    if (lobbyState.provider === 'local') {
+      return {
+        display_name: currentStatus?.active_workbook?.display_name || 'Workspace',
+        platform: 'local',
+        profile: profile.backendId,
+        workbook_url: '',
+        credentials: {},
+      };
+    }
     const draft = {
       display_name: currentStatus?.active_workbook?.display_name || 'Workspace',
       platform: lobbyState.provider,
@@ -3779,6 +3814,24 @@
     btn.disabled = true;
     if (labelEl) labelEl.textContent = 'Connecting…';
     try {
+      if (draft.platform === 'local') {
+        const prefsRes = await fetch('/api/workspace/preferences', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            workspace_ready: true,
+            workspace_source_of_truth: 'workbook_first',
+          }),
+        });
+        const prefsData = await prefsRes.json().catch(() => ({}));
+        if (!prefsRes.ok || prefsData.ok === false) {
+          throw new Error(prefsData.error || prefsData.detail || `HTTP ${prefsRes.status}`);
+        }
+        lobbyState.sourceOfTruth = 'workbook_first';
+        await loadStatus(true);
+        showScreen(4, 'forward');
+        return;
+      }
       const res = await fetch(lobbyMode === 'add' ? '/api/workbooks' : '/api/connection', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -3842,6 +3895,7 @@
       lobbyState.sourceArtifactFileName = file.name;
       lobbyState.sourceArtifactKind = data.kind || '';
       lobbyState.sourceOfTruth = data.source_of_truth || 'document_first';
+      sessionStorage.setItem(PENDING_WORKSPACE_TAB_KEY, 'design-artifacts');
       updateSourceArtifactChip(file.name, `Classified as ${data.kind || 'artifact'} and ingested into the preview workspace.`);
       await loadStatus(true);
       showScreen(4, 'forward');

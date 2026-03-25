@@ -221,6 +221,27 @@ pub fn handlePostWorkspacePrefsResponse(
         }
         try workspace_state.writeAttachWorkbookPromptDismissed(db, value.bool);
     }
+    if (root.object.get("workspace_ready")) |value| {
+        if (value != .bool) {
+            return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_workspace_ready\"}"), false);
+        }
+        try workspace_state.writeWorkspaceReady(db, value.bool);
+    }
+    if (root.object.get("workspace_source_of_truth")) |value| {
+        if (value == .null) {
+            try workspace_state.deleteSourceOfTruth(db);
+        } else if (value == .string) {
+            const source = if (std.mem.eql(u8, value.string, workspace_state.SourceOfTruth.document_first.asString()))
+                workspace_state.SourceOfTruth.document_first
+            else if (std.mem.eql(u8, value.string, workspace_state.SourceOfTruth.workbook_first.asString()))
+                workspace_state.SourceOfTruth.workbook_first
+            else
+                return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_workspace_source_of_truth\"}"), false);
+            try workspace_state.writeSourceOfTruth(db, source);
+        } else {
+            return shared.jsonRouteResponse(.bad_request, try alloc.dupe(u8, "{\"ok\":false,\"error\":\"invalid_workspace_source_of_truth\"}"), false);
+        }
+    }
     return shared.jsonRouteResponse(.ok, try alloc.dupe(u8, "{\"ok\":true}"), true);
 }
 

@@ -129,7 +129,9 @@ test('document-first upload flows to the license step and can continue in previe
 
     await page.locator('#preview-continue-btn').click();
     await expect(page.getByText('Preview workspace ready.')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Open Workspace' })).toBeVisible();
+    await page.getByRole('button', { name: 'Open Workspace' }).click();
+    await expect(page.locator('#tab-design-artifacts')).toHaveClass(/active/);
+    await expect(page.locator('[data-tab="design-artifacts"]')).toHaveClass(/active/);
   } finally {
     await server.stop();
     fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
@@ -206,6 +208,32 @@ test('workbook-first onboarding reaches the connection step and then the license
       buffer: fakeServiceAccountJson(),
     });
     await page.fill('#lobby-url', 'https://docs.google.com/spreadsheets/d/fake-sheet/edit');
+    await page.locator('#s3-continue-btn').click();
+
+    await expect(page.locator('.lobby-screen[data-screen="4"]')).toHaveClass(/active/);
+    await expect(page.getByText('No active license is installed. You can continue in preview mode.')).toBeVisible();
+  } finally {
+    await server.stop();
+    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+  }
+});
+
+test('workbook-first local DB branch skips credentials and reaches the license step', async ({ page }) => {
+  const dbPath = makeDbPath('rtmify-local-db-');
+  initSchema(dbPath);
+  const port = await findFreePort();
+  const server = await startServer({ dbPath, port, licensed: false });
+
+  try {
+    await page.goto(server.baseUrl);
+    await page.locator('.profile-row[data-profile-id="rail"]').click();
+    await page.locator('[data-screen="1"] .authorize-btn').click();
+    await page.locator('#tile-workbook-source').click();
+    await page.locator('#s2-continue-btn').click();
+    await expect(page.locator('.lobby-screen[data-screen="3"]')).toHaveClass(/active/);
+
+    await page.locator('#tile-local').click();
+    await expect(page.locator('#s3-local')).toBeVisible();
     await page.locator('#s3-continue-btn').click();
 
     await expect(page.locator('.lobby-screen[data-screen="4"]')).toHaveClass(/active/);

@@ -39,6 +39,10 @@ pub fn writeSourceOfTruth(db: *graph_live.GraphDb, value: SourceOfTruth) !void {
     try db.storeConfig(workspace_source_of_truth_key, value.asString());
 }
 
+pub fn deleteSourceOfTruth(db: *graph_live.GraphDb) !void {
+    try db.deleteConfig(workspace_source_of_truth_key);
+}
+
 pub fn readAttachWorkbookPromptDismissed(db: *graph_live.GraphDb, alloc: Allocator) !bool {
     const raw = (try db.getConfig(attach_workbook_prompt_dismissed_key, alloc)) orelse return false;
     defer alloc.free(raw);
