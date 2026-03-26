@@ -394,6 +394,59 @@ test "triggerRepoScanNow forces full file rescan regardless of last_scan cursor"
     try testing.expect(try repo_scan.testEdgeExists(&db, "REQ-001", annotation_id, "ANNOTATED_AT", alloc));
 }
 
+test "repoScanCycle skips unchanged real git repo after initial scan" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var fixture = try test_git_repo.RepoFixture.init(&tmp, alloc);
+    defer fixture.deinit();
+    try fixture.gitInit();
+    try fixture.writeFile("src/foo.c",
+        \\// REQ-001 implemented here
+        \\int main(void) { return 0; }
+        \\
+    );
+    _ = try fixture.commit("REQ-001 initial implementation", "Alice", "alice@example.com", "2026-03-06T12:00:00Z");
+
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    var state: state_mod.SyncState = .{};
+    var ctx = repo_scan.RepoScanCtx{
+        .db = &db,
+        .repo_paths = &.{fixture.path},
+        .state = &state,
+        .alloc = alloc,
+    };
+    try repo_scan.repoScanCycle(&ctx, alloc);
+
+    const last_scan_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{fixture.path});
+    defer alloc.free(last_scan_key);
+    const change_token_key = try std.fmt.allocPrint(alloc, "repo_change_token_{s}", .{fixture.path});
+    defer alloc.free(change_token_key);
+
+    const initial_change_token = (try db.getConfig(change_token_key, alloc)).?;
+    defer alloc.free(initial_change_token);
+    try db.storeConfig(last_scan_key, "123");
+
+    try repo_scan.repoScanCycle(&ctx, alloc);
+
+    const stored_last_scan = (try db.getConfig(last_scan_key, alloc)).?;
+    defer alloc.free(stored_last_scan);
+    try testing.expectEqualStrings("123", stored_last_scan);
+
+    const stored_change_token = (try db.getConfig(change_token_key, alloc)).?;
+    defer alloc.free(stored_change_token);
+    try testing.expectEqualStrings(initial_change_token, stored_change_token);
+}
+
 test "repoScanCycle real git repo links source annotation commit and file changes" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 

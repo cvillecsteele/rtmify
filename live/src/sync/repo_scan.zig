@@ -4,6 +4,8 @@ const state_mod = @import("state.zig");
 const runtime_diag = @import("runtime_diag.zig");
 const port_db = @import("port_db.zig");
 
+const repo_scan_interval_ns = 10 * 60 * std.time.ns_per_s;
+
 pub const RepoScanCtx = struct {
     db: *internal.GraphDb,
     repo_paths: []const []const u8,
@@ -62,9 +64,9 @@ pub fn repoScanThread(ctx: *RepoScanCtx) void {
         };
 
         if (ctx.control) |control| {
-            control.waitTimeout(60 * std.time.ns_per_s);
+            control.waitTimeout(repo_scan_interval_ns);
         } else {
-            std.Thread.sleep(60 * std.time.ns_per_s);
+            std.Thread.sleep(repo_scan_interval_ns);
         }
     }
 }
@@ -127,16 +129,29 @@ pub fn repoScanCycle(ctx: *RepoScanCtx, alloc: internal.Allocator) !void {
     const known_ids = try internal.annotations_mod.buildKnownIds(ctx.db, alloc);
 
     for (dyn_paths.items) |repo_path| {
-        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("repo_scan", repo_path);
-        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("git", repo_path);
-        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("annotation", repo_path);
-
         const last_scan_key = try std.fmt.allocPrint(alloc, "last_scan_{s}", .{repo_path});
+        defer alloc.free(last_scan_key);
         const last_scan_str = (try ctx.db.getConfig(last_scan_key, alloc)) orelse "0";
         const last_scan: i64 = std.fmt.parseInt(i64, last_scan_str, 10) catch 0;
 
         const git_key = try std.fmt.allocPrint(alloc, "git_last_hash_{s}", .{repo_path});
+        defer alloc.free(git_key);
         const last_hash = try ctx.db.getConfig(git_key, alloc);
+        defer if (last_hash) |hash| alloc.free(hash);
+
+        const change_token_key = try std.fmt.allocPrint(alloc, "repo_change_token_{s}", .{repo_path});
+        defer alloc.free(change_token_key);
+        const change_token = try currentRepoChangeToken(repo_path, git_options, alloc);
+        defer if (change_token) |token| alloc.free(token);
+        const last_change_token = try ctx.db.getConfig(change_token_key, alloc);
+        defer if (last_change_token) |token| alloc.free(token);
+        if (last_scan != 0 and change_token != null and last_change_token != null and std.mem.eql(u8, change_token.?, last_change_token.?)) {
+            continue;
+        }
+
+        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("repo_scan", repo_path);
+        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("git", repo_path);
+        try ctx.db.clearRuntimeDiagnosticsBySubjectPrefix("annotation", repo_path);
 
         const files = internal.repo_mod.scanRepo(repo_path, last_scan, alloc) catch |e| {
             std.log.warn("repo scan {s}: {s}", .{ repo_path, @errorName(e) });
@@ -150,9 +165,7 @@ pub fn repoScanCycle(ctx: *RepoScanCtx, alloc: internal.Allocator) !void {
             var existing_file_ann_ids = std.StringHashMap(void).init(alloc);
             defer existing_file_ann_ids.deinit();
             {
-                var st = try ctx.db.db.prepare(
-                    "SELECT id FROM nodes WHERE type='CodeAnnotation' AND id LIKE ? || ':%'"
-                );
+                var st = try ctx.db.db.prepare("SELECT id FROM nodes WHERE type='CodeAnnotation' AND id LIKE ? || ':%'");
                 defer st.finalize();
                 try st.bindText(1, file.path);
                 while (try st.step()) {
@@ -327,10 +340,36 @@ pub fn repoScanCycle(ctx: *RepoScanCtx, alloc: internal.Allocator) !void {
         const now_str = try std.fmt.allocPrint(alloc, "{d}", .{std.time.timestamp()});
         try ctx.db.storeConfig(last_scan_key, now_str);
         if (last_hash_new) |h| try ctx.db.storeConfig(git_key, h);
+        if (change_token) |token| try ctx.db.storeConfig(change_token_key, token);
     }
 
     const scan_now_str = try std.fmt.allocPrint(alloc, "{d}", .{std.time.timestamp()});
     ctx.db.storeConfig("last_scan_at", scan_now_str) catch {};
+}
+
+fn currentRepoChangeToken(repo_path: []const u8, git_options: internal.git_mod.GitOptions, alloc: internal.Allocator) !?[]u8 {
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{
+            git_options.exe orelse "git",
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=all",
+        },
+        .cwd = repo_path,
+        .max_output_bytes = 4 * 1024 * 1024,
+    }) catch return null;
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| if (code != 0) return null,
+        else => return null,
+    }
+
+    const token = try std.fmt.allocPrint(alloc, "{x}", .{std.hash.Wyhash.hash(0, result.stdout)});
+    return token;
 }
 
 pub fn buildFileNodePropsJson(path: []const u8, repo: []const u8, annotation_count: usize, present: bool, alloc: internal.Allocator) ![]u8 {
