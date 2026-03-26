@@ -17,7 +17,7 @@ const design_history_pdf = @import("../design_history_pdf.zig");
 const dh_routes = @import("design_history.zig");
 
 pub fn handleReportDhrMd(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]const u8 {
-    var report = try design_history_core.buildDhrReport(db, profile_name, alloc);
+    var report = try design_history_core.buildFullTraceabilityReport(db, profile_name, alloc);
     defer design_history_core.deinitDhrReport(&report, alloc);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -26,7 +26,7 @@ pub fn handleReportDhrMd(db: *graph_live.GraphDb, profile_name: []const u8, allo
 }
 
 pub fn handleReportDhrPdf(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) ![]const u8 {
-    var report = try design_history_core.buildDhrReport(db, profile_name, alloc);
+    var report = try design_history_core.buildFullTraceabilityReport(db, profile_name, alloc);
     defer design_history_core.deinitDhrReport(&report, alloc);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
@@ -332,7 +332,7 @@ test "handleReportDhrMd includes downstream design history artifacts" {
     try dh_routes.seedDhrFixture(&db);
 
     const resp = try handleReportDhrMd(&db, "medical", alloc);
-    try testing.expect(std.mem.indexOf(u8, resp, "# Design History Record") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "# Full Traceability Report") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Profile: medical") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "## UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "### Requirement REQ-001") != null);
@@ -382,7 +382,7 @@ test "handleReportDhrPdf includes downstream design history artifacts" {
     try dh_routes.seedDhrFixture(&db);
 
     const resp = try handleReportDhrPdf(&db, "medical", alloc);
-    try testing.expect(std.mem.indexOf(u8, resp, "Design History Record") != null);
+    try testing.expect(std.mem.indexOf(u8, resp, "Full Traceability Report") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Requirement REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, resp, "Detect GPS loss") != null);

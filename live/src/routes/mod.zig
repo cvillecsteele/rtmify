@@ -212,7 +212,7 @@ test "index_html smoke covers onboarding and external js bootstrap" {
     try testing.expect(std.mem.indexOf(u8, index_html, "audit_readiness_summary(profile=\"aerospace\")") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Create Missing Tabs") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "Code Traceability") != null);
-    try testing.expect(std.mem.indexOf(u8, index_html, "Design History Record (DHR)") != null);
+    try testing.expect(std.mem.indexOf(u8, index_html, "Full Traceability Report") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "id=\"lobby-share-hint\"") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "sa-upload-zone") != null);
     try testing.expect(std.mem.indexOf(u8, index_html, "type=\"module\"") != null);

@@ -68,7 +68,7 @@ pub fn buildRequirementHistoryForProfile(db: *graph_live.GraphDb, pid: profile_m
     return try buildRequirementHistoryFromNode(db, requirement.?, pid, alloc);
 }
 
-pub fn buildDhrReport(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) !DhrReport {
+pub fn buildFullTraceabilityReport(db: *graph_live.GraphDb, profile_name: []const u8, alloc: Allocator) !DhrReport {
     const pid = profile_mod.fromString(profile_name) orelse .generic;
 
     var user_needs: std.ArrayList(graph_live.Node) = .empty;
@@ -426,7 +426,7 @@ test "buildRequirementHistory builds full bundle and dedupes downstream nodes" {
     try testing.expectEqual(@as(usize, 1), history.commits.len);
 }
 
-test "buildDhrReport includes unlinked requirements" {
+test "buildFullTraceabilityReport includes unlinked requirements" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -438,7 +438,7 @@ test "buildDhrReport includes unlinked requirements" {
     try db.addNode("REQ-002", "Requirement", "{\"statement\":\"Orphan req\"}", null);
     try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
 
-    var report = try buildDhrReport(&db, "medical", alloc);
+    var report = try buildFullTraceabilityReport(&db, "medical", alloc);
     defer deinitDhrReport(&report, alloc);
 
     try testing.expectEqual(profile_mod.ProfileId.medical, report.profile);

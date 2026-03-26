@@ -7,7 +7,7 @@ const chain_mod = @import("chain.zig");
 const dh_routes = @import("routes/design_history.zig");
 
 pub fn renderReport(report: *const design_history.DhrReport, writer: anytype, alloc: Allocator) !void {
-    try writer.writeAll("# Design History Record\n\n");
+    try writer.writeAll("# Full Traceability Report\n\n");
     try writer.print("Profile: {s}\n\n", .{@tagName(report.profile)});
 
     for (report.user_need_sections) |section| {
@@ -195,7 +195,7 @@ test "renderReport includes downstream sections and unlinked appendix" {
     defer db.deinit();
     try dh_routes.seedDhrFixture(&db);
 
-    var report = try design_history.buildDhrReport(&db, "medical", alloc);
+    var report = try design_history.buildFullTraceabilityReport(&db, "medical", alloc);
     defer design_history.deinitDhrReport(&report, alloc);
 
     var buf: std.ArrayList(u8) = .empty;

@@ -191,7 +191,7 @@ pub fn renderReport(report: *const design_history.DhrReport, writer: anytype, al
     var pb = PageBuilder.init(page_alloc);
     defer pb.deinit();
 
-    try pb.drawHeading("Design History Record", FONT_TITLE);
+    try pb.drawHeading("Full Traceability Report", FONT_TITLE);
     const profile_line = try std.fmt.allocPrint(alloc, "Profile: {s}", .{@tagName(report.profile)});
     defer alloc.free(profile_line);
     try pb.drawText(profile_line, false);
@@ -494,14 +494,14 @@ test "renderReport includes downstream design history content" {
     defer db.deinit();
     try dh_routes.seedDhrFixture(&db);
 
-    var report = try design_history.buildDhrReport(&db, "medical", alloc);
+    var report = try design_history.buildFullTraceabilityReport(&db, "medical", alloc);
     defer design_history.deinitDhrReport(&report, alloc);
 
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     try renderReport(&report, buf.writer(alloc), alloc);
 
-    try testing.expect(std.mem.indexOf(u8, buf.items, "Design History Record") != null);
+    try testing.expect(std.mem.indexOf(u8, buf.items, "Full Traceability Report") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "UN-001") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "REQ-001") != null);
     try testing.expect(std.mem.indexOf(u8, buf.items, "Detect GPS loss") != null);
