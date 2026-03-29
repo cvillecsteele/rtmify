@@ -45,6 +45,39 @@ async function waitForServer(basePort: number, timeoutMs = 20_000): Promise<stri
   throw new Error(`Timed out waiting for port ${basePort}: ${lastError}`);
 }
 
+async function waitForRepoScan(baseUrl: string, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = 'repo scan not complete';
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${baseUrl}/api/status`, { cache: 'no-store' });
+      if (res.ok) {
+        const status = (await res.json()) as {
+          repo_scan_in_progress?: boolean;
+          repo_scan_last_finished_at?: number;
+          last_scan_at?: string;
+        };
+        const lastScan = typeof status.last_scan_at === 'string' ? status.last_scan_at : 'never';
+        const finishedAt = typeof status.repo_scan_last_finished_at === 'number' ? status.repo_scan_last_finished_at : 0;
+        if (finishedAt > 0 && lastScan !== 'never') {
+          return;
+        }
+        lastStatus = JSON.stringify({
+          repo_scan_in_progress: status.repo_scan_in_progress,
+          repo_scan_last_finished_at: finishedAt,
+          last_scan_at: lastScan,
+        });
+      } else {
+        lastStatus = `HTTP ${res.status}`;
+      }
+    } catch (err) {
+      lastStatus = err instanceof Error ? err.message : String(err);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`Timed out waiting for repo scan readiness: ${lastStatus}`);
+}
+
 export async function startServer(options: {
   dbPath: string;
   port: number;
@@ -99,6 +132,9 @@ export async function startServer(options: {
   let baseUrl = `http://127.0.0.1:${options.port}`;
   try {
     baseUrl = await waitForServer(options.port);
+    if (options.repoPath) {
+      await waitForRepoScan(baseUrl);
+    }
   } catch (err) {
     child.kill('SIGKILL');
     throw new Error(`${String(err)}\n--- server output ---\n${output}`);
