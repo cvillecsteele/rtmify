@@ -1,0 +1,24 @@
+{
+  "id": "vs200-baseline",
+  "image": "test/fixtures/traveler/images/vs200-baseline.JPG",
+  "messiness_tags": [
+    "printed-header",
+    "handwritten-values",
+    "single-page",
+    "footer-boilerplate"
+  ],
+  "expected": {
+    "required_fields": {
+      "product_name": "VS-200 Patient Monitor",
+      "assembly": "VS200-ASSY-100",
+      "serial_number": "D71893",
+      "bom_revision": "REV-C",
+      "atp_test_report_id": "ATP 178-37-B"
+    },
+    "normalized": {
+      "product_full_identifier": "VS200-ASSY-100-REV-C"
+    },
+    "notes": "Baseline redacted traveler used for the first end-to-end spike run. ATP report ID is the current high-value handwritten stress field.",
+    "acceptable_status": "accepted"
+  }
+}

@@ -57,6 +57,395 @@ fn addSqlite(compile: *std.Build.Step.Compile, b: *std.Build) void {
     compile.linkLibC();
 }
 
+fn addLlamaCppModuleIncludes(module: *std.Build.Module, b: *std.Build) void {
+    module.addIncludePath(b.path("libllm/vendor_shims"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/include"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/ggml/include"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/ggml/src"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/ggml/src/ggml-metal"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/src"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/tools/mtmd"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/tools/mtmd/models"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/src/models"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/vendor"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/vendor/stb"));
+    module.addIncludePath(b.path("libllm/vendor/llama.cpp/vendor/miniaudio"));
+}
+
+fn addLlamaCpp(compile: *std.Build.Step.Compile, b: *std.Build) void {
+    const target = compile.rootModuleTarget();
+    const use_metal = target.os.tag == .macos;
+    const c_flags: []const []const u8 = if (use_metal) &.{
+        "-std=c11",
+        "-DGGML_USE_CPU=1",
+        "-DGGML_USE_METAL=1",
+        "-DGGML_SCHED_MAX_COPIES=4",
+        "-DGGML_VERSION=\"unknown\"",
+        "-DGGML_COMMIT=\"unknown\"",
+        "-D_XOPEN_SOURCE=600",
+        "-D_DARWIN_C_SOURCE",
+    } else &.{
+        "-std=c11",
+        "-DGGML_USE_CPU=1",
+        "-DGGML_SCHED_MAX_COPIES=4",
+        "-DGGML_VERSION=\"unknown\"",
+        "-DGGML_COMMIT=\"unknown\"",
+        "-D_XOPEN_SOURCE=600",
+        "-D_DARWIN_C_SOURCE",
+    };
+    const cpp_flags: []const []const u8 = if (use_metal) &.{
+        "-std=c++17",
+        "-DGGML_USE_CPU=1",
+        "-DGGML_USE_METAL=1",
+        "-DGGML_SCHED_MAX_COPIES=4",
+        "-DGGML_VERSION=\"unknown\"",
+        "-DGGML_COMMIT=\"unknown\"",
+        "-D_XOPEN_SOURCE=600",
+        "-D_DARWIN_C_SOURCE",
+        "-Wno-cast-qual",
+    } else &.{
+        "-std=c++17",
+        "-DGGML_USE_CPU=1",
+        "-DGGML_SCHED_MAX_COPIES=4",
+        "-DGGML_VERSION=\"unknown\"",
+        "-DGGML_COMMIT=\"unknown\"",
+        "-D_XOPEN_SOURCE=600",
+        "-D_DARWIN_C_SOURCE",
+        "-Wno-cast-qual",
+    };
+
+    addLlamaCppModuleIncludes(compile.root_module, b);
+    compile.linkLibC();
+    compile.linkLibCpp();
+    if (target.os.tag == .linux) {
+        compile.linkSystemLibrary("m");
+        compile.linkSystemLibrary("dl");
+    }
+    if (use_metal) {
+        compile.linkFramework("Foundation");
+        compile.linkFramework("Metal");
+        compile.linkFramework("MetalKit");
+    }
+
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/ggml/src"),
+        .files = &.{
+            "ggml.c",
+            "ggml-alloc.c",
+            "ggml-quants.c",
+        },
+        .flags = c_flags,
+    });
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/ggml/src"),
+        .files = &.{
+            "ggml.cpp",
+            "ggml-backend.cpp",
+            "ggml-backend-dl.cpp",
+            "ggml-backend-reg.cpp",
+            "ggml-opt.cpp",
+            "ggml-threading.cpp",
+            "gguf.cpp",
+        },
+        .flags = cpp_flags,
+    });
+    if (use_metal) {
+        compile.addCSourceFiles(.{
+            .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-metal"),
+            .files = &.{
+                "ggml-metal.cpp",
+                "ggml-metal-device.cpp",
+                "ggml-metal-common.cpp",
+                "ggml-metal-ops.cpp",
+            },
+            .flags = cpp_flags,
+        });
+        compile.addCSourceFiles(.{
+            .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-metal"),
+            .files = &.{
+                "ggml-metal-device.m",
+                "ggml-metal-context.m",
+            },
+            .flags = c_flags,
+        });
+    }
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu"),
+        .files = &.{
+            "ggml-cpu.c",
+            "quants.c",
+        },
+        .flags = c_flags,
+    });
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu"),
+        .files = &.{
+            "ggml-cpu.cpp",
+            "repack.cpp",
+            "hbm.cpp",
+            "traits.cpp",
+            "binary-ops.cpp",
+            "unary-ops.cpp",
+            "vec.cpp",
+            "ops.cpp",
+            "amx/amx.cpp",
+            "amx/mmq.cpp",
+        },
+        .flags = cpp_flags,
+    });
+
+    switch (target.cpu.arch) {
+        .aarch64 => {
+            compile.addCSourceFiles(.{
+                .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu/arch/arm"),
+                .files = &.{
+                    "quants.c",
+                },
+                .flags = c_flags,
+            });
+            compile.addCSourceFiles(.{
+                .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu/arch/arm"),
+                .files = &.{
+                    "repack.cpp",
+                },
+                .flags = cpp_flags,
+            });
+        },
+        .x86_64 => {
+            compile.addCSourceFiles(.{
+                .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu/arch/x86"),
+                .files = &.{
+                    "quants.c",
+                },
+                .flags = c_flags,
+            });
+            compile.addCSourceFiles(.{
+                .root = b.path("libllm/vendor/llama.cpp/ggml/src/ggml-cpu/arch/x86"),
+                .files = &.{
+                    "repack.cpp",
+                },
+                .flags = cpp_flags,
+            });
+        },
+        else => {},
+    }
+
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/src"),
+        .files = &.{
+            "llama.cpp",
+            "llama-adapter.cpp",
+            "llama-arch.cpp",
+            "llama-batch.cpp",
+            "llama-chat.cpp",
+            "llama-context.cpp",
+            "llama-cparams.cpp",
+            "llama-grammar.cpp",
+            "llama-graph.cpp",
+            "llama-hparams.cpp",
+            "llama-impl.cpp",
+            "llama-io.cpp",
+            "llama-kv-cache.cpp",
+            "llama-kv-cache-iswa.cpp",
+            "llama-memory.cpp",
+            "llama-memory-hybrid.cpp",
+            "llama-memory-hybrid-iswa.cpp",
+            "llama-memory-recurrent.cpp",
+            "llama-mmap.cpp",
+            "llama-model-loader.cpp",
+            "llama-model-saver.cpp",
+            "llama-model.cpp",
+            "llama-quant.cpp",
+            "llama-sampler.cpp",
+            "llama-vocab.cpp",
+            "unicode-data.cpp",
+            "unicode.cpp",
+        },
+        .flags = cpp_flags,
+    });
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/src/models"),
+        .files = &.{
+            "afmoe.cpp",
+            "apertus.cpp",
+            "arcee.cpp",
+            "arctic.cpp",
+            "arwkv7.cpp",
+            "baichuan.cpp",
+            "bailingmoe.cpp",
+            "bailingmoe2.cpp",
+            "bert.cpp",
+            "bitnet.cpp",
+            "bloom.cpp",
+            "chameleon.cpp",
+            "chatglm.cpp",
+            "codeshell.cpp",
+            "cogvlm.cpp",
+            "cohere2-iswa.cpp",
+            "command-r.cpp",
+            "dbrx.cpp",
+            "deci.cpp",
+            "deepseek.cpp",
+            "deepseek2.cpp",
+            "delta-net-base.cpp",
+            "dots1.cpp",
+            "dream.cpp",
+            "ernie4-5-moe.cpp",
+            "ernie4-5.cpp",
+            "eurobert.cpp",
+            "exaone-moe.cpp",
+            "exaone.cpp",
+            "exaone4.cpp",
+            "falcon-h1.cpp",
+            "falcon.cpp",
+            "gemma-embedding.cpp",
+            "gemma.cpp",
+            "gemma2-iswa.cpp",
+            "gemma3.cpp",
+            "gemma3n-iswa.cpp",
+            "glm4-moe.cpp",
+            "glm4.cpp",
+            "gpt2.cpp",
+            "gptneox.cpp",
+            "granite-hybrid.cpp",
+            "granite.cpp",
+            "grok.cpp",
+            "grovemoe.cpp",
+            "hunyuan-dense.cpp",
+            "hunyuan-moe.cpp",
+            "internlm2.cpp",
+            "jais.cpp",
+            "jais2.cpp",
+            "jamba.cpp",
+            "kimi-linear.cpp",
+            "lfm2.cpp",
+            "llada-moe.cpp",
+            "llada.cpp",
+            "llama-iswa.cpp",
+            "llama.cpp",
+            "maincoder.cpp",
+            "mamba-base.cpp",
+            "mamba.cpp",
+            "mimo2-iswa.cpp",
+            "minicpm3.cpp",
+            "minimax-m2.cpp",
+            "mistral3.cpp",
+            "modern-bert.cpp",
+            "mpt.cpp",
+            "nemotron-h.cpp",
+            "nemotron.cpp",
+            "neo-bert.cpp",
+            "olmo.cpp",
+            "olmo2.cpp",
+            "olmoe.cpp",
+            "openai-moe-iswa.cpp",
+            "openelm.cpp",
+            "orion.cpp",
+            "paddleocr.cpp",
+            "pangu-embedded.cpp",
+            "phi2.cpp",
+            "phi3.cpp",
+            "plamo.cpp",
+            "plamo2.cpp",
+            "plamo3.cpp",
+            "plm.cpp",
+            "qwen.cpp",
+            "qwen2.cpp",
+            "qwen2moe.cpp",
+            "qwen2vl.cpp",
+            "qwen3.cpp",
+            "qwen35.cpp",
+            "qwen35moe.cpp",
+            "qwen3moe.cpp",
+            "qwen3next.cpp",
+            "qwen3vl-moe.cpp",
+            "qwen3vl.cpp",
+            "refact.cpp",
+            "rnd1.cpp",
+            "rwkv6-base.cpp",
+            "rwkv6.cpp",
+            "rwkv6qwen2.cpp",
+            "rwkv7-base.cpp",
+            "rwkv7.cpp",
+            "seed-oss.cpp",
+            "smallthinker.cpp",
+            "smollm3.cpp",
+            "stablelm.cpp",
+            "starcoder.cpp",
+            "starcoder2.cpp",
+            "step35-iswa.cpp",
+            "t5-dec.cpp",
+            "t5-enc.cpp",
+            "wavtokenizer-dec.cpp",
+            "xverse.cpp",
+        },
+        .flags = cpp_flags,
+    });
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/tools/mtmd"),
+        .files = &.{
+            "mtmd.cpp",
+            "mtmd-audio.cpp",
+            "mtmd-image.cpp",
+            "clip.cpp",
+            "mtmd-helper.cpp",
+        },
+        .flags = cpp_flags,
+    });
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor/llama.cpp/tools/mtmd/models"),
+        .files = &.{
+            "cogvlm.cpp",
+            "conformer.cpp",
+            "deepseekocr.cpp",
+            "glm4v.cpp",
+            "internvl.cpp",
+            "kimik25.cpp",
+            "kimivl.cpp",
+            "llama4.cpp",
+            "llava.cpp",
+            "minicpmv.cpp",
+            "mobilenetv5.cpp",
+            "nemotron-v2-vl.cpp",
+            "paddleocr.cpp",
+            "pixtral.cpp",
+            "qwen2vl.cpp",
+            "qwen3vl.cpp",
+            "siglip.cpp",
+            "whisper-enc.cpp",
+            "youtuvl.cpp",
+        },
+        .flags = cpp_flags,
+    });
+    compile.addCSourceFiles(.{
+        .root = b.path("libllm/vendor_shims"),
+        .files = &.{
+            "llama_mtmd_bridge.cpp",
+        },
+        .flags = cpp_flags,
+    });
+}
+
+fn addLlamaCppRuntimeResources(step: *std.Build.Step, b: *std.Build) void {
+    const install_ggml_common = b.addInstallBinFile(
+        b.path("libllm/vendor/llama.cpp/ggml/src/ggml-common.h"),
+        "ggml-common.h",
+    );
+    const install_ggml_metal = b.addInstallBinFile(
+        b.path("libllm/vendor/llama.cpp/ggml/src/ggml-metal/ggml-metal.metal"),
+        "ggml-metal.metal",
+    );
+    const install_ggml_metal_impl = b.addInstallBinFile(
+        b.path("libllm/vendor/llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h"),
+        "ggml-metal-impl.h",
+    );
+
+    step.dependOn(&install_ggml_common.step);
+    step.dependOn(&install_ggml_metal.step);
+    step.dependOn(&install_ggml_metal_impl.step);
+}
+
 fn findExistingPath(paths: []const []const u8) ?[]const u8 {
     for (paths) |path| {
         std.fs.accessAbsolute(path, .{}) catch continue;
@@ -123,7 +512,7 @@ fn loadLicenseHmacKeyHex(b: *std.Build, optimize: std.builtin.OptimizeMode) []co
 }
 
 pub fn build(b: *std.Build) void {
-    const default_version = "20260318-a";
+    const default_version = "20260325-f";
     const version = b.option([]const u8, "release-version", "Release version string") orelse default_version;
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -148,6 +537,20 @@ pub fn build(b: *std.Build) void {
     const native_cadcruncher_mod = b.createModule(.{
         .root_source_file = b.path("libcadcruncher/src/lib.zig"),
         .target = target,
+    });
+    const native_llm_mod = b.createModule(.{
+        .root_source_file = b.path("libllm/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addLlamaCppModuleIncludes(native_llm_mod, b);
+    const native_traveler_mod = b.createModule(.{
+        .root_source_file = b.path("libtraveler/src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "llm", .module = native_llm_mod },
+        },
     });
 
     const trace_exe = b.addExecutable(.{
@@ -200,6 +603,45 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const llm_lib = b.addLibrary(.{
+        .name = "llm",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libllm/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    addLlamaCpp(llm_lib, b);
+
+    const traveler_lib = b.addLibrary(.{
+        .name = "traveler",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libtraveler/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "llm", .module = native_llm_mod },
+            },
+        }),
+    });
+    addLlamaCppModuleIncludes(traveler_lib.root_module, b);
+
+    const traveler_exe = b.addExecutable(.{
+        .name = "traveler",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("traveler/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "traveler", .module = native_traveler_mod },
+                .{ .name = "llm", .module = native_llm_mod },
+            },
+        }),
+    });
+    addLlamaCpp(traveler_exe, b);
+
     const shared_lib = b.addLibrary(.{
         .name = "rtmify",
         .linkage = .dynamic,
@@ -244,6 +686,9 @@ pub fn build(b: *std.Build) void {
     const install_live = b.addInstallArtifact(live_exe, .{});
     const install_cadinspect = b.addInstallArtifact(cadinspect_exe, .{});
     const install_cadcruncher_lib = b.addInstallArtifact(cadcruncher_lib, .{});
+    const install_llm_lib = b.addInstallArtifact(llm_lib, .{});
+    const install_traveler_lib = b.addInstallArtifact(traveler_lib, .{});
+    const install_traveler = b.addInstallArtifact(traveler_exe, .{});
     const install_shared_lib = b.addInstallArtifact(shared_lib, .{});
     const install_static_lib = b.addInstallArtifact(static_lib, .{});
     const install_license_gen = b.addInstallArtifact(license_gen_exe, .{});
@@ -252,6 +697,9 @@ pub fn build(b: *std.Build) void {
     b.getInstallStep().dependOn(&install_live.step);
     b.getInstallStep().dependOn(&install_cadinspect.step);
     b.getInstallStep().dependOn(&install_cadcruncher_lib.step);
+    b.getInstallStep().dependOn(&install_llm_lib.step);
+    b.getInstallStep().dependOn(&install_traveler_lib.step);
+    b.getInstallStep().dependOn(&install_traveler.step);
     b.getInstallStep().dependOn(&install_shared_lib.step);
     b.getInstallStep().dependOn(&install_static_lib.step);
     b.getInstallStep().dependOn(&install_license_gen.step);
@@ -272,6 +720,19 @@ pub fn build(b: *std.Build) void {
 
     const license_gen_step = b.step("license-gen", "Build rtmify-license-gen");
     license_gen_step.dependOn(&install_license_gen.step);
+
+    const llm_step = b.step("llm", "Build libllm static library");
+    llm_step.dependOn(&install_llm_lib.step);
+
+    const traveler_lib_step = b.step("traveler-lib", "Build libtraveler static library");
+    traveler_lib_step.dependOn(&install_traveler_lib.step);
+
+    const traveler_step = b.step("traveler", "Build traveler CLI");
+    traveler_step.dependOn(&install_traveler.step);
+    if (target.result.os.tag == .macos) {
+        addLlamaCppRuntimeResources(&install_traveler.step, b);
+        addLlamaCppRuntimeResources(b.getInstallStep(), b);
+    }
 
     const run_trace_cmd = b.addRunArtifact(trace_exe);
     if (b.args) |args| run_trace_cmd.addArgs(args);
@@ -346,6 +807,29 @@ pub fn build(b: *std.Build) void {
     });
     const run_cadcruncher_tests = b.addRunArtifact(cadcruncher_tests);
 
+    const llm_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libllm/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    addLlamaCpp(llm_tests, b);
+    const run_llm_tests = b.addRunArtifact(llm_tests);
+
+    const traveler_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libtraveler/src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "llm", .module = native_llm_mod },
+            },
+        }),
+    });
+    addLlamaCpp(traveler_tests, b);
+    const run_traveler_tests = b.addRunArtifact(traveler_tests);
+
     const windows_lifecycle_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("live/windows/src/lifecycle.zig"),
@@ -399,6 +883,10 @@ pub fn build(b: *std.Build) void {
     const test_cadcruncher_step = b.step("test-cadcruncher", "Run libcadcruncher unit tests");
     test_cadcruncher_step.dependOn(&run_cadcruncher_tests.step);
 
+    const test_traveler_step = b.step("test-traveler", "Run traveler and llm unit tests");
+    test_traveler_step.dependOn(&run_llm_tests.step);
+    test_traveler_step.dependOn(&run_traveler_tests.step);
+
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_trace_tests.step);
@@ -409,6 +897,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_windows_status_probe_tests.step);
     test_step.dependOn(&run_windows_license_gate_tests.step);
     test_step.dependOn(&run_cadcruncher_tests.step);
+    test_step.dependOn(&run_llm_tests.step);
+    test_step.dependOn(&run_traveler_tests.step);
 
     const win_gui_exe = b.addExecutable(.{
         .name = "rtmify-trace",
