@@ -150,6 +150,25 @@ assert_eq "${HASH1}" "${HASH2}" "hash_path: identical file produces identical ha
 assert_eq 64 "${#HASH1}" "hash_path: SHA-256 is 64 hex chars"
 
 # ---------------------------------------------------------------------------
+# record_checksum
+# ---------------------------------------------------------------------------
+
+CHECKSUMS_FILE="${TMP_DIR}/checksums.txt"
+TMP_DIR="${TMP_DIR}"
+CHECKSUM_TARGET="${TMP_DIR}/checksummed.txt"
+echo "before" > "${CHECKSUM_TARGET}"
+OLD_SHA="$(hash_path "${CHECKSUM_TARGET}")"
+printf '%s  windows/rtmify-trace.exe\n' "${OLD_SHA}" > "${CHECKSUMS_FILE}"
+
+echo "after" > "${CHECKSUM_TARGET}"
+NEW_SHA="$(record_checksum "windows/rtmify-trace.exe" "${CHECKSUM_TARGET}")"
+assert_eq 64 "${#NEW_SHA}" "record_checksum: returns SHA-256 hash"
+CHECKSUM_LINES="$(grep -c 'windows/rtmify-trace.exe' "${CHECKSUMS_FILE}")"
+assert_eq "1" "${CHECKSUM_LINES}" "record_checksum: replaces existing checksum entry"
+CHECKSUM_ENTRY="$(cat "${CHECKSUMS_FILE}")"
+assert_contains "${NEW_SHA}  windows/rtmify-trace.exe" "${CHECKSUM_ENTRY}" "record_checksum: writes updated checksum"
+
+# ---------------------------------------------------------------------------
 # CLI: argument validation (subprocess)
 # ---------------------------------------------------------------------------
 

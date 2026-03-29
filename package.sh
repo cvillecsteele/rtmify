@@ -100,6 +100,22 @@ hash_path() {
   fi
 }
 
+record_checksum() {
+  local rel_path="$1"
+  local abs_path="$2"
+  local sha
+  sha="$(hash_path "${abs_path}")"
+
+  local filtered_file="${TMP_DIR}/checksums.filtered"
+  if [[ -f "${CHECKSUMS_FILE}" ]]; then
+    grep -vF "  ${rel_path}" "${CHECKSUMS_FILE}" > "${filtered_file}" || true
+    mv "${filtered_file}" "${CHECKSUMS_FILE}"
+  fi
+
+  printf '%s  %s\n' "${sha}" "${rel_path}" >> "${CHECKSUMS_FILE}"
+  printf '%s\n' "${sha}"
+}
+
 append_json_line() {
   local file="$1"
   local line="$2"
@@ -313,8 +329,7 @@ package_one_macos_product() {
 
   local rel_path="packages/macos/${pkg_name}"
   local sha
-  sha="$(hash_path "${MACOS_PKGS_DIR}/${pkg_name}")"
-  printf '%s  %s\n' "${sha}" "${rel_path}" >> "${CHECKSUMS_FILE}"
+  sha="$(record_checksum "${rel_path}" "${MACOS_PKGS_DIR}/${pkg_name}")"
   append_json_line "${MACOS_PKGS_JSONL}" \
     "{\"product\":\"${product}\",\"path\":\"${rel_path}\",\"sha256\":\"${sha}\"}"
 }
@@ -437,7 +452,9 @@ package_windows() {
     "${exes[@]}"
 
   for exe in "${exes[@]}"; do
-    printf 'windows/%s\n' "$(basename "${exe}")" >> "${WINDOWS_SIGNED_FILE}"
+    local rel_path="windows/$(basename "${exe}")"
+    record_checksum "${rel_path}" "${exe}" >/dev/null
+    printf '%s\n' "${rel_path}" >> "${WINDOWS_SIGNED_FILE}"
   done
 }
 
@@ -475,8 +492,7 @@ package_linux() {
     fi
 
     local sha
-    sha="$(hash_path "${tarball_path}")"
-    printf '%s  %s\n' "${sha}" "${rel_path}" >> "${CHECKSUMS_FILE}"
+    sha="$(record_checksum "${rel_path}" "${tarball_path}")"
 
     local product="${bin_name#rtmify-}"
     append_json_line "${LINUX_PKGS_JSONL}" \
