@@ -1,5 +1,20 @@
 # Traveler Spike
 
+## Status
+
+This work is parked.
+
+`libllm`, `libtraveler`, and the `traveler` CLI are a successful spike, but they are not part of the Live V1 product plan.
+
+Current intent:
+
+- keep the code committed as a restart point
+- do not wire it into Live routes, packaging, installers, or operator workflow
+- do not assume local traveler extraction is broadly deployable on arbitrary shop-floor Windows hardware
+- revisit in a future Live V2 effort if local-model runtime support and product priority justify it
+
+The code is worth keeping because it proved the architecture and extraction path. It should be treated as parked product work, not dead code and not a current shipping dependency.
+
 `traveler` is the spike CLI for local traveler extraction on top of `libtraveler` and `libllm`.
 
 ## Prerequisites
@@ -65,3 +80,18 @@ The repo carries a first redacted baseline case under:
 - `test/fixtures/traveler/cases/vs200-baseline.json`
 
 That baseline exists to make `traveler eval` immediately useful and reproducible. It should be expanded as additional messy traveler examples are redacted and committed.
+
+## Future Restart Notes
+
+If this work is resumed later, the most relevant facts are:
+
+- `libllm` is the generic local multimodal inference layer
+- `libtraveler` is the traveler-specific prompt/schema/validation layer
+- the intended product seam is `Live -> libtraveler -> LlmProvider <- libllm`
+- the required traveler fields for useful extraction were:
+  - `product_name`
+  - `assembly`
+  - `serial_number`
+  - `bom_revision`
+  - `atp_test_report_id`
+- the major unresolved product risk was runtime viability on ordinary Windows shop hardware, not basic extraction quality on the tested Mac setup
