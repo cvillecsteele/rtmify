@@ -27,9 +27,12 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       TAG: v${{ inputs.version }}
-      RELEASE_DIR: ${{ runner.temp }}/release/${{ inputs.version }}
+      RELEASE_DIR: ""  # set in "Set release dir" step below
       REPO: cvillecsteele/rtmify
     steps:
+      - name: Set release dir
+        run: echo "RELEASE_DIR=$RUNNER_TEMP/release/$VERSION" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v4
 
