@@ -2,10 +2,10 @@
 ///
 /// Runs git log and git blame via subprocess, parses output, and returns
 /// structured Commit and BlameEntry values for graph ingestion.
-
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+const id_match = @import("rtmify").id_match;
 
 pub const GitError = error{
     GitLogFailed,
@@ -23,13 +23,13 @@ const git_poll_ms: u32 = 50;
 // ---------------------------------------------------------------------------
 
 pub const Commit = struct {
-    hash: []const u8,       // full 40-char SHA
+    hash: []const u8, // full 40-char SHA
     short_hash: []const u8, // 7-char
     author: []const u8,
     email: []const u8,
-    date_iso: []const u8,   // ISO 8601
+    date_iso: []const u8, // ISO 8601
     message: []const u8,
-    req_ids: [][]const u8,  // matched from known_req_ids
+    req_ids: [][]const u8, // matched from known_req_ids
     file_changes: []CommitFileChange,
 };
 
@@ -110,6 +110,9 @@ pub fn gitLogWithOptions(
 }
 
 fn parseGitLog(output: []const u8, known_req_ids: []const []const u8, alloc: Allocator) (GitError || Allocator.Error)![]Commit {
+    var catalog = try id_match.Catalog.init(alloc, known_req_ids);
+    defer catalog.deinit();
+
     var commits: std.ArrayList(Commit) = .empty;
     var record_it = std.mem.splitScalar(u8, output, 0x1e);
     while (record_it.next()) |record_raw| {
@@ -132,11 +135,10 @@ fn parseGitLog(output: []const u8, known_req_ids: []const []const u8, alloc: All
         if (fi < 6) return error.CommitParseErr;
 
         const message = fields[5];
-        var matched: std.ArrayList([]const u8) = .empty;
-        for (known_req_ids) |req_id| {
-            if (std.mem.indexOf(u8, message, req_id) != null) {
-                try matched.append(alloc, try alloc.dupe(u8, req_id));
-            }
+        const matched = try catalog.scanText(message, alloc);
+        defer {
+            for (matched.related_unknown_ids) |value| alloc.free(value);
+            if (matched.related_unknown_ids.len > 0) alloc.free(matched.related_unknown_ids);
         }
 
         var file_changes: std.ArrayList(CommitFileChange) = .empty;
@@ -154,7 +156,7 @@ fn parseGitLog(output: []const u8, known_req_ids: []const []const u8, alloc: All
             .email = try alloc.dupe(u8, fields[3]),
             .date_iso = try alloc.dupe(u8, fields[4]),
             .message = try alloc.dupe(u8, message),
-            .req_ids = try matched.toOwnedSlice(alloc),
+            .req_ids = matched.exact_ids,
             .file_changes = try file_changes.toOwnedSlice(alloc),
         });
     }
@@ -440,6 +442,19 @@ test "parseGitLog parses commits and changed files" {
     try testing.expectEqual(@as(usize, 0), commits[1].req_ids.len);
     try testing.expectEqual(@as(usize, 1), commits[1].file_changes.len);
     try testing.expectEqualStrings("tests/test_main.py", commits[1].file_changes[0].path);
+}
+
+test "parseGitLog does not match structured ID substrings in commit messages" {
+    const output =
+        "\x1eabc1234567890123456789012345678901234567890|abc1234|Alice Smith|alice@example.com|2026-03-01T12:00:00+00:00|REQ-0012: nearby but different\n" ++
+        "M\tsrc/gps/timeout.c\n";
+    const known = &[_][]const u8{"REQ-001"};
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const commits = try parseGitLog(output, known, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), commits.len);
+    try testing.expectEqual(@as(usize, 0), commits[0].req_ids.len);
 }
 
 test "parseGitLog empty output returns empty slice" {

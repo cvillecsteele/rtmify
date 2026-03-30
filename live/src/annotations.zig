@@ -3,11 +3,10 @@
 /// Scans source files for requirement ID references inside comments.
 /// Uses a per-language state machine to distinguish comment context from
 /// code and string literals.
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const GraphDb = @import("graph_live.zig").GraphDb;
-const structured_id = @import("rtmify").id;
+const id_match = @import("rtmify").id_match;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -37,9 +36,9 @@ pub const ScanResult = struct {
 // ---------------------------------------------------------------------------
 
 const CommentStyle = enum {
-    c_style,   // // and /* */ — C, C++, Java, Go, Rust, Zig, JS, TS, Swift, CS, Kotlin, Scala
-    python,    // # and """ """
-    ruby,      // # and =begin/=end
+    c_style, // // and /* */ — C, C++, Java, Go, Rust, Zig, JS, TS, Swift, CS, Kotlin, Scala
+    python, // # and """ """
+    ruby, // # and =begin/=end
     unknown,
 };
 
@@ -47,9 +46,9 @@ fn detectStyle(path: []const u8) CommentStyle {
     const ext = std.fs.path.extension(path);
     const c_exts = &[_][]const u8{ ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".java", ".go", ".rs", ".zig", ".js", ".ts", ".jsx", ".tsx", ".swift", ".cs", ".kt", ".scala", ".v", ".sv", ".vhd", ".vhdl" };
     for (c_exts) |e| if (std.ascii.eqlIgnoreCase(ext, e)) return .c_style;
-    const py_exts = &[_][]const u8{ ".py" };
+    const py_exts = &[_][]const u8{".py"};
     for (py_exts) |e| if (std.ascii.eqlIgnoreCase(ext, e)) return .python;
-    const rb_exts = &[_][]const u8{ ".rb" };
+    const rb_exts = &[_][]const u8{".rb"};
     for (rb_exts) |e| if (std.ascii.eqlIgnoreCase(ext, e)) return .ruby;
     return .unknown;
 }
@@ -89,6 +88,9 @@ pub fn scanFileDetailed(
         };
     }
 
+    var catalog = try id_match.Catalog.init(alloc, known_req_ids);
+    defer catalog.deinit();
+
     const style = detectStyle(file_path);
     if (style == .unknown) {
         return .{
@@ -121,7 +123,7 @@ pub fn scanFileDetailed(
 
     switch (style) {
         .unknown => {},
-        else => try scanLineByLine(content, file_path, known_req_ids, alloc, &annotations, &unknown_refs),
+        else => try scanLineByLine(content, file_path, &catalog, alloc, &annotations, &unknown_refs),
     }
 
     return .{
@@ -138,7 +140,7 @@ pub fn scanFileDetailed(
 fn scanLineByLine(
     content: []const u8,
     file_path: []const u8,
-    known_req_ids: []const []const u8,
+    catalog: *const id_match.Catalog,
     alloc: Allocator,
     annotations: *std.ArrayList(Annotation),
     unknown_refs: *std.ArrayList(UnknownAnnotationRef),
@@ -180,19 +182,26 @@ fn scanLineByLine(
 
         if (!is_comment_line) continue;
 
-        // Search for each known req ID in this comment line
-        for (known_req_ids) |req_id| {
-            if (std.mem.indexOf(u8, line, req_id) != null) {
-                try annotations.append(alloc, .{
-                    .req_id = try alloc.dupe(u8, req_id),
-                    .file_path = try alloc.dupe(u8, file_path),
-                    .line_number = line_num,
-                    .context = try alloc.dupe(u8, trimmed),
-                });
-            }
+        var matches = try catalog.scanText(line, alloc);
+        defer matches.deinit(alloc);
+
+        for (matches.exact_ids) |req_id| {
+            try annotations.append(alloc, .{
+                .req_id = try alloc.dupe(u8, req_id),
+                .file_path = try alloc.dupe(u8, file_path),
+                .line_number = line_num,
+                .context = try alloc.dupe(u8, trimmed),
+            });
         }
 
-        try scanUnknownRefsInCommentLine(line, trimmed, file_path, line_num, known_req_ids, alloc, unknown_refs);
+        for (matches.related_unknown_ids) |ref_id| {
+            try unknown_refs.append(alloc, .{
+                .ref_id = try alloc.dupe(u8, ref_id),
+                .file_path = try alloc.dupe(u8, file_path),
+                .line_number = line_num,
+                .context = try alloc.dupe(u8, trimmed),
+            });
+        }
     }
 }
 
@@ -210,65 +219,6 @@ fn isInString(line: []const u8, needle: []const u8) bool {
     return quote_count % 2 == 1;
 }
 
-fn scanUnknownRefsInCommentLine(
-    line: []const u8,
-    trimmed: []const u8,
-    file_path: []const u8,
-    line_num: u32,
-    known_req_ids: []const []const u8,
-    alloc: Allocator,
-    unknown_refs: *std.ArrayList(UnknownAnnotationRef),
-) !void {
-    var i: usize = 0;
-    while (i < line.len) {
-        if (!isIdChar(line[i])) {
-            i += 1;
-            continue;
-        }
-
-        const start = i;
-        while (i < line.len and isIdChar(line[i])) : (i += 1) {}
-        const token = line[start..i];
-
-        if (!looksLikeKnownIdPattern(token, known_req_ids)) continue;
-        if (containsId(known_req_ids, token)) continue;
-
-        try unknown_refs.append(alloc, .{
-            .ref_id = try alloc.dupe(u8, token),
-            .file_path = try alloc.dupe(u8, file_path),
-            .line_number = line_num,
-            .context = try alloc.dupe(u8, trimmed),
-        });
-    }
-}
-
-fn isIdChar(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '-' or c == '_';
-}
-
-fn containsId(known_req_ids: []const []const u8, candidate: []const u8) bool {
-    for (known_req_ids) |req_id| {
-        if (std.mem.eql(u8, req_id, candidate)) return true;
-    }
-    return false;
-}
-
-fn looksLikeKnownIdPattern(candidate: []const u8, known_req_ids: []const []const u8) bool {
-    if (!structured_id.isStructuredId(candidate)) return false;
-    const prefix = firstSegment(candidate);
-
-    for (known_req_ids) |known| {
-        if (!structured_id.isStructuredId(known)) continue;
-        if (std.mem.eql(u8, firstSegment(known), prefix)) return true;
-    }
-    return false;
-}
-
-fn firstSegment(value: []const u8) []const u8 {
-    const dash_idx = std.mem.indexOfScalar(u8, value, '-') orelse return value;
-    return value[0..dash_idx];
-}
-
 // ---------------------------------------------------------------------------
 // ID list builder
 // ---------------------------------------------------------------------------
@@ -280,9 +230,7 @@ pub fn buildKnownIds(db: *GraphDb, alloc: Allocator) ![][]const u8 {
     var result: std.ArrayList([]const u8) = .empty;
     const types = &[_][]const u8{ "Requirement", "UserNeed", "DesignInput", "DesignOutput" };
     for (types) |t| {
-        var st = try db.db.prepare(
-            "SELECT id FROM nodes WHERE type=? ORDER BY id"
-        );
+        var st = try db.db.prepare("SELECT id FROM nodes WHERE type=? ORDER BY id");
         defer st.finalize();
         try st.bindText(1, t);
         while (try st.step()) {
@@ -477,6 +425,26 @@ test "scanFile matches underscore-bearing known ID in comments" {
     const annotations = try scanFile(tmp, ids, alloc);
     try testing.expectEqual(@as(usize, 1), annotations.len);
     try testing.expectEqualStrings("ABC_DEF-01_A", annotations[0].req_id);
+}
+
+test "scanFile does not match structured ID substrings" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    {
+        const f = try tmp_dir.dir.createFile("substring.c", .{});
+        defer f.close();
+        try f.writeAll("// REQ-0012 is nearby but different\n");
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try tmp_dir.dir.realpath("substring.c", &path_buf);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const ids = &[_][]const u8{"REQ-001"};
+    const annotations = try scanFile(tmp, ids, alloc);
+    try testing.expectEqual(@as(usize, 0), annotations.len);
 }
 
 test "scanFileDetailed reports related unknown complex structured IDs" {
