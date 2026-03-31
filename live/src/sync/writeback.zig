@@ -1,6 +1,21 @@
 const std = @import("std");
 const internal = @import("internal.zig");
 
+const WritebackPlan = struct {
+    value_updates: std.ArrayList(internal.ValueUpdate),
+    row_formats: std.ArrayList(internal.RowFormat),
+
+    fn deinit(self: *WritebackPlan, alloc: internal.Allocator) void {
+        for (self.value_updates.items) |upd| {
+            alloc.free(upd.a1_range);
+            for (upd.values) |value| alloc.free(value);
+            alloc.free(upd.values);
+        }
+        self.value_updates.deinit(alloc);
+        self.row_formats.deinit(alloc);
+    }
+};
+
 pub fn requirementStatus(db: *internal.GraphDb, req_id: []const u8, alloc: internal.Allocator) []const u8 {
     const node = db.getNode(req_id, alloc) catch return "ERROR";
     if (node == null) return "MISSING";
@@ -57,23 +72,40 @@ fn isRecognizedProductStatus(raw: []const u8) bool {
 pub fn writeBackStatus(
     db: *internal.GraphDb,
     runtime: *internal.ProviderRuntime,
-    req_rows: [][][]const u8,
-    risk_rows: [][][]const u8,
-    un_rows: [][][]const u8,
+    req_rows: []const []const []const u8,
+    risk_rows: []const []const []const u8,
+    un_rows: []const []const []const u8,
     product_rows: []const []const []const u8,
     alloc: internal.Allocator,
 ) !void {
-    var value_updates: std.ArrayList(internal.ValueUpdate) = .empty;
-    defer {
-        for (value_updates.items) |upd| {
-            alloc.free(upd.a1_range);
-            for (upd.values) |v| alloc.free(v);
-            alloc.free(upd.values);
-        }
-        value_updates.deinit(alloc);
+    var plan = try buildWritebackPlan(db, req_rows, risk_rows, un_rows, product_rows, alloc);
+    defer plan.deinit(alloc);
+
+    if (plan.value_updates.items.len > 0) {
+        runtime.batchWriteValues(plan.value_updates.items, alloc) catch |e| {
+            std.log.warn("sync: status writeback failed: {s}", .{@errorName(e)});
+        };
     }
-    var row_formats: std.ArrayList(internal.RowFormat) = .empty;
-    defer row_formats.deinit(alloc);
+    if (plan.row_formats.items.len > 0) {
+        runtime.applyRowFormats(plan.row_formats.items, alloc) catch |e| {
+            std.log.warn("sync: color writeback failed: {s}", .{@errorName(e)});
+        };
+    }
+}
+
+fn buildWritebackPlan(
+    db: *internal.GraphDb,
+    req_rows: []const []const []const u8,
+    risk_rows: []const []const []const u8,
+    un_rows: []const []const []const u8,
+    product_rows: []const []const []const u8,
+    alloc: internal.Allocator,
+) !WritebackPlan {
+    var plan: WritebackPlan = .{
+        .value_updates = .empty,
+        .row_formats = .empty,
+    };
+    errdefer plan.deinit(alloc);
 
     if (req_rows.len > 1) {
         const header = req_rows[0];
@@ -87,7 +119,7 @@ pub fn writeBackStatus(
                 const header_range = try std.fmt.allocPrint(alloc, "Requirements!{s}1", .{colLetterRef(header_col_letter, verification_col)});
                 const header_values = try alloc.alloc([]const u8, 1);
                 header_values[0] = try alloc.dupe(u8, "RTMify Verification");
-                try value_updates.append(alloc, .{ .a1_range = header_range, .values = header_values });
+                try plan.value_updates.append(alloc, .{ .a1_range = header_range, .values = header_values });
             }
             for (req_rows[1..], 0..) |row, i| {
                 const row_num = i + 2;
@@ -98,7 +130,7 @@ pub fn writeBackStatus(
                 const range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ colLetterRef(col_letter, scol), row_num });
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
-                try value_updates.append(alloc, .{ .a1_range = range, .values = values });
+                try plan.value_updates.append(alloc, .{ .a1_range = range, .values = values });
 
                 var verification = try internal.test_results.verificationForRequirement(db, req_id, alloc);
                 defer verification.deinit(alloc);
@@ -110,9 +142,9 @@ pub fn writeBackStatus(
                 const verification_range = try std.fmt.allocPrint(alloc, "Requirements!{s}{d}", .{ colLetterRef(verification_col_letter, verification_col), row_num });
                 const verification_values = try alloc.alloc([]const u8, 1);
                 verification_values[0] = try alloc.dupe(u8, verification_value);
-                try value_updates.append(alloc, .{ .a1_range = verification_range, .values = verification_values });
+                try plan.value_updates.append(alloc, .{ .a1_range = verification_range, .values = verification_values });
 
-                try row_formats.append(alloc, .{
+                try plan.row_formats.append(alloc, .{
                     .tab_title = "Requirements",
                     .row_1based = row_num,
                     .col_start_1based = 1,
@@ -144,8 +176,8 @@ pub fn writeBackStatus(
                 const range = try std.fmt.allocPrint(alloc, "Risks!{s}{d}", .{ colLetterRef(col_letter, status_col.?), row_num });
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
-                try value_updates.append(alloc, .{ .a1_range = range, .values = values });
-                try row_formats.append(alloc, .{
+                try plan.value_updates.append(alloc, .{ .a1_range = range, .values = values });
+                try plan.row_formats.append(alloc, .{
                     .tab_title = "Risks",
                     .row_1based = row_num,
                     .col_start_1based = 1,
@@ -189,8 +221,8 @@ pub fn writeBackStatus(
                 const range = try std.fmt.allocPrint(alloc, "User Needs!{s}{d}", .{ colLetterRef(col_letter, status_col.?), row_num });
                 const values = try alloc.alloc([]const u8, 1);
                 values[0] = try alloc.dupe(u8, status);
-                try value_updates.append(alloc, .{ .a1_range = range, .values = values });
-                try row_formats.append(alloc, .{
+                try plan.value_updates.append(alloc, .{ .a1_range = range, .values = values });
+                try plan.row_formats.append(alloc, .{
                     .tab_title = "User Needs",
                     .row_1based = row_num,
                     .col_start_1based = 1,
@@ -201,18 +233,8 @@ pub fn writeBackStatus(
         }
     }
 
-    try appendProductWriteback(&value_updates, &row_formats, product_rows, alloc);
-
-    if (value_updates.items.len > 0) {
-        runtime.batchWriteValues(value_updates.items, alloc) catch |e| {
-            std.log.warn("sync: status writeback failed: {s}", .{@errorName(e)});
-        };
-    }
-    if (row_formats.items.len > 0) {
-        runtime.applyRowFormats(row_formats.items, alloc) catch |e| {
-            std.log.warn("sync: color writeback failed: {s}", .{@errorName(e)});
-        };
-    }
+    try appendProductWriteback(&plan.value_updates, &plan.row_formats, product_rows, alloc);
+    return plan;
 }
 
 pub fn normalizeProductCell(raw: []const u8, alloc: internal.Allocator) ![]const u8 {
@@ -246,7 +268,11 @@ pub fn appendProductWriteback(
     }
 
     var seen_identifiers = std.StringHashMap(void).init(alloc);
-    defer seen_identifiers.deinit();
+    defer {
+        var it = seen_identifiers.iterator();
+        while (it.next()) |entry| alloc.free(entry.key_ptr.*);
+        seen_identifiers.deinit();
+    }
 
     for (product_rows[1..], 0..) |row, i| {
         const row_num = i + 2;
@@ -265,7 +291,9 @@ pub fn appendProductWriteback(
             continue;
         }
 
+        var keep_identifier = false;
         const normalized_identifier = try normalizeProductCell(identifier_raw, alloc);
+        defer if (!keep_identifier) alloc.free(normalized_identifier);
         const status: []const u8 = blk: {
             if (normalized_identifier.len == 0 or internal.schema.isBlankEquivalent(normalized_identifier)) {
                 break :blk "MISSING_FULL_IDENTIFIER";
@@ -274,6 +302,7 @@ pub fn appendProductWriteback(
                 break :blk "DUPLICATE_FULL_IDENTIFIER";
             }
             try seen_identifiers.put(normalized_identifier, {});
+            keep_identifier = true;
             if (!isRecognizedProductStatus(product_status_raw)) {
                 break :blk "PRODUCT_UNKNOWN_STATUS";
             }
@@ -333,4 +362,172 @@ pub fn colLetterRef(buf: [3]u8, idx: usize) []const u8 {
 
 pub fn colLetter(idx: usize) [3]u8 {
     return colLetterBuf(idx);
+}
+
+const testing = std.testing;
+
+fn findSingleValueUpdate(updates: []const internal.ValueUpdate, range: []const u8) ?[]const u8 {
+    for (updates) |upd| {
+        if (std.mem.eql(u8, upd.a1_range, range)) return upd.values[0];
+    }
+    return null;
+}
+
+test "requirementStatus returns MISSING when requirement node absent" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try testing.expectEqualStrings("MISSING", requirementStatus(&db, "REQ-404", testing.allocator));
+}
+
+test "requirementStatus returns NO_TEST_LINKED when requirement has no test edges" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+
+    try testing.expectEqualStrings("NO_TEST_LINKED", requirementStatus(&db, "REQ-001", testing.allocator));
+}
+
+test "requirementStatus returns OK when requirement has linked test group" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("TG-001", "TestGroup", "{}", null);
+    try db.addEdge("REQ-001", "TG-001", "TESTED_BY");
+
+    try testing.expectEqualStrings("OK", requirementStatus(&db, "REQ-001", testing.allocator));
+}
+
+test "statusColorHex maps ok warning and error buckets correctly" {
+    try testing.expectEqualStrings("#B6E1CD", statusColorHex("OK"));
+    try testing.expectEqualStrings("#FCE8B2", statusColorHex("MISSING"));
+    try testing.expectEqualStrings("#F4C7C3", statusColorHex("DUPLICATE_FULL_IDENTIFIER"));
+}
+
+test "buildWritebackPlan adds RTMify Verification header and writes verification state" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("TG-001", "TestGroup", "{}", null);
+    try db.addNode("TEST-001", "Test", "{}", null);
+    try db.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try db.addEdge("TG-001", "TEST-001", "HAS_TEST");
+
+    var payload = internal.test_results.ExecutionInput{
+        .execution_id = try testing.allocator.dupe(u8, "exec-1"),
+        .executed_at = try testing.allocator.dupe(u8, "2026-03-31T12:00:00Z"),
+        .serial_number = null,
+        .full_product_identifier = null,
+        .executor_json = null,
+        .source_json = null,
+        .test_cases = try testing.allocator.alloc(internal.test_results.TestCaseInput, 1),
+    };
+    defer payload.deinit(testing.allocator);
+    payload.test_cases[0] = .{
+        .result_id = try testing.allocator.dupe(u8, "res-1"),
+        .test_case_ref = try testing.allocator.dupe(u8, "TEST-001"),
+        .status = try testing.allocator.dupe(u8, "passed"),
+        .duration_ms = null,
+        .notes = null,
+        .measurements_json = try testing.allocator.dupe(u8, "[]"),
+        .attachments_json = try testing.allocator.dupe(u8, "[]"),
+    };
+    var ingest_response = try internal.test_results.ingest(&db, payload, testing.allocator);
+    defer ingest_response.deinit(testing.allocator);
+
+    const req_header = [_][]const u8{ "ID", "Status" };
+    const req_row = [_][]const u8{ "REQ-001", "" };
+    const req_rows = [_][]const []const u8{
+        &req_header,
+        &req_row,
+    };
+    var plan = try buildWritebackPlan(&db, &req_rows, &.{}, &.{}, &.{}, testing.allocator);
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("RTMify Verification", findSingleValueUpdate(plan.value_updates.items, "Requirements!C1").?);
+    try testing.expectEqualStrings("OK", findSingleValueUpdate(plan.value_updates.items, "Requirements!B2").?);
+    try testing.expectEqualStrings("VERIFIED", findSingleValueUpdate(plan.value_updates.items, "Requirements!C2").?);
+}
+
+test "buildWritebackPlan writes risk statuses using node presence" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("RSK-001", "Risk", "{}", null);
+
+    const risk_header = [_][]const u8{ "ID", "Status" };
+    const risk_row_1 = [_][]const u8{ "RSK-001", "" };
+    const risk_row_2 = [_][]const u8{ "RSK-404", "" };
+    const risk_rows = [_][]const []const u8{
+        &risk_header,
+        &risk_row_1,
+        &risk_row_2,
+    };
+    var plan = try buildWritebackPlan(&db, &.{}, &risk_rows, &.{}, &.{}, testing.allocator);
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("OK", findSingleValueUpdate(plan.value_updates.items, "Risks!B2").?);
+    try testing.expectEqualStrings("MISSING", findSingleValueUpdate(plan.value_updates.items, "Risks!B3").?);
+}
+
+test "buildWritebackPlan writes user need statuses using DERIVES_FROM edges" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("UN-001", "UserNeed", "{}", null);
+    try db.addEdge("REQ-001", "UN-001", "DERIVES_FROM");
+
+    const un_header = [_][]const u8{ "ID", "Status" };
+    const un_row_1 = [_][]const u8{ "UN-001", "" };
+    const un_row_2 = [_][]const u8{ "UN-404", "" };
+    const un_rows = [_][]const []const u8{
+        &un_header,
+        &un_row_1,
+        &un_row_2,
+    };
+    var plan = try buildWritebackPlan(&db, &.{}, &.{}, &un_rows, &.{}, testing.allocator);
+    defer plan.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("OK", findSingleValueUpdate(plan.value_updates.items, "User Needs!B2").?);
+    try testing.expectEqualStrings("NO_REQ_LINKED", findSingleValueUpdate(plan.value_updates.items, "User Needs!B3").?);
+}
+
+test "normalizeProductCell trims normalized xlsx cell output" {
+    const normalized = try normalizeProductCell("  ASM-1000 Rev C  ", testing.allocator);
+    defer testing.allocator.free(normalized);
+    try testing.expectEqualStrings("ASM-1000 Rev C", normalized);
+}
+
+test "appendProductWriteback accepts recognized product status synonyms" {
+    var value_updates: std.ArrayList(internal.ValueUpdate) = .empty;
+    var row_formats: std.ArrayList(internal.RowFormat) = .empty;
+    defer {
+        var plan: WritebackPlan = .{ .value_updates = value_updates, .row_formats = row_formats };
+        plan.deinit(testing.allocator);
+    }
+
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "ASM-1000", "Rev C", "ASM-1000 Rev C", "Desc", "End of Life", "" },
+    };
+    try appendProductWriteback(&value_updates, &row_formats, product_rows, testing.allocator);
+
+    try testing.expectEqualStrings("OK", findSingleValueUpdate(value_updates.items, "Product!F2").?);
+}
+
+test "appendProductWriteback skips fully blank rows" {
+    var value_updates: std.ArrayList(internal.ValueUpdate) = .empty;
+    var row_formats: std.ArrayList(internal.RowFormat) = .empty;
+    defer {
+        var plan: WritebackPlan = .{ .value_updates = value_updates, .row_formats = row_formats };
+        plan.deinit(testing.allocator);
+    }
+
+    const product_rows: []const []const []const u8 = &.{
+        &.{ "assembly", "revision", "full_identifier", "description", "Product Status", "RTMify Status" },
+        &.{ "", "", "", "", "", "" },
+    };
+    try appendProductWriteback(&value_updates, &row_formats, product_rows, testing.allocator);
+
+    try testing.expect(findSingleValueUpdate(value_updates.items, "Product!F2") == null);
+    try testing.expectEqual(@as(usize, 0), row_formats.items.len);
 }

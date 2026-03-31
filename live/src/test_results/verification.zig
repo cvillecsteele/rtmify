@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const graph_live = @import("../graph_live.zig");
 const shared = @import("../routes/shared.zig");
+const ingest_mod = @import("ingest.zig");
 const query = @import("query.zig");
 const types = @import("types.zig");
 
@@ -127,6 +128,50 @@ fn appendUniqueString(items: *std.ArrayList([]const u8), value: []const u8, allo
 
 const testing = std.testing;
 
+fn seedRequirementGraph(db: *graph_live.GraphDb) !void {
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("TG-001", "TestGroup", "{}", null);
+    try db.addNode("TG-002", "TestGroup", "{}", null);
+    try db.addNode("TEST-001", "Test", "{}", null);
+    try db.addNode("TEST-002", "Test", "{}", null);
+    try db.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try db.addEdge("REQ-001", "TG-002", "TESTED_BY");
+    try db.addEdge("TG-001", "TEST-001", "HAS_TEST");
+    try db.addEdge("TG-002", "TEST-002", "HAS_TEST");
+}
+
+fn ingestExecution(
+    db: *graph_live.GraphDb,
+    execution_id: []const u8,
+    executed_at: []const u8,
+    cases: []const struct { result_id: []const u8, test_case_ref: []const u8, status: []const u8 },
+) !void {
+    var payload = types.ExecutionInput{
+        .execution_id = try testing.allocator.dupe(u8, execution_id),
+        .executed_at = try testing.allocator.dupe(u8, executed_at),
+        .serial_number = null,
+        .full_product_identifier = null,
+        .executor_json = null,
+        .source_json = null,
+        .test_cases = try testing.allocator.alloc(types.TestCaseInput, cases.len),
+    };
+    defer payload.deinit(testing.allocator);
+    for (cases, 0..) |item, idx| {
+        payload.test_cases[idx] = .{
+            .result_id = try testing.allocator.dupe(u8, item.result_id),
+            .test_case_ref = try testing.allocator.dupe(u8, item.test_case_ref),
+            .status = try testing.allocator.dupe(u8, item.status),
+            .duration_ms = null,
+            .notes = null,
+            .measurements_json = try testing.allocator.dupe(u8, "[]"),
+            .attachments_json = try testing.allocator.dupe(u8, "[]"),
+        };
+    }
+
+    var response = try ingest_mod.ingest(db, payload, testing.allocator);
+    defer response.deinit(testing.allocator);
+}
+
 test "computed status passed" {
     const items = [_]types.TestCaseInput{
         .{ .result_id = "", .test_case_ref = "", .status = "passed", .duration_ms = null, .notes = null, .measurements_json = "[]", .attachments_json = "[]" },
@@ -161,16 +206,84 @@ test "verification state yields none for no linked tests" {
 }
 
 test "verification deduplicates linked groups and tests in stable order" {
-    var items: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (items.items) |value| testing.allocator.free(value);
-        items.deinit(testing.allocator);
-    }
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.addNode("REQ-001", "Requirement", "{}", null);
+    try db.addNode("TG-002", "TestGroup", "{}", null);
+    try db.addNode("TG-001", "TestGroup", "{}", null);
+    try db.addNode("TEST-001", "Test", "{}", null);
+    try db.addNode("TEST-002", "Test", "{}", null);
+    try db.addEdge("REQ-001", "TG-002", "TESTED_BY");
+    try db.addEdge("REQ-001", "TG-001", "TESTED_BY");
+    try db.addEdge("TG-002", "TEST-001", "HAS_TEST");
+    try db.addEdge("TG-001", "TEST-001", "HAS_TEST");
+    try db.addEdge("TG-001", "TEST-002", "HAS_TEST");
 
-    try appendUniqueString(&items, "TG-2", testing.allocator);
-    try appendUniqueString(&items, "TG-1", testing.allocator);
-    try appendUniqueString(&items, "TG-2", testing.allocator);
-    try testing.expectEqual(@as(usize, 2), items.items.len);
-    try testing.expectEqualStrings("TG-2", items.items[0]);
-    try testing.expectEqualStrings("TG-1", items.items[1]);
+    var verification = try verificationForRequirement(&db, "REQ-001", testing.allocator);
+    defer verification.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), verification.linked_test_groups.len);
+    try testing.expectEqual(@as(usize, 2), verification.linked_tests.len);
+    try testing.expectEqualStrings("TG-001", verification.linked_test_groups[0]);
+    try testing.expectEqualStrings("TG-002", verification.linked_test_groups[1]);
+    try testing.expectEqualStrings("TEST-001", verification.linked_tests[0].test_id);
+    try testing.expectEqualStrings("TEST-002", verification.linked_tests[1].test_id);
+}
+
+test "verification state is VERIFIED when all linked tests latest results passed" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRequirementGraph(&db);
+    try ingestExecution(&db, "exec-1", "2026-03-31T12:00:00Z", &.{
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+        .{ .result_id = "r-2", .test_case_ref = "TEST-002", .status = "passed" },
+    });
+
+    var verification = try verificationForRequirement(&db, "REQ-001", testing.allocator);
+    defer verification.deinit(testing.allocator);
+    try testing.expectEqual(types.VerificationState.VERIFIED, verification.state);
+}
+
+test "verification state is VERIFY_PARTIAL when one linked test passed and another is missing" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRequirementGraph(&db);
+    try ingestExecution(&db, "exec-1", "2026-03-31T12:00:00Z", &.{
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+
+    var verification = try verificationForRequirement(&db, "REQ-001", testing.allocator);
+    defer verification.deinit(testing.allocator);
+    try testing.expectEqual(types.VerificationState.VERIFY_PARTIAL, verification.state);
+}
+
+test "verification state is VERIFY_FAILED when any linked test latest result failed" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRequirementGraph(&db);
+    try ingestExecution(&db, "exec-1", "2026-03-31T12:00:00Z", &.{
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+        .{ .result_id = "r-2", .test_case_ref = "TEST-002", .status = "failed" },
+    });
+
+    var verification = try verificationForRequirement(&db, "REQ-001", testing.allocator);
+    defer verification.deinit(testing.allocator);
+    try testing.expectEqual(types.VerificationState.VERIFY_FAILED, verification.state);
+}
+
+test "verificationJson preserves requirement ref verification state linked groups and linked latest results" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedRequirementGraph(&db);
+    try ingestExecution(&db, "exec-1", "2026-03-31T12:00:00Z", &.{
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+        .{ .result_id = "r-2", .test_case_ref = "TEST-002", .status = "skipped" },
+    });
+
+    const json = try verificationJson(&db, "REQ-001", testing.allocator);
+    defer testing.allocator.free(json);
+    try testing.expect(std.mem.indexOf(u8, json, "\"requirement_ref\":\"REQ-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"verification_state\":\"VERIFY_PARTIAL\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"linked_test_groups\":[\"TG-001\",\"TG-002\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"test_id\":\"TEST-001\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"status\":\"passed\"") != null);
 }

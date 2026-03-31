@@ -478,6 +478,25 @@ fn addLiveSecurityDeps(compile: *std.Build.Step.Compile, b: *std.Build) void {
     compile.linkFramework("CoreFoundation");
 }
 
+fn addKcovRun(
+    b: *std.Build,
+    kcov_path: []const u8,
+    report_dir: []const u8,
+    include_path: []const u8,
+    artifact: *std.Build.Step.Compile,
+) *std.Build.Step.Run {
+    const mkdir = b.addSystemCommand(&.{ "mkdir", "-p", report_dir });
+    const cmd = b.addSystemCommand(&.{
+        kcov_path,
+        "--clean",
+        b.fmt("--include-path={s}", .{include_path}),
+        report_dir,
+    });
+    cmd.step.dependOn(&mkdir.step);
+    cmd.addArtifactArg(artifact);
+    return cmd;
+}
+
 fn trimAsciiWhitespace(bytes: []u8) []const u8 {
     return std.mem.trim(u8, bytes, " \t\r\n");
 }
@@ -886,6 +905,140 @@ pub fn build(b: *std.Build) void {
     const test_traveler_step = b.step("test-traveler", "Run traveler and llm unit tests");
     test_traveler_step.dependOn(&run_llm_tests.step);
     test_traveler_step.dependOn(&run_traveler_tests.step);
+
+    const coverage_step = b.step("coverage", "Run native unit tests under kcov and emit coverage reports");
+    if (!target.query.isNative()) {
+        const fail = b.addFail("coverage is only supported for native targets");
+        coverage_step.dependOn(&fail.step);
+    } else {
+        const kcov_path = b.findProgram(&.{"kcov"}, &.{}) catch null;
+        if (kcov_path) |kcov| {
+            const coverage_optimize: std.builtin.OptimizeMode = .Debug;
+
+            const lib_coverage_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("lib/src/lib.zig"),
+                    .target = target,
+                    .optimize = coverage_optimize,
+                    .imports = &.{
+                        .{ .name = "build_options", .module = opts_mod },
+                    },
+                }),
+            });
+
+            const trace_coverage_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("trace/src/main.zig"),
+                    .target = target,
+                    .optimize = coverage_optimize,
+                    .imports = &.{
+                        .{ .name = "rtmify", .module = native_rtmify_mod },
+                        .{ .name = "build_options", .module = opts_mod },
+                    },
+                }),
+            });
+
+            const live_coverage_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("live/src/lib_live.zig"),
+                    .target = target,
+                    .optimize = coverage_optimize,
+                    .imports = &.{
+                        .{ .name = "rtmify", .module = native_rtmify_mod },
+                        .{ .name = "build_options", .module = opts_mod },
+                    },
+                }),
+            });
+            addSqlite(live_coverage_tests, b);
+            addLiveSecurityDeps(live_coverage_tests, b);
+
+            const cadcruncher_coverage_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("libcadcruncher/src/lib.zig"),
+                    .target = target,
+                    .optimize = coverage_optimize,
+                }),
+            });
+
+            const llm_coverage_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("libllm/src/lib.zig"),
+                    .target = target,
+                    .optimize = coverage_optimize,
+                }),
+            });
+            addLlamaCpp(llm_coverage_tests, b);
+
+            const traveler_coverage_tests = b.addTest(.{
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path("libtraveler/src/lib.zig"),
+                    .target = target,
+                    .optimize = coverage_optimize,
+                    .imports = &.{
+                        .{ .name = "llm", .module = native_llm_mod },
+                    },
+                }),
+            });
+            addLlamaCpp(traveler_coverage_tests, b);
+
+            const lib_kcov = addKcovRun(
+                b,
+                kcov,
+                b.pathJoin(&.{ "zig-out", "coverage", "lib" }),
+                "lib/src",
+                lib_coverage_tests,
+            );
+            coverage_step.dependOn(&lib_kcov.step);
+
+            const trace_kcov = addKcovRun(
+                b,
+                kcov,
+                b.pathJoin(&.{ "zig-out", "coverage", "trace" }),
+                "trace/src,lib/src",
+                trace_coverage_tests,
+            );
+            coverage_step.dependOn(&trace_kcov.step);
+
+            const live_kcov = addKcovRun(
+                b,
+                kcov,
+                b.pathJoin(&.{ "zig-out", "coverage", "live" }),
+                "live/src,lib/src",
+                live_coverage_tests,
+            );
+            coverage_step.dependOn(&live_kcov.step);
+
+            const cadcruncher_kcov = addKcovRun(
+                b,
+                kcov,
+                b.pathJoin(&.{ "zig-out", "coverage", "cadcruncher" }),
+                "libcadcruncher/src",
+                cadcruncher_coverage_tests,
+            );
+            coverage_step.dependOn(&cadcruncher_kcov.step);
+
+            const llm_kcov = addKcovRun(
+                b,
+                kcov,
+                b.pathJoin(&.{ "zig-out", "coverage", "llm" }),
+                "libllm/src",
+                llm_coverage_tests,
+            );
+            coverage_step.dependOn(&llm_kcov.step);
+
+            const traveler_kcov = addKcovRun(
+                b,
+                kcov,
+                b.pathJoin(&.{ "zig-out", "coverage", "traveler" }),
+                "libtraveler/src,libllm/src",
+                traveler_coverage_tests,
+            );
+            coverage_step.dependOn(&traveler_kcov.step);
+        } else {
+            const fail = b.addFail("kcov not found in PATH; install kcov to run `zig build coverage`");
+            coverage_step.dependOn(&fail.step);
+        }
+    }
 
     const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_lib_tests.step);

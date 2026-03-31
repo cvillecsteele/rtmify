@@ -102,12 +102,15 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
             continue;
         };
 
-        if (last_change_token) |prev| {
-            if (!force_sync and std.mem.eql(u8, prev, change_token)) {
-                alloc.free(change_token);
-                cfg.control.waitTimeout(30 * std.time.ns_per_s);
-                continue;
+        if (!tokenRequiresSync(last_change_token, change_token, force_sync)) {
+            if (last_change_token) |prev| {
+                _ = prev;
             }
+            alloc.free(change_token);
+            cfg.control.waitTimeout(30 * std.time.ns_per_s);
+            continue;
+        }
+        if (last_change_token) |prev| {
             alloc.free(prev);
         }
         last_change_token = @constCast(change_token);
@@ -204,11 +207,11 @@ fn runSoupSyncIfNeeded(
         .provider => {
             const runtime = soup_runtime orelse return;
             const change_token = try runtime.changeToken(alloc);
+            if (!tokenRequiresSync(last_change_token.*, change_token, force_sync)) {
+                alloc.free(change_token);
+                return;
+            }
             if (last_change_token.*) |prev| {
-                if (!force_sync and std.mem.eql(u8, prev, change_token)) {
-                    alloc.free(change_token);
-                    return;
-                }
                 alloc.free(prev);
             }
             last_change_token.* = @constCast(change_token);
@@ -219,7 +222,7 @@ fn runSoupSyncIfNeeded(
             defer file.close();
             const stat = try file.stat();
             const current_mtime = stat.mtime;
-            if (!force_sync and last_local_mtime.* != null and last_local_mtime.*.? == current_mtime) return;
+            if (!mtimeRequiresSync(last_local_mtime.*, current_mtime, force_sync)) return;
             last_local_mtime.* = current_mtime;
             try syncSoupXlsx(db, path, source.full_product_identifier, source.bom_name, alloc);
         },
@@ -240,11 +243,11 @@ fn runDesignBomSyncIfNeeded(
         .provider => {
             const runtime = design_bom_runtime orelse return;
             const change_token = try runtime.changeToken(alloc);
+            if (!tokenRequiresSync(last_change_token.*, change_token, force_sync)) {
+                alloc.free(change_token);
+                return;
+            }
             if (last_change_token.*) |prev| {
-                if (!force_sync and std.mem.eql(u8, prev, change_token)) {
-                    alloc.free(change_token);
-                    return;
-                }
                 alloc.free(prev);
             }
             last_change_token.* = @constCast(change_token);
@@ -255,11 +258,22 @@ fn runDesignBomSyncIfNeeded(
             defer file.close();
             const stat = try file.stat();
             const current_mtime = stat.mtime;
-            if (!force_sync and last_local_mtime.* != null and last_local_mtime.*.? == current_mtime) return;
+            if (!mtimeRequiresSync(last_local_mtime.*, current_mtime, force_sync)) return;
             last_local_mtime.* = current_mtime;
             try syncDesignBomXlsx(db, path, alloc);
         },
     }
+}
+
+fn tokenRequiresSync(previous: ?[]const u8, current: []const u8, force_sync: bool) bool {
+    if (force_sync) return true;
+    const prior = previous orelse return true;
+    return !std.mem.eql(u8, prior, current);
+}
+
+fn mtimeRequiresSync(previous: ?i128, current: i128, force_sync: bool) bool {
+    if (force_sync) return true;
+    return previous == null or previous.? != current;
 }
 
 fn syncDesignBomProvider(db: *internal.GraphDb, runtime: *internal.ProviderRuntime, alloc: internal.Allocator) !void {
@@ -433,4 +447,225 @@ fn recordSoupSyncDiagnostic(db: *internal.GraphDb, code_suffix: []const u8, mess
         null,
         "{}",
     );
+}
+
+const testing = std.testing;
+const support = @import("tests/support.zig");
+
+fn dupBomWarning(code: []const u8, message: []const u8, subject: ?[]const u8, alloc: internal.Allocator) !internal.bom.BomWarning {
+    return .{
+        .code = try alloc.dupe(u8, code),
+        .message = try alloc.dupe(u8, message),
+        .subject = if (subject) |value| try alloc.dupe(u8, value) else null,
+    };
+}
+
+test "tokenRequiresSync truth table matches current semantics" {
+    try testing.expect(tokenRequiresSync(null, "a", false));
+    try testing.expect(!tokenRequiresSync("a", "a", false));
+    try testing.expect(tokenRequiresSync("a", "b", false));
+    try testing.expect(tokenRequiresSync("a", "a", true));
+}
+
+test "mtimeRequiresSync truth table matches current semantics" {
+    try testing.expect(mtimeRequiresSync(null, 10, false));
+    try testing.expect(!mtimeRequiresSync(10, 10, false));
+    try testing.expect(mtimeRequiresSync(10, 11, false));
+    try testing.expect(mtimeRequiresSync(10, 10, true));
+}
+
+test "recordDesignBomSyncDiagnostic records 9503 diagnostic with expected title source and dedupe key" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try recordDesignBomSyncDiagnostic(&db, "provider_init_failed", "boom", testing.allocator);
+
+    var diags: std.ArrayList(internal.graph_live.RuntimeDiagnostic) = .empty;
+    defer support.freeRuntimeDiagnostics(&diags, testing.allocator);
+    try db.listRuntimeDiagnostics("design_bom_sync", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqual(@as(u16, 9503), diags.items[0].code);
+    try testing.expectEqualStrings("design_bom_sync:provider_init_failed", diags.items[0].dedupe_key);
+    try testing.expectEqualStrings("Design BOM sync issue", diags.items[0].title);
+    try testing.expectEqualStrings("design_bom_sync", diags.items[0].source);
+}
+
+test "recordSoupSyncDiagnostic records 9504 diagnostic with expected title source and dedupe key" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try recordSoupSyncDiagnostic(&db, "sync_failed", "boom", testing.allocator);
+
+    var diags: std.ArrayList(internal.graph_live.RuntimeDiagnostic) = .empty;
+    defer support.freeRuntimeDiagnostics(&diags, testing.allocator);
+    try db.listRuntimeDiagnostics("soup_sync", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqual(@as(u16, 9504), diags.items[0].code);
+    try testing.expectEqualStrings("soup_sync:sync_failed", diags.items[0].dedupe_key);
+    try testing.expectEqualStrings("SOUP sync issue", diags.items[0].title);
+    try testing.expectEqualStrings("soup_sync", diags.items[0].source);
+}
+
+test "recordDesignBomSyncResult stores last_sync_at clears last_sync_error and sets ok when all groups succeed" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.storeConfig("design_bom_last_sync_error", "old");
+
+    var response = internal.bom.GroupedBomIngestResponse{
+        .groups = try testing.allocator.alloc(internal.bom.GroupedBomResult, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.groups[0] = .{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "pcba"),
+        .rows_ingested = 1,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .status = .ok,
+        .warnings = try testing.allocator.alloc(internal.bom.BomWarning, 0),
+    };
+
+    try recordDesignBomSyncResult(&db, response, testing.allocator);
+
+    const at = (try db.getConfig("design_bom_last_sync_at", testing.allocator)).?;
+    defer testing.allocator.free(at);
+    const err = (try db.getConfig("design_bom_last_sync_error", testing.allocator)).?;
+    defer testing.allocator.free(err);
+    const ok = (try db.getConfig("design_bom_last_sync_ok", testing.allocator)).?;
+    defer testing.allocator.free(ok);
+    try testing.expect(at.len > 0);
+    try testing.expectEqualStrings("", err);
+    try testing.expectEqualStrings("1", ok);
+}
+
+test "recordDesignBomSyncResult stores failure detail sets ok 0 and emits sync diagnostic when group fails" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var response = internal.bom.GroupedBomIngestResponse{
+        .groups = try testing.allocator.alloc(internal.bom.GroupedBomResult, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.groups[0] = .{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "pcba"),
+        .rows_ingested = 0,
+        .inserted_nodes = 0,
+        .inserted_edges = 0,
+        .status = .failed,
+        .error_code = try testing.allocator.dupe(u8, "E"),
+        .error_detail = try testing.allocator.dupe(u8, "group failed"),
+        .warnings = try testing.allocator.alloc(internal.bom.BomWarning, 0),
+    };
+
+    try recordDesignBomSyncResult(&db, response, testing.allocator);
+
+    const err = (try db.getConfig("design_bom_last_sync_error", testing.allocator)).?;
+    defer testing.allocator.free(err);
+    const ok = (try db.getConfig("design_bom_last_sync_ok", testing.allocator)).?;
+    defer testing.allocator.free(ok);
+    try testing.expectEqualStrings("group failed", err);
+    try testing.expectEqualStrings("0", ok);
+
+    var diags: std.ArrayList(internal.graph_live.RuntimeDiagnostic) = .empty;
+    defer support.freeRuntimeDiagnostics(&diags, testing.allocator);
+    try db.listRuntimeDiagnostics("design_bom_sync", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqualStrings("design_bom_sync:group_failed", diags.items[0].dedupe_key);
+}
+
+test "recordDesignBomSyncResult records warning diagnostics for group warnings" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var response = internal.bom.GroupedBomIngestResponse{
+        .groups = try testing.allocator.alloc(internal.bom.GroupedBomResult, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.groups[0] = .{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "pcba"),
+        .rows_ingested = 1,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .status = .ok,
+        .warnings = try testing.allocator.alloc(internal.bom.BomWarning, 1),
+    };
+    response.groups[0].warnings[0] = try dupBomWarning("WARN", "warn msg", "R1", testing.allocator);
+
+    try recordDesignBomSyncResult(&db, response, testing.allocator);
+
+    var diags: std.ArrayList(internal.graph_live.RuntimeDiagnostic) = .empty;
+    defer support.freeRuntimeDiagnostics(&diags, testing.allocator);
+    try db.listRuntimeDiagnostics("design_bom_sync", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqualStrings("Design BOM sync warning", diags.items[0].title);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"warning_code\":\"WARN\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"bom_name\":\"pcba\"") != null);
+}
+
+test "recordSoupSyncResult stores last_sync_at clears error sets ok 1 and records warning diagnostics" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+    try db.storeConfig("soup_last_sync_error", "old");
+
+    var response = internal.soup.SoupIngestResponse{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "SOUP Components"),
+        .source_format = .soup_xlsx,
+        .rows_received = 1,
+        .rows_ingested = 1,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .row_errors = try testing.allocator.alloc(internal.soup.SoupRowError, 0),
+        .warnings = try testing.allocator.alloc(internal.bom.BomWarning, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.warnings[0] = try dupBomWarning("SOUP_WARN", "warn msg", "openssl", testing.allocator);
+
+    try recordSoupSyncResult(&db, response, testing.allocator);
+
+    const at = (try db.getConfig("soup_last_sync_at", testing.allocator)).?;
+    defer testing.allocator.free(at);
+    const err = (try db.getConfig("soup_last_sync_error", testing.allocator)).?;
+    defer testing.allocator.free(err);
+    const ok = (try db.getConfig("soup_last_sync_ok", testing.allocator)).?;
+    defer testing.allocator.free(ok);
+    try testing.expect(at.len > 0);
+    try testing.expectEqualStrings("", err);
+    try testing.expectEqualStrings("1", ok);
+
+    var diags: std.ArrayList(internal.graph_live.RuntimeDiagnostic) = .empty;
+    defer support.freeRuntimeDiagnostics(&diags, testing.allocator);
+    try db.listRuntimeDiagnostics("soup_sync", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqualStrings("SOUP sync warning", diags.items[0].title);
+}
+
+test "recordSoupSyncResult preserves subject and details shape for warning diagnostics" {
+    var db = try internal.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var response = internal.soup.SoupIngestResponse{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "SOUP Components"),
+        .source_format = .soup_xlsx,
+        .rows_received = 1,
+        .rows_ingested = 1,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .row_errors = try testing.allocator.alloc(internal.soup.SoupRowError, 0),
+        .warnings = try testing.allocator.alloc(internal.bom.BomWarning, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.warnings[0] = try dupBomWarning("SOUP_WARN", "warn msg", null, testing.allocator);
+
+    try recordSoupSyncResult(&db, response, testing.allocator);
+
+    var diags: std.ArrayList(internal.graph_live.RuntimeDiagnostic) = .empty;
+    defer support.freeRuntimeDiagnostics(&diags, testing.allocator);
+    try db.listRuntimeDiagnostics("soup_sync", testing.allocator, &diags);
+    try testing.expectEqualStrings("ASM-1000-REV-C/SOUP Components", diags.items[0].subject.?);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"bom_type\":\"software\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"warning_subject\":null") != null);
 }

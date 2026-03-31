@@ -250,3 +250,220 @@ test "discriminationSignalSummary truncates to first four signals" {
     try testing.expect(std.mem.indexOf(u8, summary, "d") != null);
     try testing.expect(std.mem.indexOf(u8, summary, "xlsx_sheet_name:e:5") == null);
 }
+
+test "rejectFile archives to rejected and records 9501 diagnostic" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const inbox_dir = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "inbox" });
+    defer testing.allocator.free(inbox_dir);
+    try archive.ensureInboxLayout(inbox_dir);
+
+    const file_path = try std.fs.path.join(testing.allocator, &.{ inbox_dir, "bad.json" });
+    defer testing.allocator.free(file_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = file_path, .data = "bad" });
+
+    try rejectFile(&db, inbox_dir, "bad.json", testing.allocator, "InvalidJson");
+
+    try testing.expectError(error.FileNotFound, std.fs.cwd().access(file_path, .{}));
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            testing.allocator.free(d.dedupe_key);
+            testing.allocator.free(d.severity);
+            testing.allocator.free(d.title);
+            testing.allocator.free(d.message);
+            testing.allocator.free(d.source);
+            if (d.subject) |s| testing.allocator.free(s);
+            testing.allocator.free(d.details_json);
+        }
+        diags.deinit(testing.allocator);
+    }
+    try db.listRuntimeDiagnostics("external_ingest_inbox", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqual(@as(u16, 9501), diags.items[0].code);
+    try testing.expectEqualStrings("external_ingest_inbox:bad.json", diags.items[0].dedupe_key);
+    try testing.expectEqualStrings("External ingest inbox file rejected", diags.items[0].title);
+    try testing.expect(diags.items[0].subject != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].subject.?, "/rejected/") != null);
+}
+
+test "rejectDiscriminatedFile records details json with reason and signal summary" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const inbox_dir = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "inbox" });
+    defer testing.allocator.free(inbox_dir);
+    try archive.ensureInboxLayout(inbox_dir);
+
+    const file_path = try std.fs.path.join(testing.allocator, &.{ inbox_dir, "bad.xlsx" });
+    defer testing.allocator.free(file_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = file_path, .data = "bad" });
+
+    var result = artifact_discriminator.DiscriminationResult{
+        .accepted = false,
+        .kind = .bom,
+        .confidence = .medium,
+        .reason_code = try testing.allocator.dupe(u8, "REJECTED"),
+        .reason = try testing.allocator.dupe(u8, "Rejected by policy"),
+        .filename_stem_slug = try testing.allocator.dupe(u8, "bad"),
+        .signals = try testing.allocator.alloc(artifact_discriminator.Signal, 1),
+    };
+    defer result.deinit(testing.allocator);
+    result.signals[0] = .{ .kind = .extension, .detail = try testing.allocator.dupe(u8, "xlsx"), .weight = 10 };
+
+    try rejectDiscriminatedFile(&db, inbox_dir, "bad.xlsx", testing.allocator, result);
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            testing.allocator.free(d.dedupe_key);
+            testing.allocator.free(d.severity);
+            testing.allocator.free(d.title);
+            testing.allocator.free(d.message);
+            testing.allocator.free(d.source);
+            if (d.subject) |s| testing.allocator.free(s);
+            testing.allocator.free(d.details_json);
+        }
+        diags.deinit(testing.allocator);
+    }
+    try db.listRuntimeDiagnostics("external_ingest_inbox", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"reason_code\":\"REJECTED\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"classified_kind\":\"bom\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"confidence\":\"medium\"") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"signal_summary\":\"extension:xlsx:10\"") != null);
+}
+
+test "recordBomWarnings writes one 9502 diagnostic per warning with expected details" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var response = bom.BomIngestResponse{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "pcba"),
+        .bom_type = .hardware,
+        .source_format = .hardware_csv,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .warnings = try testing.allocator.alloc(bom.BomWarning, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.warnings[0] = .{
+        .code = try testing.allocator.dupe(u8, "WARN"),
+        .message = try testing.allocator.dupe(u8, "warning"),
+        .subject = try testing.allocator.dupe(u8, "R1"),
+    };
+
+    try recordBomWarnings(&db, "/tmp/processed/bom.csv", response, testing.allocator);
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            testing.allocator.free(d.dedupe_key);
+            testing.allocator.free(d.severity);
+            testing.allocator.free(d.title);
+            testing.allocator.free(d.message);
+            testing.allocator.free(d.source);
+            if (d.subject) |s| testing.allocator.free(s);
+            testing.allocator.free(d.details_json);
+        }
+        diags.deinit(testing.allocator);
+    }
+    try db.listRuntimeDiagnostics("external_ingest_inbox", testing.allocator, &diags);
+    try testing.expectEqual(@as(usize, 1), diags.items.len);
+    try testing.expectEqual(@as(u16, 9502), diags.items[0].code);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].dedupe_key, "external_ingest_inbox:/tmp/processed/bom.csv:WARN:R1") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"bom_type\":\"hardware\"") != null);
+}
+
+test "recordGroupedBomWarnings includes bom name in dedupe key and details" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var response = bom.GroupedBomIngestResponse{
+        .groups = try testing.allocator.alloc(bom.GroupedBomResult, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.groups[0] = .{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "pcba"),
+        .rows_ingested = 1,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .status = .ok,
+        .warnings = try testing.allocator.alloc(bom.BomWarning, 1),
+    };
+    response.groups[0].warnings[0] = .{
+        .code = try testing.allocator.dupe(u8, "WARN"),
+        .message = try testing.allocator.dupe(u8, "warning"),
+        .subject = try testing.allocator.dupe(u8, "R1"),
+    };
+
+    try recordGroupedBomWarnings(&db, "/tmp/processed/bom.xlsx", response, testing.allocator);
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            testing.allocator.free(d.dedupe_key);
+            testing.allocator.free(d.severity);
+            testing.allocator.free(d.title);
+            testing.allocator.free(d.message);
+            testing.allocator.free(d.source);
+            if (d.subject) |s| testing.allocator.free(s);
+            testing.allocator.free(d.details_json);
+        }
+        diags.deinit(testing.allocator);
+    }
+    try db.listRuntimeDiagnostics("external_ingest_inbox", testing.allocator, &diags);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].dedupe_key, ":pcba:WARN:R1") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"bom_name\":\"pcba\"") != null);
+}
+
+test "recordSoupWarnings writes software bom details and 9502 diagnostics" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    var response = soup.SoupIngestResponse{
+        .full_product_identifier = try testing.allocator.dupe(u8, "ASM-1000-REV-C"),
+        .bom_name = try testing.allocator.dupe(u8, "SOUP Components"),
+        .source_format = .soup_xlsx,
+        .rows_received = 1,
+        .rows_ingested = 1,
+        .inserted_nodes = 1,
+        .inserted_edges = 1,
+        .row_errors = try testing.allocator.alloc(soup.SoupRowError, 0),
+        .warnings = try testing.allocator.alloc(bom.BomWarning, 1),
+    };
+    defer response.deinit(testing.allocator);
+    response.warnings[0] = .{
+        .code = try testing.allocator.dupe(u8, "SOUP_WARN"),
+        .message = try testing.allocator.dupe(u8, "warning"),
+        .subject = null,
+    };
+
+    try recordSoupWarnings(&db, "/tmp/processed/SOUP__ASM-1000-REV-C.xlsx", response, testing.allocator);
+
+    var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            testing.allocator.free(d.dedupe_key);
+            testing.allocator.free(d.severity);
+            testing.allocator.free(d.title);
+            testing.allocator.free(d.message);
+            testing.allocator.free(d.source);
+            if (d.subject) |s| testing.allocator.free(s);
+            testing.allocator.free(d.details_json);
+        }
+        diags.deinit(testing.allocator);
+    }
+    try db.listRuntimeDiagnostics("external_ingest_inbox", testing.allocator, &diags);
+    try testing.expectEqual(@as(u16, 9502), diags.items[0].code);
+    try testing.expectEqualStrings("External SOUP ingested with warnings", diags.items[0].title);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"bom_type\":\"software\"") != null);
+}

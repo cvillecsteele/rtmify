@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const graph_live = @import("../graph_live.zig");
 const shared = @import("../routes/shared.zig");
+const ingest_mod = @import("ingest.zig");
 const ids = @import("ids.zig");
 const types = @import("types.zig");
 
@@ -326,6 +327,46 @@ fn listExecutionResults(
 
 const testing = std.testing;
 
+fn seedTestNode(db: *graph_live.GraphDb, test_id: []const u8) !void {
+    try db.addNode(test_id, "Test", "{}", null);
+}
+
+fn seedExecution(
+    db: *graph_live.GraphDb,
+    execution_id: []const u8,
+    executed_at: []const u8,
+    serial_number: ?[]const u8,
+    full_product_identifier: ?[]const u8,
+    executor_json: ?[]const u8,
+    source_json: ?[]const u8,
+    cases: []const struct { result_id: []const u8, test_case_ref: []const u8, status: []const u8 },
+) !void {
+    var payload = types.ExecutionInput{
+        .execution_id = try testing.allocator.dupe(u8, execution_id),
+        .executed_at = try testing.allocator.dupe(u8, executed_at),
+        .serial_number = if (serial_number) |value| try testing.allocator.dupe(u8, value) else null,
+        .full_product_identifier = if (full_product_identifier) |value| try testing.allocator.dupe(u8, value) else null,
+        .executor_json = if (executor_json) |value| try testing.allocator.dupe(u8, value) else null,
+        .source_json = if (source_json) |value| try testing.allocator.dupe(u8, value) else null,
+        .test_cases = try testing.allocator.alloc(types.TestCaseInput, cases.len),
+    };
+    defer payload.deinit(testing.allocator);
+    for (cases, 0..) |item, idx| {
+        payload.test_cases[idx] = .{
+            .result_id = try testing.allocator.dupe(u8, item.result_id),
+            .test_case_ref = try testing.allocator.dupe(u8, item.test_case_ref),
+            .status = try testing.allocator.dupe(u8, item.status),
+            .duration_ms = null,
+            .notes = null,
+            .measurements_json = try testing.allocator.dupe(u8, "[]"),
+            .attachments_json = try testing.allocator.dupe(u8, "[]"),
+        };
+    }
+
+    var response = try ingest_mod.ingest(db, payload, testing.allocator);
+    defer response.deinit(testing.allocator);
+}
+
 test "getExecution returns null when execution missing" {
     var db = try graph_live.GraphDb.init(":memory:");
     defer db.deinit();
@@ -396,4 +437,133 @@ test "executionJson preserves arrays not stringified strings" {
     defer testing.allocator.free(json);
     try testing.expect(std.mem.indexOf(u8, json, "\"measurements\":[{\"name\":\"v\"}]") != null);
     try testing.expect(std.mem.indexOf(u8, json, "\"attachments\":[{\"name\":\"log\"}]") != null);
+}
+
+test "getExecutionJson preserves null serial full product identifier executor and source" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedTestNode(&db, "TEST-001");
+    try seedExecution(&db, "exec-1", "2026-03-31T12:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+
+    const json = (try getExecutionJson(&db, "exec-1", testing.allocator)).?;
+    defer testing.allocator.free(json);
+    try testing.expect(std.mem.indexOf(u8, json, "\"serial_number\":null") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"full_product_identifier\":null") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"executor\":null") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"source\":null") != null);
+}
+
+test "getExecution returns results ordered by result id ascending inside a single execution" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedTestNode(&db, "TEST-001");
+    try seedTestNode(&db, "TEST-002");
+    try seedExecution(&db, "exec-1", "2026-03-31T12:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-2", .test_case_ref = "TEST-002", .status = "passed" },
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+
+    var execution = (try getExecution(&db, "exec-1", testing.allocator)).?;
+    defer execution.deinit(testing.allocator);
+    try testing.expectEqualStrings("r-1", execution.test_cases[0].result_id);
+    try testing.expectEqualStrings("r-2", execution.test_cases[1].result_id);
+}
+
+test "getTestResultsJson orders by executed_at desc then result_id asc" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedTestNode(&db, "TEST-001");
+    try seedExecution(&db, "exec-older", "2026-03-31T10:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-9", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+    try seedExecution(&db, "exec-newer", "2026-03-31T11:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-2", .test_case_ref = "TEST-001", .status = "failed" },
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+
+    const json = try getTestResultsJson(&db, "TEST-001", testing.allocator);
+    defer testing.allocator.free(json);
+    const r1_idx = std.mem.indexOf(u8, json, "\"result_id\":\"r-1\"").?;
+    const r2_idx = std.mem.indexOf(u8, json, "\"result_id\":\"r-2\"").?;
+    const r9_idx = std.mem.indexOf(u8, json, "\"result_id\":\"r-9\"").?;
+    try testing.expect(r1_idx < r2_idx);
+    try testing.expect(r2_idx < r9_idx);
+}
+
+test "danglingResultsJson includes only results with resolution_state dangling" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    try seedExecution(&db, "exec-dangling", "2026-03-31T10:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-d", .test_case_ref = "TEST-404", .status = "passed" },
+    });
+    try seedTestNode(&db, "TEST-001");
+    try seedExecution(&db, "exec-resolved", "2026-03-31T11:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-ok", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+
+    const json = try danglingResultsJson(&db, testing.allocator);
+    defer testing.allocator.free(json);
+    try testing.expect(std.mem.indexOf(u8, json, "\"result_id\":\"r-d\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"result_id\":\"r-ok\"") == null);
+}
+
+test "unitHistoryJson orders executions by executed_at desc then execution_id desc" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedTestNode(&db, "TEST-001");
+    try seedExecution(&db, "exec-a", "2026-03-31T10:00:00Z", "SN-1", null, null, null, &.{
+        .{ .result_id = "r-a", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+    try seedExecution(&db, "exec-c", "2026-03-31T11:00:00Z", "SN-1", null, null, null, &.{
+        .{ .result_id = "r-c", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+    try seedExecution(&db, "exec-b", "2026-03-31T11:00:00Z", "SN-1", null, null, null, &.{
+        .{ .result_id = "r-b", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+
+    const json = try unitHistoryJson(&db, "SN-1", testing.allocator);
+    defer testing.allocator.free(json);
+    const c_idx = std.mem.indexOf(u8, json, "\"execution_id\":\"exec-c\"").?;
+    const b_idx = std.mem.indexOf(u8, json, "\"execution_id\":\"exec-b\"").?;
+    const a_idx = std.mem.indexOf(u8, json, "\"execution_id\":\"exec-a\"").?;
+    try testing.expect(c_idx < b_idx);
+    try testing.expect(b_idx < a_idx);
+}
+
+test "getExecutionJson preserves measurements and attachments as raw arrays" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+
+    const execution_node_id = try ids.executionNodeId("exec-1", testing.allocator);
+    defer testing.allocator.free(execution_node_id);
+    try db.addNode(execution_node_id, "TestExecution", "{\"execution_id\":\"exec-1\",\"executed_at\":\"2026-03-31T12:00:00Z\",\"computed_status\":\"passed\",\"serial_number\":null,\"full_product_identifier\":null,\"product_resolution_state\":null,\"executor\":null,\"source\":null}", null);
+    try db.addNode("result-node-1", "TestResult", "{\"result_id\":\"r-1\",\"test_case_ref\":\"TEST-1\",\"status\":\"passed\",\"duration_ms\":null,\"notes\":null,\"measurements\":[{\"name\":\"v\"}],\"attachments\":[{\"name\":\"a\"}],\"resolution_state\":\"resolved\"}", null);
+    try db.addEdge(execution_node_id, "result-node-1", "HAS_RESULT");
+
+    const json = (try getExecutionJson(&db, "exec-1", testing.allocator)).?;
+    defer testing.allocator.free(json);
+    try testing.expect(std.mem.indexOf(u8, json, "\"measurements\":[{\"name\":\"v\"}]") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"attachments\":[{\"name\":\"a\"}]") != null);
+}
+
+test "latestResultForTest chooses newest execution then highest result id tie breaker" {
+    var db = try graph_live.GraphDb.init(":memory:");
+    defer db.deinit();
+    try seedTestNode(&db, "TEST-001");
+    try seedExecution(&db, "exec-1", "2026-03-31T10:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-1", .test_case_ref = "TEST-001", .status = "passed" },
+    });
+    try seedExecution(&db, "exec-2", "2026-03-31T11:00:00Z", null, null, null, null, &.{
+        .{ .result_id = "r-2", .test_case_ref = "TEST-001", .status = "skipped" },
+        .{ .result_id = "r-3", .test_case_ref = "TEST-001", .status = "failed" },
+    });
+
+    var latest = try latestResultForTest(&db, "TEST-001", testing.allocator);
+    defer latest.deinit(testing.allocator);
+    try testing.expectEqualStrings("exec-2", latest.execution_id.?);
+    try testing.expectEqualStrings("r-3", latest.result_id.?);
+    try testing.expectEqualStrings("failed", latest.status.?);
 }
