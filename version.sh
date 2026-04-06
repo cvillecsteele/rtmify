@@ -3,11 +3,11 @@
 set -euo pipefail
 
 read_release_version() {
-  local build_file="$1"
+  local version_file="$1"
   sed -n \
     -e 's/^[[:space:]]*const default_version = "\(.*\)";/\1/p' \
     -e 's/^[[:space:]]*const version = "\(.*\)";/\1/p' \
-    "${build_file}" | head -n 1
+    "${version_file}" | head -n 1
 }
 
 is_valid_release_version() {
@@ -68,12 +68,12 @@ next_release_version() {
 }
 
 write_release_version() {
-  local build_file="$1"
+  local version_file="$1"
   local version="$2"
   local tmp_file
 
   is_valid_release_version "${version}" || return 1
-  tmp_file="$(mktemp "${TMPDIR:-/tmp}/rtmify-build-zig.XXXXXX")"
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/rtmify-version-source.XXXXXX")"
   awk -v version="${version}" '
     BEGIN { updated = 0 }
     !updated && $0 ~ /^[[:space:]]*const default_version = "[^"]*";/ {
@@ -86,10 +86,10 @@ write_release_version() {
         exit 1
       }
     }
-  ' "${build_file}" > "${tmp_file}" || {
+  ' "${version_file}" > "${tmp_file}" || {
     rm -f "${tmp_file}"
     return 1
   }
 
-  mv "${tmp_file}" "${build_file}"
+  mv "${tmp_file}" "${version_file}"
 }

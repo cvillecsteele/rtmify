@@ -12,7 +12,7 @@ VERSION=""
 SKIP_TESTS=0
 SKIP_VALIDATION=0
 PYTHON_BIN="${PYTHON_BIN:-}"
-BUILD_FILE="${ROOT_DIR}/build.zig"
+VERSION_FILE="${ROOT_DIR}/build/options.zig"
 TRACKED_VERSION=""
 EXPLICIT_VERSION=0
 
@@ -20,7 +20,7 @@ usage() {
   cat <<'EOF'
 ./release.sh [--key-file <path>] [--out-dir <path>] [--version <value>] [--skip-tests] [--skip-validation]
   Without --version, release.sh computes the next tracked release version,
-  builds with it, and writes it back to build.zig after a successful release.
+  builds with it, and writes it back to build/options.zig after a successful release.
 EOF
 }
 
@@ -59,9 +59,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-TRACKED_VERSION="$(read_release_version "${BUILD_FILE}")"
+TRACKED_VERSION="$(read_release_version "${VERSION_FILE}")"
 if [[ -z "${TRACKED_VERSION}" ]]; then
-  echo "Failed to determine version from ${BUILD_FILE}" >&2
+  echo "Failed to determine version from ${VERSION_FILE}" >&2
   exit 2
 fi
 if ! is_valid_release_version "${TRACKED_VERSION}"; then
@@ -321,8 +321,8 @@ $(cat "${MANIFEST_SMOKES}")
 EOF
 
 if [[ "${TRACKED_VERSION}" != "${VERSION}" ]]; then
-  write_release_version "${BUILD_FILE}" "${VERSION}"
-  echo "Updated tracked release version in ${BUILD_FILE}: ${TRACKED_VERSION} -> ${VERSION}"
+  write_release_version "${VERSION_FILE}" "${VERSION}"
+  echo "Updated tracked release version in ${VERSION_FILE}: ${TRACKED_VERSION} -> ${VERSION}"
 fi
 
 echo "Release artifacts written to ${OUT_DIR}"

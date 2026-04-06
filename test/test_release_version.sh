@@ -47,16 +47,18 @@ assert_false "uppercase suffix rejected" is_valid_release_version "20260314-A"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rtmify-release-version-test.XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
-BUILD_FILE="${TMP_DIR}/build.zig"
-cat > "${BUILD_FILE}" <<'EOF'
-pub fn build() void {
-    const default_version = "20260308-a";
-    const version = default_version;
+VERSION_FILE="${TMP_DIR}/options.zig"
+cat > "${VERSION_FILE}" <<'EOF'
+const default_version = "20260308-a";
+
+pub fn createBuildOptionsModule() void {
+    const version = b.option([]const u8, "release-version", "Release version string") orelse default_version;
+    _ = version;
 }
 EOF
 
-assert_eq "20260308-a" "$(read_release_version "${BUILD_FILE}")" "read_release_version extracts the tracked version"
-write_release_version "${BUILD_FILE}" "20260314-a"
-assert_eq "20260314-a" "$(read_release_version "${BUILD_FILE}")" "write_release_version updates the tracked version"
+assert_eq "20260308-a" "$(read_release_version "${VERSION_FILE}")" "read_release_version extracts the tracked version"
+write_release_version "${VERSION_FILE}" "20260314-a"
+assert_eq "20260314-a" "$(read_release_version "${VERSION_FILE}")" "write_release_version updates the tracked version"
 
-grep -q 'const default_version = "20260314-a";' "${BUILD_FILE}"
+grep -q 'const default_version = "20260314-a";' "${VERSION_FILE}"
