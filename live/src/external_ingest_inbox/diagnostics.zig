@@ -8,6 +8,10 @@ const shared = @import("../routes/shared.zig");
 const soup = @import("../soup.zig");
 const archive = @import("archive.zig");
 
+fn testJoinedPath(parts: []const []const u8, alloc: Allocator) ![]u8 {
+    return std.fs.path.join(alloc, parts);
+}
+
 pub fn rejectFile(db: *graph_live.GraphDb, inbox_dir: []const u8, name: []const u8, alloc: Allocator, reason: []const u8) !void {
     std.log.warn("external design/bom inbox file rejected name={s} reason={s}", .{ name, reason });
     const archived_path = try archive.archiveFile(inbox_dir, "rejected", name, alloc);
@@ -288,7 +292,7 @@ test "rejectFile archives to rejected and records 9501 diagnostic" {
     try testing.expectEqualStrings("external_ingest_inbox:bad.json", diags.items[0].dedupe_key);
     try testing.expectEqualStrings("External ingest inbox file rejected", diags.items[0].title);
     try testing.expect(diags.items[0].subject != null);
-    try testing.expect(std.mem.indexOf(u8, diags.items[0].subject.?, "/rejected/") != null);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].subject.?, std.fs.path.sep_str ++ "rejected" ++ std.fs.path.sep_str) != null);
 }
 
 test "rejectDiscriminatedFile records details json with reason and signal summary" {
@@ -360,7 +364,9 @@ test "recordBomWarnings writes one 9502 diagnostic per warning with expected det
         .subject = try testing.allocator.dupe(u8, "R1"),
     };
 
-    try recordBomWarnings(&db, "/tmp/processed/bom.csv", response, testing.allocator);
+    const archived_path = try testJoinedPath(&.{ "tmp", "processed", "bom.csv" }, testing.allocator);
+    defer testing.allocator.free(archived_path);
+    try recordBomWarnings(&db, archived_path, response, testing.allocator);
 
     var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
     defer {
@@ -378,7 +384,9 @@ test "recordBomWarnings writes one 9502 diagnostic per warning with expected det
     try db.listRuntimeDiagnostics("external_ingest_inbox", testing.allocator, &diags);
     try testing.expectEqual(@as(usize, 1), diags.items.len);
     try testing.expectEqual(@as(u16, 9502), diags.items[0].code);
-    try testing.expect(std.mem.indexOf(u8, diags.items[0].dedupe_key, "external_ingest_inbox:/tmp/processed/bom.csv:WARN:R1") != null);
+    const expected_dedupe = try std.fmt.allocPrint(testing.allocator, "external_ingest_inbox:{s}:WARN:R1", .{archived_path});
+    defer testing.allocator.free(expected_dedupe);
+    try testing.expect(std.mem.indexOf(u8, diags.items[0].dedupe_key, expected_dedupe) != null);
     try testing.expect(std.mem.indexOf(u8, diags.items[0].details_json, "\"bom_type\":\"hardware\"") != null);
 }
 
@@ -405,7 +413,9 @@ test "recordGroupedBomWarnings includes bom name in dedupe key and details" {
         .subject = try testing.allocator.dupe(u8, "R1"),
     };
 
-    try recordGroupedBomWarnings(&db, "/tmp/processed/bom.xlsx", response, testing.allocator);
+    const archived_path = try testJoinedPath(&.{ "tmp", "processed", "bom.xlsx" }, testing.allocator);
+    defer testing.allocator.free(archived_path);
+    try recordGroupedBomWarnings(&db, archived_path, response, testing.allocator);
 
     var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
     defer {
@@ -447,7 +457,9 @@ test "recordSoupWarnings writes software bom details and 9502 diagnostics" {
         .subject = null,
     };
 
-    try recordSoupWarnings(&db, "/tmp/processed/SOUP__ASM-1000-REV-C.xlsx", response, testing.allocator);
+    const archived_path = try testJoinedPath(&.{ "tmp", "processed", "SOUP__ASM-1000-REV-C.xlsx" }, testing.allocator);
+    defer testing.allocator.free(archived_path);
+    try recordSoupWarnings(&db, archived_path, response, testing.allocator);
 
     var diags: std.ArrayList(graph_live.RuntimeDiagnostic) = .empty;
     defer {

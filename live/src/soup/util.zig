@@ -30,12 +30,48 @@ pub fn bindOptionalFilter(st: anytype, first_idx: usize, value: ?[]const u8) voi
 }
 
 pub fn writeTempXlsx(body: []const u8, alloc: Allocator) ![]const u8 {
-    const path = try std.fmt.allocPrint(alloc, "/tmp/rtmify-soup-{d}.xlsx", .{std.time.nanoTimestamp()});
+    const temp_dir = try tempDirPath(alloc);
+    defer alloc.free(temp_dir);
+
+    if (std.fs.path.isAbsolute(temp_dir)) {
+        std.fs.makeDirAbsolute(temp_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+    } else {
+        try std.fs.cwd().makePath(temp_dir);
+    }
+
+    const file_name = try std.fmt.allocPrint(alloc, "rtmify-soup-{d}.xlsx", .{std.time.nanoTimestamp()});
+    defer alloc.free(file_name);
+    const path = try std.fs.path.join(alloc, &.{ temp_dir, file_name });
     errdefer alloc.free(path);
-    const file = try std.fs.createFileAbsolute(path, .{ .truncate = true });
+    const file = if (std.fs.path.isAbsolute(path))
+        try std.fs.createFileAbsolute(path, .{ .truncate = true })
+    else
+        try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
     try file.writeAll(body);
     return path;
+}
+
+fn tempDirPath(alloc: Allocator) ![]u8 {
+    const candidates = if (@import("builtin").os.tag == .windows)
+        [_][]const u8{ "TEMP", "TMP" }
+    else
+        [_][]const u8{ "TMPDIR", "TMP", "TEMP" };
+
+    inline for (candidates) |name| {
+        if (std.process.getEnvVarOwned(alloc, name)) |value| {
+            return value;
+        } else |err| switch (err) {
+            error.EnvironmentVariableNotFound => {},
+            else => return err,
+        }
+    }
+
+    if (@import("builtin").os.tag == .windows) return alloc.dupe(u8, ".zig-cache\\tmp");
+    return alloc.dupe(u8, "/tmp");
 }
 
 pub fn classifyProductStatus(raw_value: ?[]const u8) enum { active, in_development, superseded, eol, obsolete, unknown } {

@@ -16,7 +16,7 @@ pub fn defaultLogPath(alloc: std.mem.Allocator) ![]u8 {
     const home = try homeDir(alloc);
     errdefer alloc.free(home);
     defer alloc.free(home);
-    return std.fmt.allocPrint(alloc, "{s}/.rtmify/log/server.log", .{home});
+    return std.fs.path.join(alloc, &.{ home, ".rtmify", "log", "server.log" });
 }
 
 pub fn logFn(
@@ -59,13 +59,13 @@ fn ensureOpenLocked() void {
     defer if (home) |h| alloc.free(h);
 
     if (home) |h| {
-        const dir_path = std.fmt.allocPrint(alloc, "{s}/.rtmify/log", .{h}) catch return;
+        const dir_path = std.fs.path.join(alloc, &.{ h, ".rtmify", "log" }) catch return;
         defer alloc.free(dir_path);
         std.fs.makeDirAbsolute(dir_path) catch |e| switch (e) {
             error.PathAlreadyExists => {},
             else => return,
         };
-        const file_path = std.fmt.allocPrint(alloc, "{s}/server.log", .{dir_path}) catch return;
+        const file_path = std.fs.path.join(alloc, &.{ dir_path, "server.log" }) catch return;
         defer alloc.free(file_path);
         log_file = std.fs.openFileAbsolute(file_path, .{ .mode = .read_write }) catch blk: {
             break :blk std.fs.createFileAbsolute(file_path, .{ .read = true, .truncate = false }) catch return;

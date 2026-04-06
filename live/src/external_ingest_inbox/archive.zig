@@ -112,5 +112,5 @@ test "archiveFile tolerates missing source path" {
 
     const archived = try archiveFile(inbox_dir, "processed", "missing.json", testing.allocator);
     defer testing.allocator.free(archived);
-    try testing.expect(std.mem.indexOf(u8, archived, "/processed/") != null);
+    try testing.expect(std.mem.indexOf(u8, archived, std.fs.path.sep_str ++ "processed" ++ std.fs.path.sep_str) != null);
 }

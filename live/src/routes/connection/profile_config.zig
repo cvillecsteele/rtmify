@@ -7,6 +7,10 @@ const workbook = @import("../../workbook/mod.zig");
 const json_util = @import("../../json_util.zig");
 const shared = @import("../shared.zig");
 
+fn testInboxPath(alloc: Allocator) ![]u8 {
+    return std.fs.path.join(alloc, &.{ "tmp", "inbox" });
+}
+
 pub fn handleGetProfile(registry: *workbook.registry.WorkbookRegistry, alloc: Allocator) ![]const u8 {
     const prof_name = (try registry.activeConfig()).profile;
     const pid = profile_mod.fromString(prof_name) orelse .generic;
@@ -51,7 +55,9 @@ fn makeTestRegistry(alloc: Allocator, store: *secure_store_mod.Store) !workbook.
     alloc.free(cfg.workbooks[0].db_path);
     cfg.workbooks[0].db_path = try alloc.dupe(u8, ":memory:");
     alloc.free(cfg.workbooks[0].inbox_dir);
-    cfg.workbooks[0].inbox_dir = try alloc.dupe(u8, "/tmp/inbox");
+    const inbox_dir = try testInboxPath(alloc);
+    defer alloc.free(inbox_dir);
+    cfg.workbooks[0].inbox_dir = try alloc.dupe(u8, inbox_dir);
     return workbook.registry.WorkbookRegistry.initForConfig(alloc, cfg, store);
 }
 

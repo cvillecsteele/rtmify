@@ -607,8 +607,30 @@ fn makeTestRegistry(alloc: Allocator, store: *secure_store_mod.Store) !workbook.
     alloc.free(cfg.workbooks[0].db_path);
     cfg.workbooks[0].db_path = try alloc.dupe(u8, ":memory:");
     alloc.free(cfg.workbooks[0].inbox_dir);
-    cfg.workbooks[0].inbox_dir = try alloc.dupe(u8, "/tmp/inbox");
+    const inbox_dir = try std.fs.path.join(alloc, &.{ "tmp", "inbox" });
+    defer alloc.free(inbox_dir);
+    cfg.workbooks[0].inbox_dir = try alloc.dupe(u8, inbox_dir);
     return workbook.registry.WorkbookRegistry.initForConfig(alloc, cfg, store);
+}
+
+fn localXlsxRequestBody(path: []const u8, alloc: Allocator) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"kind\":\"local_xlsx\",\"local_xlsx_path\":");
+    try shared.appendJsonStr(&buf, path, alloc);
+    try buf.append(alloc, '}');
+    return buf.toOwnedSlice(alloc);
+}
+
+fn soupLocalXlsxRequestBody(path: []const u8, full_product_identifier: []const u8, alloc: Allocator) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    try buf.appendSlice(alloc, "{\"kind\":\"local_xlsx\",\"local_xlsx_path\":");
+    try shared.appendJsonStr(&buf, path, alloc);
+    try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+    try shared.appendJsonStr(&buf, full_product_identifier, alloc);
+    try buf.append(alloc, '}');
+    return buf.toOwnedSlice(alloc);
 }
 
 const testing = std.testing;
@@ -633,7 +655,8 @@ test "design bom validate local_xlsx success" {
     };
     try artifact_test_files.writeMinimalXlsx(path, &sheets, alloc);
 
-    const body = try std.fmt.allocPrint(alloc, "{{\"kind\":\"local_xlsx\",\"local_xlsx_path\":\"{s}\"}}", .{path});
+    const body = try localXlsxRequestBody(path, alloc);
+    defer alloc.free(body);
     const resp = try handleDesignBomSyncValidateResponse(&store, body, alloc);
     try testing.expectEqual(std.http.Status.ok, resp.status);
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"kind\":\"local_xlsx\"") != null);
@@ -659,7 +682,8 @@ test "design bom validate local_xlsx missing tab" {
     };
     try artifact_test_files.writeMinimalXlsx(path, &sheets, alloc);
 
-    const body = try std.fmt.allocPrint(alloc, "{{\"kind\":\"local_xlsx\",\"local_xlsx_path\":\"{s}\"}}", .{path});
+    const body = try localXlsxRequestBody(path, alloc);
+    defer alloc.free(body);
     const resp = try handleDesignBomSyncValidateResponse(&store, body, alloc);
     try testing.expectEqual(std.http.Status.bad_request, resp.status);
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"error\":\"missing_design_bom_tab\"") != null);
@@ -690,10 +714,15 @@ test "soup validate rejects product not found" {
     var registry = try makeTestRegistry(alloc, &store);
     defer registry.deinit(alloc);
 
+    const soup_path = try std.fs.path.join(alloc, &.{ "tmp", "unused.xlsx" });
+    defer alloc.free(soup_path);
+    const body = try soupLocalXlsxRequestBody(soup_path, "VS-200-REV-C", alloc);
+    defer alloc.free(body);
+
     const resp = try handleSoupSyncValidateResponse(
         &registry,
         &store,
-        "{\"kind\":\"local_xlsx\",\"local_xlsx_path\":\"/tmp/unused.xlsx\",\"full_product_identifier\":\"VS-200-REV-C\"}",
+        body,
         alloc,
     );
     try testing.expectEqual(std.http.Status.bad_request, resp.status);

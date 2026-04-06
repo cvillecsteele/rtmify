@@ -199,15 +199,27 @@ pub const BootstrapOptions = struct {
     inbox_dir_override: ?[]const u8 = null,
 };
 
+fn testPath(parts: []const []const u8, alloc: Allocator) ![]u8 {
+    return std.fs.path.join(alloc, parts);
+}
+
 test "WorkbookConfig clone deep-copies repo paths and optional strings" {
+    const repo_a = try testPath(&.{ "tmp", "repo-a" }, testing.allocator);
+    defer testing.allocator.free(repo_a);
+    const repo_b = try testPath(&.{ "tmp", "repo-b" }, testing.allocator);
+    defer testing.allocator.free(repo_b);
+    const db_path = try testPath(&.{ "tmp", "demo.sqlite" }, testing.allocator);
+    defer testing.allocator.free(db_path);
+    const inbox_dir = try testPath(&.{ "tmp", "demo-inbox" }, testing.allocator);
+    defer testing.allocator.free(inbox_dir);
     var cfg = WorkbookConfig{
         .id = try testing.allocator.dupe(u8, "wb_1"),
         .slug = try testing.allocator.dupe(u8, "demo"),
         .display_name = try testing.allocator.dupe(u8, "Demo"),
         .profile = try testing.allocator.dupe(u8, "medical"),
-        .repo_paths = try cloneStringSlice(&.{ "/tmp/repo-a", "/tmp/repo-b" }, testing.allocator),
-        .db_path = try testing.allocator.dupe(u8, "/tmp/demo.sqlite"),
-        .inbox_dir = try testing.allocator.dupe(u8, "/tmp/demo-inbox"),
+        .repo_paths = try cloneStringSlice(&.{ repo_a, repo_b }, testing.allocator),
+        .db_path = try testing.allocator.dupe(u8, db_path),
+        .inbox_dir = try testing.allocator.dupe(u8, inbox_dir),
         .workbook_url = try testing.allocator.dupe(u8, "https://example.com"),
         .workbook_label = try testing.allocator.dupe(u8, "Workbook"),
         .credential_ref = try testing.allocator.dupe(u8, "cred"),
@@ -240,12 +252,14 @@ test "sync config clones preserve optional fields" {
     try testing.expectEqualStrings(design.workbook_url.?, design_clone.workbook_url.?);
     try testing.expect(design.workbook_url.?.ptr != design_clone.workbook_url.?.ptr);
 
+    const soup_path = try testPath(&.{ "tmp", "soup.xlsx" }, testing.allocator);
+    defer testing.allocator.free(soup_path);
     var soup = SoupSyncConfig{
         .kind = .local_xlsx,
         .display_name = try testing.allocator.dupe(u8, "Soup"),
         .bom_name = try testing.allocator.dupe(u8, "Main"),
         .full_product_identifier = try testing.allocator.dupe(u8, "product://main"),
-        .local_xlsx_path = try testing.allocator.dupe(u8, "/tmp/soup.xlsx"),
+        .local_xlsx_path = try testing.allocator.dupe(u8, soup_path),
     };
     defer soup.deinit(testing.allocator);
     var soup_clone = try soup.clone(testing.allocator);
@@ -255,6 +269,16 @@ test "sync config clones preserve optional fields" {
 }
 
 test "LiveConfig deinit frees nested workbook sync configs safely" {
+    const repo_path = try testPath(&.{ "tmp", "repo" }, testing.allocator);
+    defer testing.allocator.free(repo_path);
+    const db_path = try testPath(&.{ "tmp", "demo.sqlite" }, testing.allocator);
+    defer testing.allocator.free(db_path);
+    const inbox_dir = try testPath(&.{ "tmp", "demo-inbox" }, testing.allocator);
+    defer testing.allocator.free(inbox_dir);
+    const design_path = try testPath(&.{ "tmp", "design.xlsx" }, testing.allocator);
+    defer testing.allocator.free(design_path);
+    const soup_path = try testPath(&.{ "tmp", "soup.xlsx" }, testing.allocator);
+    defer testing.allocator.free(soup_path);
     var live = LiveConfig{
         .active_workbook_id = try testing.allocator.dupe(u8, "wb_1"),
         .workbooks = try testing.allocator.alloc(WorkbookConfig, 1),
@@ -264,19 +288,19 @@ test "LiveConfig deinit frees nested workbook sync configs safely" {
         .slug = try testing.allocator.dupe(u8, "demo"),
         .display_name = try testing.allocator.dupe(u8, "Demo"),
         .profile = try testing.allocator.dupe(u8, "generic"),
-        .repo_paths = try cloneStringSlice(&.{"/tmp/repo"}, testing.allocator),
-        .db_path = try testing.allocator.dupe(u8, "/tmp/demo.sqlite"),
-        .inbox_dir = try testing.allocator.dupe(u8, "/tmp/demo-inbox"),
+        .repo_paths = try cloneStringSlice(&.{repo_path}, testing.allocator),
+        .db_path = try testing.allocator.dupe(u8, db_path),
+        .inbox_dir = try testing.allocator.dupe(u8, inbox_dir),
         .design_bom_sync = .{
             .kind = .local_xlsx,
             .display_name = try testing.allocator.dupe(u8, "Design"),
-            .local_xlsx_path = try testing.allocator.dupe(u8, "/tmp/design.xlsx"),
+            .local_xlsx_path = try testing.allocator.dupe(u8, design_path),
         },
         .soup_sync = .{
             .kind = .local_xlsx,
             .display_name = try testing.allocator.dupe(u8, "Soup"),
             .full_product_identifier = try testing.allocator.dupe(u8, "product://demo"),
-            .local_xlsx_path = try testing.allocator.dupe(u8, "/tmp/soup.xlsx"),
+            .local_xlsx_path = try testing.allocator.dupe(u8, soup_path),
         },
     };
     live.deinit(testing.allocator);
