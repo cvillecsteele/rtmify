@@ -18,6 +18,11 @@ pub fn createNativeArtifacts(ctx: types.BuildCtx) types.NativeArtifacts {
         .root_source_file = b.path("libcadcruncher/src/lib.zig"),
         .target = ctx.target,
     });
+    const native_reqif_mod = b.createModule(.{
+        .root_source_file = b.path("libreqif/src/lib.zig"),
+        .target = ctx.target,
+        .optimize = ctx.optimize,
+    });
     const native_llm_mod = b.createModule(.{
         .root_source_file = b.path("libllm/src/lib.zig"),
         .target = ctx.target,
@@ -78,6 +83,16 @@ pub fn createNativeArtifacts(ctx: types.BuildCtx) types.NativeArtifacts {
         .linkage = .static,
         .root_module = b.createModule(.{
             .root_source_file = b.path("libcadcruncher/src/lib.zig"),
+            .target = ctx.target,
+            .optimize = ctx.optimize,
+        }),
+    });
+
+    const reqif_lib = b.addLibrary(.{
+        .name = "reqif",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libreqif/src/lib.zig"),
             .target = ctx.target,
             .optimize = ctx.optimize,
         }),
@@ -165,12 +180,14 @@ pub fn createNativeArtifacts(ctx: types.BuildCtx) types.NativeArtifacts {
     return .{
         .rtmify_mod = native_rtmify_mod,
         .cadcruncher_mod = native_cadcruncher_mod,
+        .reqif_mod = native_reqif_mod,
         .llm_mod = native_llm_mod,
         .traveler_mod = native_traveler_mod,
         .trace_exe = trace_exe,
         .live_exe = live_exe,
         .cadinspect_exe = cadinspect_exe,
         .cadcruncher_lib = cadcruncher_lib,
+        .reqif_lib = reqif_lib,
         .llm_lib = llm_lib,
         .traveler_lib = traveler_lib,
         .traveler_exe = traveler_exe,
@@ -187,6 +204,7 @@ pub fn registerArtifactSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     const install_live = b.addInstallArtifact(native.live_exe, .{});
     const install_cadinspect = b.addInstallArtifact(native.cadinspect_exe, .{});
     const install_cadcruncher_lib = b.addInstallArtifact(native.cadcruncher_lib, .{});
+    const install_reqif_lib = b.addInstallArtifact(native.reqif_lib, .{});
     const install_llm_lib = b.addInstallArtifact(native.llm_lib, .{});
     const install_traveler_lib = b.addInstallArtifact(native.traveler_lib, .{});
     const install_traveler = b.addInstallArtifact(native.traveler_exe, .{});
@@ -198,6 +216,7 @@ pub fn registerArtifactSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     b.getInstallStep().dependOn(&install_live.step);
     b.getInstallStep().dependOn(&install_cadinspect.step);
     b.getInstallStep().dependOn(&install_cadcruncher_lib.step);
+    b.getInstallStep().dependOn(&install_reqif_lib.step);
     b.getInstallStep().dependOn(&install_llm_lib.step);
     b.getInstallStep().dependOn(&install_traveler_lib.step);
     b.getInstallStep().dependOn(&install_traveler.step);
@@ -214,6 +233,9 @@ pub fn registerArtifactSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     const cadcruncher_step = b.step("cadcruncher", "Build rtmify-cadinspect and libcadcruncher module");
     cadcruncher_step.dependOn(&install_cadinspect.step);
     cadcruncher_step.dependOn(&install_cadcruncher_lib.step);
+
+    const reqif_step = b.step("reqif", "Build libreqif static library");
+    reqif_step.dependOn(&install_reqif_lib.step);
 
     const lib_step = b.step("lib", "Build librtmify static and shared libraries");
     lib_step.dependOn(&install_shared_lib.step);

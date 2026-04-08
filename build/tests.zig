@@ -65,6 +65,15 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     });
     const run_cadcruncher_tests = b.addRunArtifact(cadcruncher_tests);
 
+    const reqif_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("libreqif/src/lib.zig"),
+            .target = ctx.target,
+            .optimize = ctx.optimize,
+        }),
+    });
+    const run_reqif_tests = b.addRunArtifact(reqif_tests);
+
     const llm_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("libllm/src/lib.zig"),
@@ -141,6 +150,9 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     const test_cadcruncher_step = b.step("test-cadcruncher", "Run libcadcruncher unit tests");
     test_cadcruncher_step.dependOn(&run_cadcruncher_tests.step);
 
+    const test_reqif_step = b.step("test-reqif", "Run libreqif unit tests");
+    test_reqif_step.dependOn(&run_reqif_tests.step);
+
     const test_traveler_step = b.step("test-traveler", "Run traveler and llm unit tests");
     test_traveler_step.dependOn(&run_llm_tests.step);
     test_traveler_step.dependOn(&run_traveler_tests.step);
@@ -155,6 +167,7 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     test_step.dependOn(&run_windows_status_probe_tests.step);
     test_step.dependOn(&run_windows_license_gate_tests.step);
     test_step.dependOn(&run_cadcruncher_tests.step);
+    test_step.dependOn(&run_reqif_tests.step);
     test_step.dependOn(&run_llm_tests.step);
     test_step.dependOn(&run_traveler_tests.step);
 }
@@ -218,6 +231,14 @@ pub fn registerCoverageStep(ctx: types.BuildCtx, native: *const types.NativeArti
             }),
         });
 
+        const reqif_coverage_tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("libreqif/src/lib.zig"),
+                .target = ctx.target,
+                .optimize = coverage_optimize,
+            }),
+        });
+
         const llm_coverage_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("libllm/src/lib.zig"),
@@ -274,6 +295,15 @@ pub fn registerCoverageStep(ctx: types.BuildCtx, native: *const types.NativeArti
             cadcruncher_coverage_tests,
         );
         coverage_step.dependOn(&cadcruncher_kcov.step);
+
+        const reqif_kcov = support.addKcovRun(
+            b,
+            kcov,
+            b.pathJoin(&.{ "zig-out", "coverage", "reqif" }),
+            "libreqif/src",
+            reqif_coverage_tests,
+        );
+        coverage_step.dependOn(&reqif_kcov.step);
 
         const llm_kcov = support.addKcovRun(
             b,
