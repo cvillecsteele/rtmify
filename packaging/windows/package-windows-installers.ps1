@@ -1,6 +1,3 @@
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-
 param(
     [Parameter(Mandatory = $true)]
     [string]$PayloadZip,
@@ -11,6 +8,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputDir
 )
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
 function Require-Path([string]$PathValue, [string]$Message) {
     if (-not (Test-Path -LiteralPath $PathValue)) {
