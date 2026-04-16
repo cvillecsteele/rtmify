@@ -4,9 +4,9 @@ This directory contains the native Windows tray shell for RTMify Live.
 
 For the overall Live architecture, including the boundary between the native shell, the local `rtmify-live` process, and the browser dashboard, see [architecture.md](/Users/colinsteele/Projects/rtmify/sys/live/docs/architecture.md).
 
-## Portable Bundle Layout
+## Installed Layout
 
-The supported v1 Windows distribution is a portable directory containing:
+The packaged Windows installer installs this application layout:
 
 ```text
 RTMify Live/
@@ -14,7 +14,7 @@ RTMify Live/
 ├── rtmify-live.exe
 ```
 
-`RTMify Live.exe` expects `rtmify-live.exe` to be present beside it.
+`RTMify Live.exe` expects `rtmify-live.exe` to be present beside it. The release flow preserves that adjacency by staging both files into the Windows payload zip locally, then letting the `windows-installer-packaging.yml` workflow build the unsigned Inno installer on `windows-latest`, and finally signing the installer locally.
 
 ## Runtime Paths
 
@@ -46,7 +46,10 @@ cd /Users/colinsteele/Projects/rtmify/sys
 
 That script resolves the signing key once, builds the native binaries and apps,
 generates smoke licenses, and verifies those licenses against the binaries from
-that same run before packaging artifacts.
+that same run before packaging artifacts. The Windows installer itself is not
+built on macOS; it is built in GitHub Actions from the staged Windows payload
+zip and then signed locally during the final `package.sh --windows-unsigned-dir`
+step. See [release-operations.md](/Users/colinsteele/Projects/rtmify/sys/docs/release-operations.md).
 
 On a native Windows host, also run:
 
@@ -82,6 +85,5 @@ powershell -ExecutionPolicy Bypass -File .\smoke.ps1
 
 ## Known Limitations
 
-- This is a portable bundle workflow only. Installer/signing work is out of scope here.
 - The Windows tray shell does not yet have macOS-style crash restart supervision parity.
 - Windows UI automation is not part of the current assurance lane.

@@ -1,4 +1,4 @@
-name: Release Packages
+name: Release Build Check
 
 on:
   workflow_dispatch:
@@ -7,28 +7,16 @@ on:
         description: Release version (YYYYMMDD-suffix)
         required: true
         type: string
-      publish_site_manifest:
-        description: Update rtmifysite/public/downloads/latest.json after publishing
-        required: true
-        default: true
-        type: boolean
-      draft:
-        description: Create the GitHub Release as a draft
-        required: true
-        default: false
-        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  release-build:
     runs-on: macos-14
     env:
       VERSION: ${{ inputs.version }}
-      TAG: v${{ inputs.version }}
-      RELEASE_DIR: ""  # set in "Set release dir" step below
-      REPO: cvillecsteele/rtmify
+      RELEASE_DIR: ""
     steps:
       - name: Set release dir
         run: echo "RELEASE_DIR=$RUNNER_TEMP/release/$VERSION" >> "$GITHUB_ENV"
@@ -51,97 +39,28 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
-
       - name: Install release dependencies
         run: |
           python3 -m pip install --upgrade pip openpyxl
           npm ci --prefix validation
           npx --prefix validation playwright install chromium
-          dotnet tool install --global AzureSignTool
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
-      - name: Write signing secrets
+      - name: Write release secrets
         env:
           RTMIFY_LICENSE_HMAC_KEY: ${{ secrets.RTMIFY_LICENSE_HMAC_KEY }}
-          RTMIFY_NOTARY_KEY_P8: ${{ secrets.RTMIFY_NOTARY_KEY_P8 }}
         run: |
           mkdir -p "$RUNNER_TEMP/secrets"
           printf '%s' "$RTMIFY_LICENSE_HMAC_KEY" > "$RUNNER_TEMP/secrets/license-hmac-key.txt"
-          printf '%s' "$RTMIFY_NOTARY_KEY_P8" > "$RUNNER_TEMP/secrets/notary-key.p8"
-          {
-            echo "RTMIFY_LICENSE_HMAC_KEY_FILE=$RUNNER_TEMP/secrets/license-hmac-key.txt"
-            echo "RTMIFY_NOTARY_KEY_FILE=$RUNNER_TEMP/secrets/notary-key.p8"
-          } >> "$GITHUB_ENV"
+          echo "RTMIFY_LICENSE_HMAC_KEY_FILE=$RUNNER_TEMP/secrets/license-hmac-key.txt" >> "$GITHUB_ENV"
 
-      - name: Build release artifacts
+      - name: Build raw release artifacts
         run: ./release.sh --version "${VERSION}" --out-dir "${RELEASE_DIR}"
         env:
           PYTHON_BIN: ${{ env.pythonLocation }}/bin/python3
 
-      - name: Sign and package release artifacts
-        run: ./package.sh --release-dir "${RELEASE_DIR}"
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
-          RTMIFY_NOTARY_KEY_FILE: ${{ env.RTMIFY_NOTARY_KEY_FILE }}
-          RTMIFY_NOTARY_KEY_ID: ${{ secrets.RTMIFY_NOTARY_KEY_ID }}
-          RTMIFY_NOTARY_ISSUER_UUID: ${{ secrets.RTMIFY_NOTARY_ISSUER_UUID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
-          AZURE_TRUSTED_SIGNING_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
-
-      - name: Generate site download manifest
-        run: |
-          python3 ./tools/generate_download_manifest.py \
-            --release-dir "${RELEASE_DIR}" \
-            --repo "${REPO}" \
-            --tag "${TAG}" \
-            --output "${RELEASE_DIR}/latest.json"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload raw release directory
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ env.TAG }}
-          name: RTMify ${{ env.VERSION }}
-          draft: ${{ inputs.draft }}
-          files: |
-            ${{ env.RELEASE_DIR }}/packages/macos/*.pkg
-            ${{ env.RELEASE_DIR }}/packages/linux/*.tar.gz
-            ${{ env.RELEASE_DIR }}/windows/*.exe
-            ${{ env.RELEASE_DIR }}/checksums.txt
-            ${{ env.RELEASE_DIR }}/package-manifest.json
-            ${{ env.RELEASE_DIR }}/manifest.json
-            ${{ env.RELEASE_DIR }}/latest.json
-            ${{ env.RELEASE_DIR }}/validation/*.zip
-            ${{ env.RELEASE_DIR }}/validation/package/*.pdf
-
-      - name: Checkout site repo
-        if: ${{ inputs.publish_site_manifest }}
-        uses: actions/checkout@v4
-        with:
-          repository: cvillecsteele/rtmifysite
-          token: ${{ secrets.RTMIFY_SITE_REPO_TOKEN }}
-          path: site-repo
-
-      - name: Update site download manifest
-        if: ${{ inputs.publish_site_manifest }}
-        run: |
-          mkdir -p site-repo/public/downloads
-          cp "${RELEASE_DIR}/latest.json" site-repo/public/downloads/latest.json
-          cd site-repo
-          if git diff --quiet -- public/downloads/latest.json; then
-            echo "No site manifest changes to commit."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/downloads/latest.json
-          git commit -m "Update download manifest for ${VERSION}"
-          git push origin HEAD:main
+          name: raw-release-${{ inputs.version }}
+          path: ${{ env.RELEASE_DIR }}
+          if-no-files-found: error

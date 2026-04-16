@@ -1,0 +1,53 @@
+name: Windows Installer Packaging
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (YYYYMMDD-suffix)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-installers:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download signed Windows payload zip from draft release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $payloadDir = Join-Path $env:RUNNER_TEMP "windows-payload-download"
+          New-Item -ItemType Directory -Force -Path $payloadDir | Out-Null
+          gh release download "v${{ inputs.version }}" `
+            --pattern "RTMify_Windows_Payloads_${{ inputs.version }}.zip" `
+            --dir $payloadDir
+          "WINDOWS_PAYLOAD_ZIP=$(Join-Path $payloadDir 'RTMify_Windows_Payloads_${{ inputs.version }}.zip')" >> $env:GITHUB_ENV
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build unsigned Windows installers
+        run: |
+          $outputDir = Join-Path $env:RUNNER_TEMP "windows-installers-unsigned"
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          ./packaging/windows/package-windows-installers.ps1 `
+            -PayloadZip $env:WINDOWS_PAYLOAD_ZIP `
+            -Version "${{ inputs.version }}" `
+            -OutputDir $outputDir
+          "WINDOWS_UNSIGNED_OUTPUT_DIR=$outputDir" >> $env:GITHUB_ENV
+
+      - name: Upload unsigned Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers-unsigned-${{ inputs.version }}
+          path: ${{ env.WINDOWS_UNSIGNED_OUTPUT_DIR }}/*.exe
+          if-no-files-found: error

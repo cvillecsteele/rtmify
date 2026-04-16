@@ -34,6 +34,8 @@ def infer_product(rel_path: str) -> str:
 
 def infer_kind(rel_path: str) -> str:
     name = Path(rel_path).name.lower()
+    if name.endswith(".dmg"):
+        return "dmg"
     if name.endswith(".pkg"):
         return "pkg"
     if name.endswith(".exe"):
@@ -91,7 +93,11 @@ def build_manifest(release_dir: Path, repo: str, tag: str) -> dict[str, Any]:
 
     assets: list[dict[str, Any]] = []
 
-    for pkg in package_manifest.get("macos", {}).get("packages", []):
+    macos_entries = package_manifest.get("macos", {}).get("disk_images")
+    if macos_entries is None:
+        macos_entries = package_manifest.get("macos", {}).get("packages", [])
+
+    for pkg in macos_entries:
         assets.append(
             build_asset_entry(
                 repo=repo,
@@ -119,7 +125,15 @@ def build_manifest(release_dir: Path, repo: str, tag: str) -> dict[str, Any]:
             )
         )
 
-    for rel_path in package_manifest.get("windows", {}).get("signed", []):
+    windows_installers = package_manifest.get("windows", {}).get("installers")
+    if windows_installers is None:
+        windows_installers = [
+            {"product": infer_product(rel_path), "path": rel_path}
+            for rel_path in package_manifest.get("windows", {}).get("signed", [])
+        ]
+
+    for installer in windows_installers:
+        rel_path = installer["path"]
         assets.append(
             build_asset_entry(
                 repo=repo,
@@ -127,8 +141,9 @@ def build_manifest(release_dir: Path, repo: str, tag: str) -> dict[str, Any]:
                 version=version,
                 release_dir=release_dir,
                 rel_path=rel_path,
-                product=infer_product(rel_path),
+                product=installer.get("product", infer_product(rel_path)),
                 platform="windows",
+                sha256=installer.get("sha256"),
             )
         )
 

@@ -1,0 +1,28 @@
+[Setup]
+AppId={{8F637197-D3C8-4C0E-A62A-EB682EC82F6E}
+AppName=RTMify Live
+AppVersion={{VERSION}}
+AppPublisher=Iron Brothers Ventures LLC
+AppPublisherURL=https://rtmify.io
+DefaultDirName={autopf64}\RTMify\Live
+DefaultGroupName=RTMify Live
+UninstallDisplayIcon={app}\RTMify Live.exe
+OutputDir={{OUTPUT_DIR}}
+OutputBaseFilename=RTMify_Live_Installer_{{VERSION}}_unsigned
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=admin
+DisableProgramGroupPage=yes
+WizardStyle=modern
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Files]
+Source: "{{SOURCE_DIR}}\RTMify Live.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{{SOURCE_DIR}}\rtmify-live.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\RTMify Live"; Filename: "{app}\RTMify Live.exe"

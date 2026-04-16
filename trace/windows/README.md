@@ -1,6 +1,6 @@
 # RTMify Trace — Windows Shell
 
-Native Win32 GUI for RTMify Trace. Single self-contained `.exe` — no installer, no DLLs. The app exposes the same explicit workbook profiles as the CLI: `generic`, `medical`, `aerospace`, and `automotive`.
+Native Win32 GUI for RTMify Trace. The runtime is still a single self-contained `.exe` with no DLL dependencies, and the release workflow now signs that payload locally, packages the unsigned installer on a Windows GitHub Actions runner, and signs the final installer locally. The app exposes the same explicit workbook profiles as the CLI: `generic`, `medical`, `aerospace`, and `automotive`.
 
 ## Prerequisites
 
@@ -38,6 +38,8 @@ For operator/release packaging, use:
 cd /Users/colinsteele/Projects/rtmify/sys
 ./release.sh
 ```
+
+The final Windows installer is built by `.github/workflows/windows-installer-packaging.yml`, not on macOS. The operator flow is documented in [release-operations.md](/Users/colinsteele/Projects/rtmify/sys/docs/release-operations.md).
 
 ## Development Licensing
 

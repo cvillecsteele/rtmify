@@ -11,13 +11,13 @@ class GenerateDownloadManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             release_dir = Path(tmp_dir)
             (release_dir / "packages" / "macos").mkdir(parents=True)
+            (release_dir / "packages" / "windows").mkdir(parents=True)
             (release_dir / "packages" / "linux").mkdir(parents=True)
-            (release_dir / "windows").mkdir(parents=True)
             (release_dir / "validation" / "package").mkdir(parents=True)
 
-            (release_dir / "packages" / "macos" / "RTMify_Trace_20260329-a.pkg").write_bytes(b"mac trace")
+            (release_dir / "packages" / "macos" / "RTMify_Trace_20260329-a.dmg").write_bytes(b"mac trace")
             (release_dir / "packages" / "linux" / "rtmify-trace-linux-x64-20260329-a.tar.gz").write_bytes(b"linux trace")
-            (release_dir / "windows" / "rtmify-trace.exe").write_bytes(b"win trace signed")
+            (release_dir / "packages" / "windows" / "RTMify_Trace_Installer_20260329-a.exe").write_bytes(b"win trace signed")
             (release_dir / "checksums.txt").write_text("abc  checksums.txt\n", encoding="utf-8")
             (release_dir / "validation" / "RTMify_Trace_Validation_Package_v20260329-a.zip").write_bytes(b"zip")
             (release_dir / "validation" / "package" / "RTMify_Trace_IQOQ_Protocol_v20260329-a.pdf").write_bytes(b"pdf")
@@ -27,10 +27,10 @@ class GenerateDownloadManifestTests(unittest.TestCase):
                     {
                         "version": "20260329-a",
                         "macos": {
-                            "packages": [
+                            "disk_images": [
                                 {
                                     "product": "trace",
-                                    "path": "packages/macos/RTMify_Trace_20260329-a.pkg",
+                                    "path": "packages/macos/RTMify_Trace_20260329-a.dmg",
                                     "sha256": "mac-sha",
                                 }
                             ]
@@ -44,7 +44,20 @@ class GenerateDownloadManifestTests(unittest.TestCase):
                                 }
                             ]
                         },
-                        "windows": {"signed": ["windows/rtmify-trace.exe"]},
+                        "windows": {
+                            "status": "finalized",
+                            "payload_zip": {
+                                "path": "packages/windows/RTMify_Windows_Payloads_20260329-a.zip",
+                                "sha256": "payload-sha",
+                            },
+                            "installers": [
+                                {
+                                    "product": "trace",
+                                    "path": "packages/windows/RTMify_Trace_Installer_20260329-a.exe",
+                                    "sha256": "win-sha",
+                                }
+                            ]
+                        },
                     }
                 ),
                 encoding="utf-8",
@@ -84,20 +97,57 @@ class GenerateDownloadManifestTests(unittest.TestCase):
             )
 
             assets = manifest["assets"]
-            self.assertTrue(any(asset["filename"] == "RTMify_Trace_20260329-a.pkg" for asset in assets))
-            self.assertTrue(any(asset["filename"] == "rtmify-trace.exe" for asset in assets))
+            self.assertTrue(any(asset["filename"] == "RTMify_Trace_20260329-a.dmg" for asset in assets))
+            self.assertTrue(any(asset["filename"] == "RTMify_Trace_Installer_20260329-a.exe" for asset in assets))
             self.assertTrue(any(asset["filename"] == "checksums.txt" for asset in assets))
             self.assertTrue(any(asset["filename"] == "RTMify_Trace_Validation_Package_v20260329-a.zip" for asset in assets))
             self.assertTrue(any(asset["filename"] == "RTMify_Trace_IQOQ_Protocol_v20260329-a.pdf" for asset in assets))
 
-            windows_asset = next(asset for asset in assets if asset["filename"] == "rtmify-trace.exe")
+            windows_asset = next(asset for asset in assets if asset["filename"] == "RTMify_Trace_Installer_20260329-a.exe")
             self.assertEqual("windows", windows_asset["platform"])
             self.assertEqual("trace", windows_asset["product"])
             self.assertEqual(
-                "https://github.com/cvillecsteele/rtmify/releases/download/v20260329-a/rtmify-trace.exe",
+                "https://github.com/cvillecsteele/rtmify/releases/download/v20260329-a/RTMify_Trace_Installer_20260329-a.exe",
                 windows_asset["url"],
             )
-            self.assertEqual(64, len(windows_asset["sha256"]))
+            self.assertEqual("win-sha", windows_asset["sha256"])
+
+    def test_build_manifest_omits_windows_payload_zip_before_finalize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            release_dir = Path(tmp_dir)
+            (release_dir / "packages" / "windows").mkdir(parents=True)
+            (release_dir / "checksums.txt").write_text("abc  checksums.txt\n", encoding="utf-8")
+            (release_dir / "packages" / "windows" / "RTMify_Windows_Payloads_20260329-a.zip").write_bytes(b"payload")
+
+            (release_dir / "package-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "version": "20260329-a",
+                        "windows": {
+                            "status": "payloads_signed",
+                            "signed_binaries": [
+                                "windows/rtmify-trace.exe",
+                                "windows/RTMify Live.exe",
+                                "windows/rtmify-live.exe",
+                            ],
+                            "payload_zip": {
+                                "path": "packages/windows/RTMify_Windows_Payloads_20260329-a.zip",
+                                "sha256": "payload-sha",
+                            },
+                            "installers": [],
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (release_dir / "manifest.json").write_text(
+                json.dumps({"version": "20260329-a", "artifacts": []}),
+                encoding="utf-8",
+            )
+
+            manifest = build_manifest(release_dir, "cvillecsteele/rtmify", "v20260329-a")
+            asset_names = {asset["filename"] for asset in manifest["assets"]}
+            self.assertNotIn("RTMify_Windows_Payloads_20260329-a.zip", asset_names)
 
 
 if __name__ == "__main__":

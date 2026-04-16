@@ -1,0 +1,27 @@
+[Setup]
+AppId={{2FA112AB-513E-4CA5-86B1-711FE8C2EBC2}
+AppName=RTMify Trace
+AppVersion={{VERSION}}
+AppPublisher=Iron Brothers Ventures LLC
+AppPublisherURL=https://rtmify.io
+DefaultDirName={autopf64}\RTMify\Trace
+DefaultGroupName=RTMify Trace
+UninstallDisplayIcon={app}\rtmify-trace.exe
+OutputDir={{OUTPUT_DIR}}
+OutputBaseFilename=RTMify_Trace_Installer_{{VERSION}}_unsigned
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=admin
+DisableProgramGroupPage=yes
+WizardStyle=modern
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Files]
+Source: "{{SOURCE_DIR}}\rtmify-trace.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\RTMify Trace"; Filename: "{app}\rtmify-trace.exe"
