@@ -128,7 +128,7 @@ foreach ($path in $expectedUnsigned) {
 
 $unexpected = Get-ChildItem -LiteralPath $outputDirPath -Filter *.exe -File |
     Where-Object { $_.Name -notin $installerInput.unsigned_installers }
-if ($unexpected.Count -gt 0) {
+if (@($unexpected).Count -gt 0) {
     $names = ($unexpected | Select-Object -ExpandProperty Name) -join ", "
     throw "Unexpected unsigned installer outputs: $names"
 }
