@@ -25,10 +25,10 @@ function Load-InstallerInput([string]$ManifestPath, [string]$ExpectedVersion) {
     if ($data.version -ne $ExpectedVersion) {
         throw "windows-installer-input.json version $($data.version) did not match workflow version $ExpectedVersion"
     }
-    if ($data.unsigned_installers.Count -ne 2) {
+    if (@($data.unsigned_installers).Count -ne 2) {
         throw "windows-installer-input.json must declare exactly 2 unsigned installers"
     }
-    if ($data.final_installers.Count -ne 2) {
+    if (@($data.final_installers).Count -ne 2) {
         throw "windows-installer-input.json must declare exactly 2 final installers"
     }
     return $data
