@@ -118,8 +118,8 @@ Compile-InnoScript $compiler $traceScript
 Compile-InnoScript $compiler $liveScript
 
 $expectedUnsigned = @(
-    Join-Path $outputDirPath $installerInput.unsigned_installers[0],
-    Join-Path $outputDirPath $installerInput.unsigned_installers[1]
+    (Join-Path $outputDirPath $installerInput.unsigned_installers[0]),
+    (Join-Path $outputDirPath $installerInput.unsigned_installers[1])
 )
 
 foreach ($path in $expectedUnsigned) {
