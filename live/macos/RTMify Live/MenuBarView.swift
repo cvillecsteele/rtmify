@@ -13,44 +13,20 @@ struct MenuBarView: View {
             Divider()
             settingsActions
         }
-        .task {
-            presentLicenseGateIfNeeded(vm.state)
-        }
-        .onChange(of: vmIsLicenseGate) { isLicenseGate in
-            if isLicenseGate {
-                presentLicenseGateIfNeeded(vm.state)
-            }
-        }
-    }
-
-    private var vmIsLicenseGate: Bool {
-        if case .licenseGate = vm.state {
-            return true
-        }
-        return false
-    }
-
-    private func presentLicenseGateIfNeeded(_ state: AppState) {
-        guard case .licenseGate = state else { return }
-        openWindow(id: "license")
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     @ViewBuilder
     private var statusLabel: some View {
         switch vm.state {
-        case .licenseGate:
-            Label("License required", systemImage: "exclamationmark.circle")
-                .foregroundStyle(.orange)
         case .stopped:
-            Label("Server stopped", systemImage: "stop.circle")
+            Label(MenuBarPresentation.stoppedLabel(permitsUse: vm.permitsUse), systemImage: vm.permitsUse ? "stop.circle" : "eye.circle")
                 .foregroundStyle(.secondary)
         case .starting:
-            Label("Starting…", systemImage: "arrow.clockwise.circle")
+            Label(MenuBarPresentation.startingLabel(permitsUse: vm.permitsUse), systemImage: "arrow.clockwise.circle")
                 .foregroundStyle(.secondary)
         case .restarting(_, let attempt, let maxAttempts, let nextDelaySeconds, let reason):
             VStack(alignment: .leading) {
-                Label("Restarting server (attempt \(attempt)/\(maxAttempts))…", systemImage: "arrow.triangle.2.circlepath.circle")
+                Label(MenuBarPresentation.restartingLabel(attempt: attempt, maxAttempts: maxAttempts, permitsUse: vm.permitsUse), systemImage: "arrow.triangle.2.circlepath.circle")
                     .foregroundStyle(.orange)
                 Text("Retrying in \(nextDelaySeconds)s")
                     .font(.caption2)
@@ -61,8 +37,8 @@ struct MenuBarView: View {
             }
         case .running(let port):
             VStack(alignment: .leading) {
-                Label("Running on :\(String(port))", systemImage: "checkmark.circle")
-                    .foregroundStyle(.green)
+                Label(MenuBarPresentation.runningLabel(port: port, permitsUse: vm.permitsUse), systemImage: vm.permitsUse ? "checkmark.circle" : "eye.circle")
+                    .foregroundStyle(vm.permitsUse ? .green : .orange)
                 if let ts = vm.lastSyncAt {
                     Text("Last sync: \(ts)")
                         .font(.caption2)
@@ -83,14 +59,10 @@ struct MenuBarView: View {
     @ViewBuilder
     private var mainActions: some View {
         switch vm.state {
-        case .licenseGate:
-            Button("Import License File…") {
-                openWindow(id: "license")
-            }
         case .stopped, .error:
-            Button("Start Server") { vm.start() }
+            Button(MenuBarPresentation.startActionLabel(permitsUse: vm.permitsUse)) { vm.start() }
         case .starting:
-            Button("Starting…") {}.disabled(true)
+            Button(MenuBarPresentation.startingLabel(permitsUse: vm.permitsUse)) {}.disabled(true)
         case .restarting:
             Button("Stop Server") { vm.stop() }
         case .running:
@@ -101,6 +73,10 @@ struct MenuBarView: View {
 
     private var settingsActions: some View {
         Group {
+            Button(MenuBarPresentation.licenseActionLabel(permitsUse: vm.permitsUse)) {
+                openWindow(id: "license")
+                NSApp.activate(ignoringOtherApps: true)
+            }
             Toggle("Launch at Login", isOn: Binding(
                 get: { vm.launchAtLogin },
                 set: { _ in vm.toggleLaunchAtLogin() }

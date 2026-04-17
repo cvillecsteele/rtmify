@@ -19,11 +19,17 @@ struct LicenseGateView: View {
             Spacer()
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("License File")
+                Text("Preview Mode")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Import a signed RTMify Live license file, or place it manually at ~/.rtmify/license.json.")
+                Text("RTMify Live can run without a license in preview mode. Install a signed license file to unlock MCP, reports, repository scanning, code traceability, and background sync.")
                     .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+
+                Text("You can also place the file manually at ~/.rtmify/license.json.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.leading)
@@ -50,7 +56,7 @@ struct LicenseGateView: View {
                         Text("Importing...")
                     }
                 } else {
-                    Text("Import License File")
+                    Text("Install License File")
                 }
             }
             .buttonStyle(.borderedProminent)

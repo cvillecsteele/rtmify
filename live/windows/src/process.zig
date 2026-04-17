@@ -226,8 +226,20 @@ fn setChildEnvironment(allocator: std.mem.Allocator, log_path: []const u8) !void
 pub var server_process: ?HANDLE = null;
 pub var server_log_handle: ?HANDLE = null;
 
+fn refreshServerProcessHandle(get_exit_code_fn: anytype, close_handle_fn: anytype) bool {
+    const h = server_process orelse return false;
+    const STILL_ACTIVE: DWORD = 259;
+    var exit_code: DWORD = 0;
+    if (get_exit_code_fn(h, &exit_code) == 0 or exit_code != STILL_ACTIVE) {
+        _ = close_handle_fn(h);
+        server_process = null;
+        return false;
+    }
+    return true;
+}
+
 pub fn spawnServer(allocator: std.mem.Allocator, port: u16) SpawnServerResult {
-    if (server_process != null) return .{ .err = .already_running };
+    if (refreshServerProcessHandle(GetExitCodeProcess, CloseHandle)) return .{ .err = .already_running };
 
     const server_path = findServerExecutable(allocator) catch return .{ .err = .server_binary_missing };
     defer allocator.free(server_path);
@@ -294,11 +306,7 @@ pub fn stopServer() void {
 }
 
 pub fn serverRunning() bool {
-    const h = server_process orelse return false;
-    const STILL_ACTIVE: DWORD = 259;
-    var exit_code: DWORD = 0;
-    _ = GetExitCodeProcess(h, &exit_code);
-    return exit_code == STILL_ACTIVE;
+    return refreshServerProcessHandle(GetExitCodeProcess, CloseHandle);
 }
 
 test "buildServerCommandLine quotes db path with spaces" {
@@ -320,4 +328,50 @@ test "quoteIfNeeded handles parentheses" {
     const quoted = try quoteIfNeeded(alloc, "C:\\Users\\Alice\\AppData\\Local\\RTMify Live (Dev)\\graph.db");
     defer alloc.free(quoted);
     try std.testing.expectEqualStrings("\"C:\\Users\\Alice\\AppData\\Local\\RTMify Live (Dev)\\graph.db\"", quoted);
+}
+
+test "refreshServerProcessHandle clears exited process handle" {
+    const Probe = struct {
+        var close_count: usize = 0;
+
+        fn getExitCode(_: ?HANDLE, code: *DWORD) BOOL {
+            code.* = 1;
+            return 1;
+        }
+
+        fn closeHandle(_: ?HANDLE) BOOL {
+            close_count += 1;
+            return 1;
+        }
+    };
+
+    server_process = @ptrFromInt(1);
+    Probe.close_count = 0;
+    try std.testing.expect(!refreshServerProcessHandle(Probe.getExitCode, Probe.closeHandle));
+    try std.testing.expectEqual(@as(?HANDLE, null), server_process);
+    try std.testing.expectEqual(@as(usize, 1), Probe.close_count);
+}
+
+test "refreshServerProcessHandle preserves running process handle" {
+    const Probe = struct {
+        var close_count: usize = 0;
+
+        fn getExitCode(_: ?HANDLE, code: *DWORD) BOOL {
+            code.* = 259;
+            return 1;
+        }
+
+        fn closeHandle(_: ?HANDLE) BOOL {
+            close_count += 1;
+            return 1;
+        }
+    };
+
+    const handle: HANDLE = @ptrFromInt(2);
+    server_process = handle;
+    Probe.close_count = 0;
+    try std.testing.expect(refreshServerProcessHandle(Probe.getExitCode, Probe.closeHandle));
+    try std.testing.expectEqual(handle, server_process.?);
+    try std.testing.expectEqual(@as(usize, 0), Probe.close_count);
+    server_process = null;
 }

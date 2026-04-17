@@ -1,8 +1,8 @@
 # RTMify Live — macOS App
 
 Native SwiftUI menu-bar shell for `rtmify-live`. The app bundles the Zig
-runtime, starts it locally, opens the dashboard, and presents the signed-license
-file gate when Live is not licensed.
+runtime, starts it locally, opens the dashboard, and manages signed-license
+state without blocking preview-mode startup.
 
 ## Prerequisites
 
@@ -53,6 +53,14 @@ Output:
 ```text
 .build/Build/Products/Release/RTMify Live.app
 ```
+
+## Runtime Behavior
+
+The macOS shell can launch `rtmify-live` without an installed license. In that
+state it exposes preview mode, keeps the runtime's existing feature locks in
+place, and still allows the dashboard to open. Installing a valid license while
+preview is already running stops and restarts the managed runtime into licensed
+mode.
 
 ## Why the key file is required
 

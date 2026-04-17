@@ -138,6 +138,9 @@ extern "shell32" fn ShellExecuteW(
 extern "gdi32" fn GetDeviceCaps(hdc: *anyopaque, nIndex: c_int) callconv(.winapi) c_int;
 extern "gdi32" fn DeleteObject(ho: *anyopaque) callconv(.winapi) BOOL;
 
+const COINIT_APARTMENTTHREADED: DWORD = 0x2;
+extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.winapi) i32;
+
 // ---------------------------------------------------------------------------
 // Global application state
 // ---------------------------------------------------------------------------
@@ -145,6 +148,14 @@ extern "gdi32" fn DeleteObject(ho: *anyopaque) callconv(.winapi) BOOL;
 var g_state: state.AppState = .{};
 var g_hinstance: ?*anyopaque = null;
 threadlocal var license_message_buf: [512]u8 = .{0} ** 512;
+
+fn showFatalError(msg: [*:0]const u8) void {
+    var msg_w: [512:0]u16 = std.mem.zeroes([512:0]u16);
+    const msg_slice = std.mem.span(msg);
+    const n = std.unicode.utf8ToUtf16Le(msg_w[0 .. msg_w.len - 1], msg_slice) catch 0;
+    msg_w[n] = 0;
+    _ = MessageBoxW(null, &msg_w, toUtf16Z("RTMify Trace"), 0x00000010);
+}
 
 fn cStringSlice(buf: []const u8) ?[]const u8 {
     const len = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
@@ -184,6 +195,27 @@ fn setLoadStatus(hwnd: HWND) void {
     ui.setStatusText(hwnd, message);
 }
 
+fn loadSpawnFailureMessage(err: bridge.SpawnError) [*:0]const u8 {
+    return switch (err) {
+        error.OutOfMemory => "Not enough memory to start workbook analysis.",
+        error.ThreadSpawnFailed => "Could not start workbook analysis. Please try again.",
+    };
+}
+
+fn generateSpawnFailureMessage(err: bridge.SpawnError) [*:0]const u8 {
+    return switch (err) {
+        error.OutOfMemory => "Not enough memory to start report generation.",
+        error.ThreadSpawnFailed => "Could not start report generation. Please try again.",
+    };
+}
+
+fn licenseSpawnFailureMessage(err: bridge.SpawnError) [*:0]const u8 {
+    return switch (err) {
+        error.OutOfMemory => "Not enough memory to import the license file.",
+        error.ThreadSpawnFailed => "Could not start license import. Please try again.",
+    };
+}
+
 fn beginLoad(hwnd: HWND, path: []const u8) void {
     if (g_state.graph) |g| {
         bridge.rtmify_free(g);
@@ -194,7 +226,11 @@ fn beginLoad(hwnd: HWND, path: []const u8) void {
     g_state.tag = .drop_zone;
     ui.updateVisibility(.drop_zone);
     setLoadStatus(hwnd);
-    bridge.spawnLoad(hwnd, path, g_state.selected_profile);
+    bridge.spawnLoad(hwnd, path, g_state.selected_profile) catch |err| {
+        ui.setStatusText(hwnd, loadSpawnFailureMessage(err));
+        g_state.tag = .drop_zone;
+        ui.updateVisibility(.drop_zone);
+    };
     _ = InvalidateRect(hwnd, null, 1);
 }
 
@@ -274,19 +310,27 @@ fn utf8ToW(utf8: []const u8, buf: []u16) []u16 {
 
 fn shellOpen(path_utf8: []const u8) void {
     var w: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
-    _ = std.unicode.utf8ToUtf16Le(&w, path_utf8) catch return;
-    _ = ShellExecuteW(null, toUtf16Z("open"), &w, null, null, SW_SHOW);
+    _ = std.unicode.utf8ToUtf16Le(&w, path_utf8) catch {
+        dialogs.showError(null, "Generated file path could not be opened.");
+        return;
+    };
+    if (ShellExecuteW(null, toUtf16Z("open"), &w, null, null, SW_SHOW) <= 32) {
+        dialogs.showError(null, "Could not open generated file.");
+    }
 }
 
 fn shellShowInExplorer(path_utf8: []const u8) void {
     // Explorer /select,path highlights the file in Explorer
-    var w: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
-    _ = std.unicode.utf8ToUtf16Le(&w, path_utf8) catch return;
     var arg_buf: [1024]u8 = undefined;
     const arg = std.fmt.bufPrint(&arg_buf, "/select,\"{s}\"", .{path_utf8}) catch return;
     var arg_w: [1024:0]u16 = std.mem.zeroes([1024:0]u16);
-    _ = std.unicode.utf8ToUtf16Le(&arg_w, arg) catch return;
-    _ = ShellExecuteW(null, null, toUtf16Z("explorer.exe"), &arg_w, null, SW_SHOW);
+    _ = std.unicode.utf8ToUtf16Le(&arg_w, arg) catch {
+        dialogs.showError(null, "Generated file path could not be shown in Explorer.");
+        return;
+    };
+    if (ShellExecuteW(null, null, toUtf16Z("explorer.exe"), &arg_w, null, SW_SHOW) <= 32) {
+        dialogs.showError(null, "Could not show generated file in Explorer.");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +472,13 @@ fn handleGenerate(hwnd: HWND) void {
     ui.updateVisibility(.generating);
     if (ui.generate_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Generating\xe2\x80\xa6"));
 
-    bridge.spawnGenerate(hwnd, graph, fmts[0..count], paths[0..count], proj);
+    bridge.spawnGenerate(hwnd, graph, fmts[0..count], paths[0..count], proj) catch |err| {
+        if (ui.generate_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Generate"));
+        g_state.tag = .file_loaded;
+        ui.updateVisibility(.file_loaded);
+        dialogs.showError(hwnd, generateSpawnFailureMessage(err));
+        _ = InvalidateRect(hwnd, null, 1);
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +490,10 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
 
     switch (msg) {
         WM_CREATE => {
-            ui.createControls(hw, g_hinstance orelse hw);
+            ui.createControls(hw, g_hinstance orelse hw) catch {
+                showFatalError("Could not create the RTMify Trace window.");
+                return -1;
+            };
             ui.setFont(hw);
             DragAcceptFiles(hw, 1);
             // Check license on startup
@@ -460,6 +513,7 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         WM_DESTROY => {
             if (g_state.graph) |g| bridge.rtmify_free(g);
             if (ui.g_hfont) |f| _ = DeleteObject(f);
+            if (ui.g_title_hfont) |f| _ = DeleteObject(f);
             PostQuitMessage(0);
             return 0;
         },
@@ -517,12 +571,12 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         },
 
         bridge.WM_LOAD_COMPLETE => {
-            const load_result: *bridge.LoadResult = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            defer std.heap.page_allocator.destroy(load_result);
-            if (load_result.status == bridge.RTMIFY_OK and load_result.graph != null) {
-                transitionToFileLoaded(hw, load_result);
+            const load_ctx: *bridge.LoadContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            defer std.heap.page_allocator.destroy(load_ctx);
+            if (load_ctx.result.status == bridge.RTMIFY_OK and load_ctx.result.graph != null) {
+                transitionToFileLoaded(hw, &load_ctx.result);
             } else {
-                dialogs.showError(hw, &load_result.error_message);
+                dialogs.showError(hw, &load_ctx.result.error_message);
                 g_state.tag = .drop_zone;
                 ui.updateVisibility(.drop_zone);
                 _ = InvalidateRect(hw, null, 1);
@@ -530,17 +584,17 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         },
 
         bridge.WM_GENERATE_COMPLETE => {
-            const generate_result: *bridge.GenerateResult = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            defer std.heap.page_allocator.destroy(generate_result);
+            const generate_ctx: *bridge.GenerateContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            defer std.heap.page_allocator.destroy(generate_ctx);
             // Restore button text
             if (ui.generate_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Generate"));
-            if (generate_result.status == bridge.RTMIFY_OK) {
+            if (generate_ctx.result.status == bridge.RTMIFY_OK) {
                 _ = bridge.recordSuccessfulUse();
                 if (g_state.result) |r| {
                     transitionToDone(hw, r);
                 }
             } else {
-                dialogs.showError(hw, &generate_result.error_message);
+                dialogs.showError(hw, &generate_ctx.result.error_message);
                 g_state.tag = .file_loaded;
                 ui.updateVisibility(.file_loaded);
                 _ = InvalidateRect(hw, null, 1);
@@ -548,11 +602,11 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
         },
 
         bridge.WM_LICENSE_COMPLETE => {
-            const license_result: *bridge.LicenseInstallResult = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            defer std.heap.page_allocator.destroy(license_result);
+            const license_ctx: *bridge.LicenseInstallContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            defer std.heap.page_allocator.destroy(license_ctx);
             if (ui.import_license_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Import License File"));
             if (ui.import_license_btn) |b| _ = EnableWindow(b, 1);
-            if (license_result.status == bridge.RTMIFY_OK) {
+            if (license_ctx.result.status == bridge.RTMIFY_OK) {
                 g_state.has_activation_error = false;
                 ui.setActivationError("");
                 if (ui.activ_err) |c| _ = ShowWindow(c, SW_HIDE);
@@ -561,7 +615,7 @@ fn wndProc(hwnd: ?*anyopaque, msg: UINT, wparam: WPARAM, lparam: LPARAM) callcon
                 _ = InvalidateRect(hw, null, 1);
             } else {
                 g_state.has_activation_error = true;
-                ui.setActivationError(&license_result.error_message);
+                ui.setActivationError(&license_ctx.result.error_message);
             }
         },
 
@@ -581,7 +635,14 @@ fn handleImportLicense(hwnd: HWND) void {
         _ = SetWindowTextW(b, toUtf16Z("Importing\xe2\x80\xa6"));
         _ = EnableWindow(b, 0);
     }
-    bridge.spawnInstallLicense(hwnd, path);
+    bridge.spawnInstallLicense(hwnd, path) catch |err| {
+        if (ui.import_license_btn) |b| _ = SetWindowTextW(b, toUtf16Z("Import License File"));
+        if (ui.import_license_btn) |b| _ = EnableWindow(b, 1);
+        g_state.has_activation_error = true;
+        ui.setActivationError(licenseSpawnFailureMessage(err));
+        ui.updateVisibility(.license_gate);
+        _ = InvalidateRect(hwnd, null, 1);
+    };
 }
 
 fn handleClearLicense(hwnd: HWND) void {
@@ -659,6 +720,9 @@ pub export fn wWinMain(
 ) callconv(.winapi) c_int {
     g_hinstance = hInstance;
 
+    // Initialize COM — required for GetOpenFileNameW on modern Windows
+    _ = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
+
     // Window class
     const cls_name = toUtf16Z("RTMifyTraceWnd");
     var wc = WNDCLASSEXW{
@@ -675,7 +739,10 @@ pub export fn wWinMain(
         .lpszClassName = cls_name,
         .hIconSm = null,
     };
-    _ = RegisterClassExW(&wc);
+    if (RegisterClassExW(&wc) == 0) {
+        showFatalError("Could not register the RTMify Trace window class.");
+        return 1;
+    }
 
     // Fixed-size window: overlapped without resize/maximize
     const win_style = (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX) & ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
@@ -691,7 +758,10 @@ pub export fn wWinMain(
         null,
     );
 
-    const hwnd = hwnd_opt orelse return 1;
+    const hwnd = hwnd_opt orelse {
+        showFatalError("Could not create the RTMify Trace window.");
+        return 1;
+    };
 
     _ = ShowWindow(hwnd, nCmdShow);
     _ = UpdateWindow(hwnd);

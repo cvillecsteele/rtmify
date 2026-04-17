@@ -5,7 +5,6 @@ import Darwin
 import AppKit
 
 enum AppState {
-    case licenseGate
     case stopped
     case starting
     case restarting(port: Int, attempt: Int, maxAttempts: Int, nextDelaySeconds: Int, reason: String)
@@ -27,6 +26,7 @@ final class ViewModel: ObservableObject {
     @Published var activationError: String? = nil
     @Published var isActivating: Bool = false
     @Published var launchAtLogin: Bool = false
+    @Published var permitsUse: Bool = false
     @Published var expectedKeyFingerprint: String? = nil
 
     private var serverProcess: Process? = nil
@@ -48,9 +48,7 @@ final class ViewModel: ObservableObject {
 
     func checkLicense() {
         Task {
-            let payload = await fetchLicenseStatus()
-            expectedKeyFingerprint = payload?.expectedKeyFingerprint
-            state = (payload?.permitsUse ?? false) ? .stopped : .licenseGate
+            _ = await refreshLicenseState()
         }
     }
 
@@ -85,9 +83,8 @@ final class ViewModel: ObservableObject {
             let result = await runCommand(binary, args: ["license", "install", url.path])
             isActivating = false
             if result.exitCode == 0 {
-                let payload = await fetchLicenseStatus()
-                expectedKeyFingerprint = payload?.expectedKeyFingerprint
-                state = .stopped
+                _ = await refreshLicenseState()
+                restartForLicenseChange()
             } else {
                 activationError = friendlyLicenseImportError(result.stderr)
             }
@@ -98,8 +95,8 @@ final class ViewModel: ObservableObject {
         guard let binary = binaryPath() else { return }
         Task {
             _ = await runCommand(binary, args: ["license", "clear"])
-            stop()
-            state = .licenseGate
+            _ = await refreshLicenseState()
+            restartForLicenseChange()
         }
     }
 
@@ -112,7 +109,12 @@ final class ViewModel: ObservableObject {
     // MARK: - Server control
 
     func start(openDashboardOnLaunch: Bool = true) {
-        guard case .stopped = state else { return }
+        switch state {
+        case .stopped, .error:
+            break
+        default:
+            return
+        }
         restartAttempt = 0
         intentionalStopInProgress = false
         outputBuffer.reset()
@@ -347,6 +349,33 @@ final class ViewModel: ObservableObject {
 
     // MARK: - Helpers
 
+    @discardableResult
+    private func refreshLicenseState() async -> LicenseStatusPayload? {
+        let payload = await fetchLicenseStatus()
+        expectedKeyFingerprint = payload?.expectedKeyFingerprint
+        permitsUse = payload?.permitsUse ?? false
+        return payload
+    }
+
+    private func restartForLicenseChange() {
+        let shouldRestart = serverSessionIsActive
+        if shouldRestart {
+            stop()
+            start(openDashboardOnLaunch: true)
+        } else {
+            state = .stopped
+        }
+    }
+
+    private var serverSessionIsActive: Bool {
+        switch state {
+        case .starting, .restarting, .running:
+            return true
+        case .stopped, .error:
+            return false
+        }
+    }
+
     private func binaryPath() -> String? {
         // When running from app bundle, binary is in Resources/
         if let bundled = Bundle.main.path(forResource: "rtmify-live", ofType: nil) {
@@ -425,7 +454,7 @@ final class ViewModel: ObservableObject {
 
     private func lifecycleStateForCurrentAppState() -> ServerLifecycleState {
         switch state {
-        case .licenseGate, .stopped:
+        case .stopped:
             return .stopped
         case .starting:
             return .starting

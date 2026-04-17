@@ -109,6 +109,11 @@ pub const WM_LOAD_COMPLETE: UINT = WM_APP + 1;
 pub const WM_GENERATE_COMPLETE: UINT = WM_APP + 2;
 pub const WM_LICENSE_COMPLETE: UINT = WM_APP + 3;
 
+pub const SpawnError = error{
+    OutOfMemory,
+    ThreadSpawnFailed,
+};
+
 // ---------------------------------------------------------------------------
 // Context structs — heap-allocated, freed by WndProc after receipt
 // ---------------------------------------------------------------------------
@@ -117,6 +122,7 @@ pub const LoadContext = struct {
     hwnd: HWND,
     path_utf8: [1024:0]u8,
     profile: RtmifyProfile,
+    result: LoadResult = .{},
 };
 
 pub const GenerateContext = struct {
@@ -127,29 +133,31 @@ pub const GenerateContext = struct {
     output_paths: [3][1024:0]u8,
     project_name: [256:0]u8,
     count: usize, // number of generate calls (1 for single, 3 for "All")
+    result: GenerateResult = .{},
 };
 
 pub const LicenseInstallContext = struct {
     hwnd: HWND,
     path: [1024:0]u8,
+    result: LicenseInstallResult = .{},
 };
 
 pub const LoadResult = struct {
-    status: i32,
-    graph: ?*RtmifyGraph,
-    summary: RtmifyAnalysisSummary,
-    path_utf8: [1024:0]u8,
-    error_message: [512:0]u8,
+    status: i32 = RTMIFY_ERR_INVALID_XLSX,
+    graph: ?*RtmifyGraph = null,
+    summary: RtmifyAnalysisSummary = std.mem.zeroes(RtmifyAnalysisSummary),
+    path_utf8: [1024:0]u8 = std.mem.zeroes([1024:0]u8),
+    error_message: [512:0]u8 = std.mem.zeroes([512:0]u8),
 };
 
 pub const GenerateResult = struct {
-    status: i32,
-    error_message: [512:0]u8,
+    status: i32 = RTMIFY_OK,
+    error_message: [512:0]u8 = std.mem.zeroes([512:0]u8),
 };
 
 pub const LicenseInstallResult = struct {
-    status: i32,
-    error_message: [512:0]u8,
+    status: i32 = RTMIFY_ERR_LICENSE,
+    error_message: [512:0]u8 = std.mem.zeroes([512:0]u8),
 };
 
 fn copyCString(dest: anytype, src: []const u8) void {
@@ -162,94 +170,77 @@ fn copyLastError(dest: anytype) void {
     copyCString(dest, std.mem.span(rtmify_last_error()));
 }
 
+fn postCompletion(hwnd: HWND, msg: UINT, payload: anytype) bool {
+    return PostMessageW(hwnd, msg, 0, @bitCast(@intFromPtr(payload))) != 0;
+}
+
 // ---------------------------------------------------------------------------
 // Worker functions
 // ---------------------------------------------------------------------------
 
 fn loadWorker(ctx: *LoadContext) void {
-    const result = std.heap.page_allocator.create(LoadResult) catch {
-        std.heap.page_allocator.destroy(ctx);
-        return;
-    };
-    result.* = .{
-        .status = RTMIFY_ERR_INVALID_XLSX,
-        .graph = null,
-        .summary = std.mem.zeroes(RtmifyAnalysisSummary),
-        .path_utf8 = std.mem.zeroes([1024:0]u8),
-        .error_message = std.mem.zeroes([512:0]u8),
-    };
-    copyCString(&result.path_utf8, std.mem.sliceTo(&ctx.path_utf8, 0));
+    copyCString(&ctx.result.path_utf8, std.mem.sliceTo(&ctx.path_utf8, 0));
 
     var graph: *RtmifyGraph = undefined;
-    result.status = rtmify_load_with_profile(&ctx.path_utf8, @intFromEnum(ctx.profile), &graph, &result.summary);
-    if (result.status == RTMIFY_OK) {
-        result.graph = graph;
+    ctx.result.status = rtmify_load_with_profile(&ctx.path_utf8, @intFromEnum(ctx.profile), &graph, &ctx.result.summary);
+    if (ctx.result.status == RTMIFY_OK) {
+        ctx.result.graph = graph;
     } else {
-        copyLastError(&result.error_message);
+        copyLastError(&ctx.result.error_message);
     }
-    _ = PostMessageW(ctx.hwnd, WM_LOAD_COMPLETE, 0, @bitCast(@intFromPtr(result)));
-    std.heap.page_allocator.destroy(ctx);
+    if (!postCompletion(ctx.hwnd, WM_LOAD_COMPLETE, ctx)) {
+        if (ctx.result.graph) |owned_graph| rtmify_free(owned_graph);
+        std.heap.page_allocator.destroy(ctx);
+    }
 }
 
 fn generateWorker(ctx: *GenerateContext) void {
-    const result = std.heap.page_allocator.create(GenerateResult) catch {
-        std.heap.page_allocator.destroy(ctx);
-        return;
-    };
-    result.* = .{
-        .status = RTMIFY_OK,
-        .error_message = std.mem.zeroes([512:0]u8),
-    };
     var i: usize = 0;
     while (i < ctx.count) : (i += 1) {
-        result.status = rtmify_generate(
+        ctx.result.status = rtmify_generate(
             ctx.graph,
             &ctx.formats[i],
             &ctx.output_paths[i],
             &ctx.project_name,
         );
-        if (result.status != RTMIFY_OK) {
-            copyLastError(&result.error_message);
+        if (ctx.result.status != RTMIFY_OK) {
+            copyLastError(&ctx.result.error_message);
             break;
         }
     }
-    _ = PostMessageW(ctx.hwnd, WM_GENERATE_COMPLETE, 0, @bitCast(@intFromPtr(result)));
-    std.heap.page_allocator.destroy(ctx);
+    if (!postCompletion(ctx.hwnd, WM_GENERATE_COMPLETE, ctx)) {
+        std.heap.page_allocator.destroy(ctx);
+    }
 }
 
 fn licenseInstallWorker(ctx: *LicenseInstallContext) void {
-    const result = std.heap.page_allocator.create(LicenseInstallResult) catch {
-        std.heap.page_allocator.destroy(ctx);
-        return;
-    };
-    result.* = .{
-        .status = RTMIFY_ERR_LICENSE,
-        .error_message = std.mem.zeroes([512:0]u8),
-    };
     var license_status: RtmifyLicenseStatus = undefined;
     const api_status = rtmify_trace_license_install(&ctx.path, &license_status);
-    result.status = if (api_status == 0 and license_status.permits_use != 0) RTMIFY_OK else RTMIFY_ERR_LICENSE;
-    if (result.status != RTMIFY_OK) {
-        copyLastError(&result.error_message);
+    ctx.result.status = if (api_status == 0 and license_status.permits_use != 0) RTMIFY_OK else RTMIFY_ERR_LICENSE;
+    if (ctx.result.status != RTMIFY_OK) {
+        copyLastError(&ctx.result.error_message);
     }
-    _ = PostMessageW(ctx.hwnd, WM_LICENSE_COMPLETE, 0, @bitCast(@intFromPtr(result)));
-    std.heap.page_allocator.destroy(ctx);
+    if (!postCompletion(ctx.hwnd, WM_LICENSE_COMPLETE, ctx)) {
+        std.heap.page_allocator.destroy(ctx);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Spawn helpers — allocate context, detach thread
 // ---------------------------------------------------------------------------
 
-pub fn spawnLoad(hwnd: HWND, path: []const u8, profile: RtmifyProfile) void {
-    const ctx = std.heap.page_allocator.create(LoadContext) catch return;
-    ctx.hwnd = hwnd;
-    ctx.path_utf8 = std.mem.zeroes([1024:0]u8);
-    ctx.profile = profile;
+pub fn spawnLoad(hwnd: HWND, path: []const u8, profile: RtmifyProfile) SpawnError!void {
+    const ctx = std.heap.page_allocator.create(LoadContext) catch return error.OutOfMemory;
+    ctx.* = .{
+        .hwnd = hwnd,
+        .path_utf8 = std.mem.zeroes([1024:0]u8),
+        .profile = profile,
+    };
     const n = @min(path.len, 1023);
     @memcpy(ctx.path_utf8[0..n], path[0..n]);
     const thread = std.Thread.spawn(.{}, loadWorker, .{ctx}) catch {
         std.heap.page_allocator.destroy(ctx);
-        return;
+        return error.ThreadSpawnFailed;
     };
     thread.detach();
 }
@@ -260,14 +251,16 @@ pub fn spawnGenerate(
     formats: []const []const u8,
     output_paths: []const []const u8,
     project: []const u8,
-) void {
-    const ctx = std.heap.page_allocator.create(GenerateContext) catch return;
-    ctx.hwnd = hwnd;
-    ctx.graph = graph;
-    ctx.count = @min(formats.len, 3);
-    ctx.formats = std.mem.zeroes([3][8:0]u8);
-    ctx.output_paths = std.mem.zeroes([3][1024:0]u8);
-    ctx.project_name = std.mem.zeroes([256:0]u8);
+) SpawnError!void {
+    const ctx = std.heap.page_allocator.create(GenerateContext) catch return error.OutOfMemory;
+    ctx.* = .{
+        .hwnd = hwnd,
+        .graph = graph,
+        .formats = std.mem.zeroes([3][8:0]u8),
+        .output_paths = std.mem.zeroes([3][1024:0]u8),
+        .project_name = std.mem.zeroes([256:0]u8),
+        .count = @min(formats.len, 3),
+    };
 
     var i: usize = 0;
     while (i < ctx.count) : (i += 1) {
@@ -281,20 +274,22 @@ pub fn spawnGenerate(
 
     const thread = std.Thread.spawn(.{}, generateWorker, .{ctx}) catch {
         std.heap.page_allocator.destroy(ctx);
-        return;
+        return error.ThreadSpawnFailed;
     };
     thread.detach();
 }
 
-pub fn spawnInstallLicense(hwnd: HWND, path: []const u8) void {
-    const ctx = std.heap.page_allocator.create(LicenseInstallContext) catch return;
-    ctx.hwnd = hwnd;
-    ctx.path = std.mem.zeroes([1024:0]u8);
+pub fn spawnInstallLicense(hwnd: HWND, path: []const u8) SpawnError!void {
+    const ctx = std.heap.page_allocator.create(LicenseInstallContext) catch return error.OutOfMemory;
+    ctx.* = .{
+        .hwnd = hwnd,
+        .path = std.mem.zeroes([1024:0]u8),
+    };
     const n = @min(path.len, 1023);
     @memcpy(ctx.path[0..n], path[0..n]);
     const thread = std.Thread.spawn(.{}, licenseInstallWorker, .{ctx}) catch {
         std.heap.page_allocator.destroy(ctx);
-        return;
+        return error.ThreadSpawnFailed;
     };
     thread.detach();
 }

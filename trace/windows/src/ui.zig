@@ -92,6 +92,7 @@ const ES_LEFT: DWORD = 0x0000;
 const ES_AUTOHSCROLL: DWORD = 0x0080;
 const ES_MULTILINE: DWORD = 0x0004;
 const ES_READONLY: DWORD = 0x0800;
+const ES_AUTOVSCROLL: DWORD = 0x0040;
 
 const SS_LEFT: DWORD = 0x00000000;
 const SS_CENTER: DWORD = 0x00000001;
@@ -218,6 +219,11 @@ pub var again_btn: ?*anyopaque = null;
 
 // Stored font handle for cleanup
 pub var g_hfont: ?*anyopaque = null;
+pub var g_title_hfont: ?*anyopaque = null;
+
+pub const CreateControlsError = error{
+    ControlCreationFailed,
+};
 
 // ---------------------------------------------------------------------------
 // DPI-scaled layout helpers
@@ -247,11 +253,15 @@ fn toUtf16Z(comptime s: []const u8) [*:0]const u16 {
 pub extern "user32" fn EnableWindow(hWnd: *anyopaque, bEnable: BOOL) callconv(.winapi) BOOL;
 pub extern "user32" fn ShowWindow(hWnd: *anyopaque, nCmdShow: c_int) callconv(.winapi) BOOL;
 
+fn requireControl(handle: ?*anyopaque) CreateControlsError!*anyopaque {
+    return handle orelse error.ControlCreationFailed;
+}
+
 // ---------------------------------------------------------------------------
 // createControls — called once in WM_CREATE
 // ---------------------------------------------------------------------------
 
-pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
+pub fn createControls(hwnd: HWND, hinstance: *anyopaque) CreateControlsError!void {
     const dpi = GetDpiForWindow(hwnd);
 
     // Class names as sentinel-terminated UTF-16 literals
@@ -262,44 +272,45 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
 
     // --- License gate controls ---
 
-    import_license_btn = CreateWindowExW(
+    import_license_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Import License File"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-        sc(90, dpi), sc(205, dpi), sc(300, dpi), sc(32, dpi),
+        sc(24, dpi), sc(264, dpi), sc(208, dpi), sc(34, dpi),
         hwnd, @ptrFromInt(IDC_IMPORT_LICENSE_BTN), hinstance, null,
-    );
+    ));
 
-    clear_license_btn = CreateWindowExW(
+    clear_license_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Clear Installed License"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-        sc(90, dpi), sc(245, dpi), sc(300, dpi), sc(28, dpi),
+        sc(248, dpi), sc(264, dpi), sc(208, dpi), sc(34, dpi),
         hwnd, @ptrFromInt(IDC_CLEAR_LICENSE_BTN), hinstance, null,
-    );
+    ));
 
-    activ_err = CreateWindowExW(
-        0,
-        CLS_STATIC,
-        null,
-        WS_CHILD | SS_LEFT | SS_WORDELLIPSIS,
-        sc(60, dpi), sc(285, dpi), sc(360, dpi), sc(40, dpi),
+    activ_err = try requireControl(CreateWindowExW(
+        0x0200, // WS_EX_CLIENTEDGE
+        CLS_EDIT,
+        toUtf16Z(""),
+        WS_CHILD | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
+        sc(24, dpi), sc(154, dpi), sc(432, dpi), sc(92, dpi),
         hwnd, @ptrFromInt(IDC_ACTIV_ERR), hinstance, null,
-    );
+    ));
 
     // --- Drop zone controls ---
 
-    profile_combo = CreateWindowExW(
+    profile_combo = try requireControl(CreateWindowExW(
         0,
         CLS_COMBO,
         null,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
         sc(20, dpi), sc(272, dpi), sc(180, dpi), sc(220, dpi),
         hwnd, @ptrFromInt(IDC_PROFILE_COMBO), hinstance, null,
-    );
-    if (profile_combo) |combo| {
+    ));
+    {
+        const combo = profile_combo.?;
         const combo_strs = [_][*:0]const u16{
             toUtf16Z("Generic"),
             toUtf16Z("Medical"),
@@ -312,15 +323,16 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         _ = SendMessageW(combo, CB_SETCURSEL, 0, 0);
     }
 
-    format_combo = CreateWindowExW(
+    format_combo = try requireControl(CreateWindowExW(
         0,
         CLS_COMBO,
         null,
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | CBS_HASSTRINGS,
         sc(220, dpi), sc(272, dpi), sc(180, dpi), sc(220, dpi),
         hwnd, @ptrFromInt(IDC_FORMAT_COMBO), hinstance, null,
-    );
-    if (format_combo) |combo| {
+    ));
+    {
+        const combo = format_combo.?;
         const combo_strs = [_][*:0]const u16{
             toUtf16Z("PDF"),
             toUtf16Z("Word (.docx)"),
@@ -333,79 +345,79 @@ pub fn createControls(hwnd: HWND, hinstance: *anyopaque) void {
         _ = SendMessageW(combo, CB_SETCURSEL, 0, 0);
     }
 
-    browse_btn = CreateWindowExW(
+    browse_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Browse..."),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         sc(20, dpi), sc(308, dpi), sc(120, dpi), sc(28, dpi),
         hwnd, @ptrFromInt(IDC_BROWSE_BTN), hinstance, null,
-    );
+    ));
 
-    generate_btn = CreateWindowExW(
+    generate_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Generate"),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_DISABLED | BS_PUSHBUTTON,
         sc(153, dpi), sc(308, dpi), sc(140, dpi), sc(28, dpi),
         hwnd, @ptrFromInt(IDC_GENERATE_BTN), hinstance, null,
-    );
+    ));
 
-    clear_btn = CreateWindowExW(
+    clear_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Clear"),
         WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
         sc(306, dpi), sc(308, dpi), sc(94, dpi), sc(28, dpi),
         hwnd, @ptrFromInt(IDC_CLEAR_BTN), hinstance, null,
-    );
+    ));
 
-    status_text = CreateWindowExW(
+    status_text = try requireControl(CreateWindowExW(
         0,
         CLS_STATIC,
         null,
         WS_CHILD | WS_VISIBLE | SS_LEFT,
         sc(20, dpi), sc(344, dpi), sc(380, dpi), sc(36, dpi),
         hwnd, @ptrFromInt(IDC_STATUS_TEXT), hinstance, null,
-    );
+    ));
 
     // --- Done controls ---
 
-    output_text = CreateWindowExW(
+    output_text = try requireControl(CreateWindowExW(
         0x0200, // WS_EX_CLIENTEDGE
         CLS_EDIT,
         null,
         WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_LEFT,
         sc(20, dpi), sc(20, dpi), sc(440, dpi), sc(220, dpi),
         hwnd, @ptrFromInt(IDC_OUTPUT_TEXT), hinstance, null,
-    );
+    ));
 
-    show_btn = CreateWindowExW(
+    show_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Show in Explorer"),
         WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
         sc(20, dpi), sc(255, dpi), sc(140, dpi), sc(35, dpi),
         hwnd, @ptrFromInt(IDC_SHOW_BTN), hinstance, null,
-    );
+    ));
 
-    open_btn = CreateWindowExW(
+    open_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Open"),
         WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
         sc(173, dpi), sc(255, dpi), sc(140, dpi), sc(35, dpi),
         hwnd, @ptrFromInt(IDC_OPEN_BTN), hinstance, null,
-    );
+    ));
 
-    again_btn = CreateWindowExW(
+    again_btn = try requireControl(CreateWindowExW(
         0,
         CLS_BTN,
         toUtf16Z("Generate Another"),
         WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON,
         sc(326, dpi), sc(255, dpi), sc(134, dpi), sc(35, dpi),
         hwnd, @ptrFromInt(IDC_AGAIN_BTN), hinstance, null,
-    );
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -419,6 +431,10 @@ pub fn setFont(hwnd: HWND) void {
     _ = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, &ncm, 0);
     const hf = CreateFontIndirectW(&ncm.lfMessageFont) orelse return;
     g_hfont = hf;
+    var title_font = ncm.lfMessageFont;
+    title_font.lfWeight = 700;
+    title_font.lfHeight = @divTrunc(title_font.lfHeight * 3, 2);
+    g_title_hfont = CreateFontIndirectW(&title_font);
 
     // Apply to all child controls
     const ctls = [_]?*anyopaque{
@@ -523,6 +539,15 @@ pub fn getSelectedFormat() state.Format {
     return .pdf;
 }
 
+test "requireControl rejects null handle" {
+    try std.testing.expectError(error.ControlCreationFailed, requireControl(null));
+}
+
+test "requireControl returns non-null handle" {
+    const handle = try requireControl(@ptrFromInt(1));
+    try std.testing.expectEqual(@as(usize, 1), @intFromPtr(handle));
+}
+
 pub fn getSelectedProfile() bridge.RtmifyProfile {
     if (profile_combo) |c| {
         const sel = SendMessageW(c, CB_GETCURSEL, 0, 0);
@@ -583,49 +608,85 @@ pub fn paint(hwnd: HWND, app_state: *const state.AppState) void {
 
 fn paintLicenseGate(hdc: HDC, client: *const RECT) void {
     _ = SetBkMode(hdc, TRANSPARENT_MODE);
+    const card = RECT{
+        .left = 16,
+        .top = 16,
+        .right = client.right - 16,
+        .bottom = client.bottom - 16,
+    };
+    const card_bg = CreateSolidBrush(0x00FFFFFF);
+    defer _ = DeleteObject(card_bg);
+    _ = FillRect(hdc, &card, card_bg);
+    const card_border = CreateSolidBrush(0x00D9E1E8);
+    defer _ = DeleteObject(card_border);
+    _ = FrameRect(hdc, &card, card_border);
 
-    // Title
-    const title = comptime makeW("RTMify Trace");
+    const title_font = if (g_title_hfont) |hf| SelectObject(hdc, hf) else null;
+    const title = comptime makeW("License Required");
     var title_rect = RECT{
-        .left = 0,
-        .top = @divTrunc(client.bottom, 6),
-        .right = client.right,
-        .bottom = @divTrunc(client.bottom, 6) + 60,
+        .left = 24,
+        .top = 24,
+        .right = client.right - 24,
+        .bottom = 54,
     };
-    _ = SetTextColor(hdc, 0x001A1A2E); // --dark
-    _ = DrawTextW(hdc, &title, @intCast(title.len - 1), &title_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    _ = SetTextColor(hdc, 0x00181F2C);
+    _ = DrawTextW(hdc, &title, @intCast(title.len - 1), &title_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    if (title_font) |font| _ = SelectObject(hdc, font);
 
-    // Subtitle
-    const sub = comptime makeW("Import a signed RTMify Trace license file, or place it at ~/.rtmify/license.json.");
-    var sub_rect = RECT{
-        .left = 60,
-        .top = title_rect.bottom + 20,
-        .right = client.right - 60,
-        .bottom = title_rect.bottom + 72,
-    };
-    _ = SetTextColor(hdc, 0x00555555);
-    _ = DrawTextW(hdc, &sub, @intCast(sub.len - 1), &sub_rect, DT_CENTER | DT_WORDBREAK);
+    if (g_hfont) |hf| _ = SelectObject(hdc, hf);
 
-    const free_run = comptime makeW("Trace allows one full free run. After the first successful report, import a license file to continue.");
-    var free_run_rect = RECT{
-        .left = 40,
-        .top = title_rect.bottom + 88,
-        .right = client.right - 40,
-        .bottom = title_rect.bottom + 145,
+    const subtitle = comptime makeW("Install a signed RTMify Trace license file to unlock workbook analysis and report generation.");
+    var subtitle_rect = RECT{
+        .left = 24,
+        .top = 62,
+        .right = client.right - 24,
+        .bottom = 102,
     };
-    _ = SetTextColor(hdc, 0x00555555);
-    _ = DrawTextW(hdc, &free_run, @intCast(free_run.len - 1), &free_run_rect, DT_CENTER | DT_WORDBREAK);
+    _ = SetTextColor(hdc, 0x00535D6C);
+    _ = DrawTextW(hdc, &subtitle, @intCast(subtitle.len - 1), &subtitle_rect, DT_LEFT | DT_WORDBREAK);
 
-    // "Need a license?" link text (bottom)
-    const link = comptime makeW("Need a license? Visit rtmify.io/pricing");
-    var link_rect = RECT{
-        .left = 0,
-        .top = client.bottom - 60,
-        .right = client.right,
-        .bottom = client.bottom - 40,
+    const hint = comptime makeW("You can also place the signed file at ~/.rtmify/license.json.");
+    var hint_rect = RECT{
+        .left = 24,
+        .top = 108,
+        .right = client.right - 24,
+        .bottom = 128,
     };
-    _ = SetTextColor(hdc, 0x00C0651A); // blue-ish
-    _ = DrawTextW(hdc, &link, @intCast(link.len - 1), &link_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    _ = SetTextColor(hdc, 0x006A7482);
+    _ = DrawTextW(hdc, &hint, @intCast(hint.len - 1), &hint_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    const status = comptime makeW("Status");
+    var status_rect = RECT{
+        .left = 24,
+        .top = 132,
+        .right = 120,
+        .bottom = 152,
+    };
+    _ = SetTextColor(hdc, 0x00384452);
+    _ = DrawTextW(hdc, &status, @intCast(status.len - 1), &status_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    const footer_rect = RECT{
+        .left = 24,
+        .top = 312,
+        .right = client.right - 24,
+        .bottom = client.bottom - 24,
+    };
+    const footer_bg = CreateSolidBrush(0x00F5F8FB);
+    defer _ = DeleteObject(footer_bg);
+    _ = FillRect(hdc, &footer_rect, footer_bg);
+    const footer_border = CreateSolidBrush(0x00E3EAF1);
+    defer _ = DeleteObject(footer_border);
+    _ = FrameRect(hdc, &footer_rect, footer_border);
+
+    const footer = comptime makeW("RTMify Trace includes one full free run. After the first successful report, import a signed license file to continue.");
+    var footer_text_rect = RECT{
+        .left = footer_rect.left + 12,
+        .top = footer_rect.top + 10,
+        .right = footer_rect.right - 12,
+        .bottom = footer_rect.bottom - 10,
+    };
+    _ = SetTextColor(hdc, 0x00535D6C);
+    _ = DrawTextW(hdc, &footer, @intCast(footer.len - 1), &footer_text_rect, DT_LEFT | DT_WORDBREAK | DT_VCENTER);
 }
 
 fn paintDropZone(hdc: HDC, client: *const RECT, app_state: *const state.AppState) void {

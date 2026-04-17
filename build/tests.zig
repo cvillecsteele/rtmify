@@ -41,6 +41,24 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     });
     const run_windows_trace_state_tests = b.addRunArtifact(windows_trace_state_tests);
 
+    const windows_trace_dialog_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trace/windows/src/dialogs.zig"),
+            .target = ctx.target,
+            .optimize = ctx.optimize,
+        }),
+    });
+    const run_windows_trace_dialog_tests = b.addRunArtifact(windows_trace_dialog_tests);
+
+    const windows_trace_ui_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("trace/windows/src/ui.zig"),
+            .target = ctx.target,
+            .optimize = ctx.optimize,
+        }),
+    });
+    const run_windows_trace_ui_tests = b.addRunArtifact(windows_trace_ui_tests);
+
     const live_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("live/src/lib_live.zig"),
@@ -133,12 +151,23 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     });
     const run_windows_license_gate_tests = b.addRunArtifact(windows_license_gate_tests);
 
+    const windows_tray_menu_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("live/windows/src/tray_menu.zig"),
+            .target = ctx.target,
+            .optimize = ctx.optimize,
+        }),
+    });
+    const run_windows_tray_menu_tests = b.addRunArtifact(windows_tray_menu_tests);
+
     const test_lib_step = b.step("test-lib", "Run librtmify unit tests");
     test_lib_step.dependOn(&run_lib_tests.step);
 
     const test_trace_step = b.step("test-trace", "Run trace CLI unit tests");
     test_trace_step.dependOn(&run_trace_tests.step);
     test_trace_step.dependOn(&run_windows_trace_state_tests.step);
+    test_trace_step.dependOn(&run_windows_trace_dialog_tests.step);
+    test_trace_step.dependOn(&run_windows_trace_ui_tests.step);
 
     const test_live_step = b.step("test-live", "Run live module unit tests");
     test_live_step.dependOn(&run_live_tests.step);
@@ -146,6 +175,7 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     test_live_step.dependOn(&run_windows_process_tests.step);
     test_live_step.dependOn(&run_windows_status_probe_tests.step);
     test_live_step.dependOn(&run_windows_license_gate_tests.step);
+    test_live_step.dependOn(&run_windows_tray_menu_tests.step);
 
     const test_cadcruncher_step = b.step("test-cadcruncher", "Run libcadcruncher unit tests");
     test_cadcruncher_step.dependOn(&run_cadcruncher_tests.step);
@@ -161,11 +191,14 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_trace_tests.step);
     test_step.dependOn(&run_windows_trace_state_tests.step);
+    test_step.dependOn(&run_windows_trace_dialog_tests.step);
+    test_step.dependOn(&run_windows_trace_ui_tests.step);
     test_step.dependOn(&run_live_tests.step);
     test_step.dependOn(&run_windows_lifecycle_tests.step);
     test_step.dependOn(&run_windows_process_tests.step);
     test_step.dependOn(&run_windows_status_probe_tests.step);
     test_step.dependOn(&run_windows_license_gate_tests.step);
+    test_step.dependOn(&run_windows_tray_menu_tests.step);
     test_step.dependOn(&run_cadcruncher_tests.step);
     test_step.dependOn(&run_reqif_tests.step);
     test_step.dependOn(&run_llm_tests.step);

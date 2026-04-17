@@ -39,7 +39,7 @@ cd /Users/colinsteele/Projects/rtmify/sys
 ./release.sh
 ```
 
-The final Windows installer is built by `.github/workflows/windows-installer-packaging.yml`, not on macOS. The operator flow is documented in [release-operations.md](/Users/colinsteele/Projects/rtmify/sys/docs/release-operations.md).
+The final Windows installer is built by `.github/workflows/windows-installer-packaging.yml`, not on macOS. The full pipeline is automated by `tools/publish.py release`. See [release-operations.md](/Users/colinsteele/Projects/rtmify/sys/docs/release-operations.md).
 
 ## Development Licensing
 

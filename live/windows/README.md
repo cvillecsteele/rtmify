@@ -48,8 +48,8 @@ That script resolves the signing key once, builds the native binaries and apps,
 generates smoke licenses, and verifies those licenses against the binaries from
 that same run before packaging artifacts. The Windows installer itself is not
 built on macOS; it is built in GitHub Actions from the staged Windows payload
-zip and then signed locally during the final `package.sh --windows-unsigned-dir`
-step. See [release-operations.md](/Users/colinsteele/Projects/rtmify/sys/docs/release-operations.md).
+zip and then signed locally. The full pipeline is automated by
+`tools/publish.py release`. See [release-operations.md](/Users/colinsteele/Projects/rtmify/sys/docs/release-operations.md).
 
 On a native Windows host, also run:
 
@@ -67,6 +67,8 @@ When the user clicks `Start Server`:
 4. then it opens the dashboard in the default browser
 
 If startup fails, the tray shows a specific error message.
+
+When no license is installed, the tray shell does not block startup. It labels the session as preview mode, still allows the server to start and the dashboard to open, and keeps the runtime's existing preview-mode feature locks in place. Installing a valid license while preview is already running restarts the managed runtime and returns it in licensed mode.
 
 ## Native Windows Smoke
 

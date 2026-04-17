@@ -56,6 +56,7 @@ const OPENFILENAMEW = extern struct {
 // ---------------------------------------------------------------------------
 
 extern "comdlg32" fn GetOpenFileNameW(lpofn: *OPENFILENAMEW) callconv(.winapi) BOOL;
+extern "comdlg32" fn CommDlgExtendedError() callconv(.winapi) DWORD;
 
 extern "user32" fn MessageBoxW(
     hWnd: ?HWND,
@@ -63,6 +64,11 @@ extern "user32" fn MessageBoxW(
     lpCaption: [*:0]const u16,
     uType: c_uint,
 ) callconv(.winapi) c_int;
+
+fn selectedPathToUtf8(buf: []u8, path_w: []const u16) ![]u8 {
+    const nbytes = try std.unicode.utf16LeToUtf8(buf, path_w);
+    return buf[0..nbytes];
+}
 
 // ---------------------------------------------------------------------------
 // browseXlsx — shows an Open dialog filtered to *.xlsx
@@ -88,14 +94,21 @@ pub fn browseXlsx(hwnd: HWND, buf: []u8) ?[]u8 {
         .lpstrDefExt = &[_:0]u16{ 'x', 'l', 's', 'x', 0 },
     };
 
-    if (GetOpenFileNameW(&ofn) == 0) return null;
+    if (GetOpenFileNameW(&ofn) == 0) {
+        const err = CommDlgExtendedError();
+        if (err != 0) {
+            showError(hwnd, "Could not open file dialog. Please try again.");
+        }
+        return null;
+    }
 
     // Measure the null-terminated UTF-16 string
     const wlen = std.mem.indexOfScalar(u16, &path_w, 0) orelse path_w.len;
 
-    // Convert to UTF-8 (utf16LeToUtf8 returns !usize in Zig 0.15)
-    const nbytes = std.unicode.utf16LeToUtf8(buf, path_w[0..wlen]) catch return null;
-    return buf[0..nbytes];
+    return selectedPathToUtf8(buf, path_w[0..wlen]) catch {
+        showError(hwnd, "Selected file path could not be read.");
+        return null;
+    };
 }
 
 pub fn browseLicenseJson(hwnd: HWND, buf: []u8) ?[]u8 {
@@ -115,10 +128,19 @@ pub fn browseLicenseJson(hwnd: HWND, buf: []u8) ?[]u8 {
         .lpstrDefExt = &[_:0]u16{ 'j', 's', 'o', 'n', 0 },
     };
 
-    if (GetOpenFileNameW(&ofn) == 0) return null;
+    if (GetOpenFileNameW(&ofn) == 0) {
+        // Distinguish user cancellation (0) from dialog failure (non-zero)
+        const err = CommDlgExtendedError();
+        if (err != 0) {
+            showError(hwnd, "Could not open file dialog. Please try again.");
+        }
+        return null;
+    }
     const wlen = std.mem.indexOfScalar(u16, &path_w, 0) orelse path_w.len;
-    const nbytes = std.unicode.utf16LeToUtf8(buf, path_w[0..wlen]) catch return null;
-    return buf[0..nbytes];
+    return selectedPathToUtf8(buf, path_w[0..wlen]) catch {
+        showError(hwnd, "Selected file path could not be read.");
+        return null;
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -132,4 +154,17 @@ pub fn showError(hwnd: ?HWND, msg_utf8: [*:0]const u8) void {
 
     const caption = [_:0]u16{ 'R', 'T', 'M', 'i', 'f', 'y', ' ', 'T', 'r', 'a', 'c', 'e', 0 };
     _ = MessageBoxW(hwnd, &msg_w, &caption, MB_OK | MB_ICONWARNING);
+}
+
+test "selectedPathToUtf8 converts UTF-16 path" {
+    var buf: [64]u8 = undefined;
+    const path = [_]u16{ 'C', ':', '\\', 't', 'e', 's', 't', '.', 'x', 'l', 's', 'x' };
+    const out = try selectedPathToUtf8(&buf, &path);
+    try std.testing.expectEqualStrings("C:\\test.xlsx", out);
+}
+
+test "selectedPathToUtf8 rejects invalid UTF-16" {
+    var buf: [16]u8 = undefined;
+    const invalid = [_]u16{0xD800};
+    if (selectedPathToUtf8(&buf, &invalid)) |_| return error.ExpectedFailure else |_| {}
 }

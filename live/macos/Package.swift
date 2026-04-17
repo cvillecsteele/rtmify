@@ -18,6 +18,7 @@ let package = Package(
                 "ViewModel.swift",
                 "LicenseGateView.swift",
                 "MenuBarView.swift",
+                "RTMify Live.entitlements",
                 "Assets.xcassets",
                 "Info.plist",
                 "Resources",

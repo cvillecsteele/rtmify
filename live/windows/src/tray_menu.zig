@@ -35,16 +35,44 @@ fn W(comptime s: []const u8) [:0]const u16 {
     return std.unicode.utf8ToUtf16LeStringLiteral(s);
 }
 
-pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool, server_error: []const u8) usize {
+fn toWideLabel(text: []const u8, buf: []u16) [*:0]const u16 {
+    @memset(buf, 0);
+    const wide_len = std.unicode.utf8ToUtf16Le(buf[0 .. buf.len - 1], text) catch 0;
+    buf[wide_len] = 0;
+    return @ptrCast(buf.ptr);
+}
+
+pub fn statusLabelText(srv_state: state.ServerState, licensed: bool) []const u8 {
+    return switch (srv_state) {
+        .license_gate, .stopped => if (licensed) "Server stopped" else "Preview mode",
+        .starting => if (licensed) "Starting..." else "Starting preview...",
+        .running => if (licensed) "Running" else "Preview running",
+        .@"error" => "Error",
+    };
+}
+
+pub fn startActionLabel(licensed: bool) []const u8 {
+    return if (licensed) "Start Server" else "Start Preview";
+}
+
+pub fn licenseActionLabel(licensed: bool) []const u8 {
+    return if (licensed) "Manage License..." else "Install License File...";
+}
+
+pub fn showMenu(
+    hwnd: HWND,
+    srv_state: state.ServerState,
+    licensed: bool,
+    launch_at_login: bool,
+    server_error: []const u8,
+) usize {
     const menu = CreatePopupMenu() orelse return 0;
     defer _ = DestroyMenu(menu);
 
     var dynamic_status: [256:0]u16 = std.mem.zeroes([256:0]u16);
+    var dynamic_start: [64:0]u16 = std.mem.zeroes([64:0]u16);
+    var dynamic_license: [64:0]u16 = std.mem.zeroes([64:0]u16);
     const status_label: [*:0]const u16 = switch (srv_state) {
-        .license_gate => W("License required"),
-        .stopped => W("Server stopped"),
-        .starting => W("Starting..."),
-        .running => W("Running"),
         .@"error" => blk: {
             if (server_error.len == 0) break :blk W("Error");
             const prefix = "Error: ";
@@ -54,19 +82,17 @@ pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool,
             dynamic_status[wide_len] = 0;
             break :blk &dynamic_status;
         },
+        else => toWideLabel(statusLabelText(srv_state, licensed), &dynamic_status),
     };
     _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, status_label);
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, null);
 
     switch (srv_state) {
-        .license_gate => {
-            _ = AppendMenuW(menu, MF_STRING, CMD_LICENSE, W("Import License File..."));
-        },
-        .stopped, .@"error" => {
-            _ = AppendMenuW(menu, MF_STRING, CMD_START, W("Start Server"));
+        .license_gate, .stopped, .@"error" => {
+            _ = AppendMenuW(menu, MF_STRING, CMD_START, toWideLabel(startActionLabel(licensed), &dynamic_start));
         },
         .starting => {
-            _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, W("Starting..."));
+            _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, toWideLabel(statusLabelText(.starting, licensed), &dynamic_start));
         },
         .running => {
             _ = AppendMenuW(menu, MF_STRING, CMD_OPEN_DASHBOARD, W("Open Dashboard"));
@@ -74,6 +100,8 @@ pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool,
         },
     }
 
+    _ = AppendMenuW(menu, MF_SEPARATOR, 0, null);
+    _ = AppendMenuW(menu, MF_STRING, CMD_LICENSE, toWideLabel(licenseActionLabel(licensed), &dynamic_license));
     _ = AppendMenuW(menu, MF_SEPARATOR, 0, null);
 
     const login_flags: UINT = if (launch_at_login) MF_STRING | MF_CHECKED else MF_STRING;
@@ -88,4 +116,19 @@ pub fn showMenu(hwnd: HWND, srv_state: state.ServerState, launch_at_login: bool,
 
     const cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, null);
     return if (cmd > 0) @intCast(cmd) else 0;
+}
+
+test "status label reflects preview and licensed modes" {
+    try std.testing.expectEqualStrings("Preview mode", statusLabelText(.stopped, false));
+    try std.testing.expectEqualStrings("Server stopped", statusLabelText(.stopped, true));
+    try std.testing.expectEqualStrings("Starting preview...", statusLabelText(.starting, false));
+    try std.testing.expectEqualStrings("Running", statusLabelText(.running, true));
+    try std.testing.expectEqualStrings("Preview running", statusLabelText(.running, false));
+}
+
+test "action labels reflect preview and licensed modes" {
+    try std.testing.expectEqualStrings("Start Preview", startActionLabel(false));
+    try std.testing.expectEqualStrings("Start Server", startActionLabel(true));
+    try std.testing.expectEqualStrings("Install License File...", licenseActionLabel(false));
+    try std.testing.expectEqualStrings("Manage License...", licenseActionLabel(true));
 }

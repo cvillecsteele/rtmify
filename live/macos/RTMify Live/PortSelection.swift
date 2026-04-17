@@ -60,3 +60,31 @@ struct LicenseStatusPayload: Equatable {
         )
     }
 }
+
+struct MenuBarPresentation {
+    static func stoppedLabel(permitsUse: Bool) -> String {
+        permitsUse ? "Server stopped" : "Preview mode"
+    }
+
+    static func startingLabel(permitsUse: Bool) -> String {
+        permitsUse ? "Starting…" : "Starting preview…"
+    }
+
+    static func restartingLabel(attempt: Int, maxAttempts: Int, permitsUse: Bool) -> String {
+        let prefix = permitsUse ? "Restarting server" : "Restarting preview"
+        return "\(prefix) (attempt \(attempt)/\(maxAttempts))…"
+    }
+
+    static func runningLabel(port: Int, permitsUse: Bool) -> String {
+        let prefix = permitsUse ? "Running" : "Preview running"
+        return "\(prefix) on :\(port)"
+    }
+
+    static func startActionLabel(permitsUse: Bool) -> String {
+        permitsUse ? "Start Server" : "Start Preview"
+    }
+
+    static func licenseActionLabel(permitsUse: Bool) -> String {
+        permitsUse ? "Manage License…" : "Install License File…"
+    }
+}
