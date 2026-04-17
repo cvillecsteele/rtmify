@@ -67,6 +67,28 @@ pub fn isLicenseExempt(method: std.http.Method, path: []const u8) bool {
     return routeAccess(method, path) != .requires_license;
 }
 
+pub fn requiredFeatureForRoute(path: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, path, "/report/")) return "Reports";
+    if (std.mem.eql(u8, path, "/mcp") or std.mem.startsWith(u8, path, "/mcp/")) return "MCP";
+    if (std.mem.eql(u8, path, "/api/repos") or std.mem.startsWith(u8, path, "/api/repos/")) return "Repository Scanning";
+    if (std.mem.eql(u8, path, "/query/code-traceability") or
+        std.mem.eql(u8, path, "/query/file-annotations") or
+        std.mem.eql(u8, path, "/query/unimplemented-requirements") or
+        std.mem.eql(u8, path, "/query/untested-source-files") or
+        std.mem.eql(u8, path, "/query/recent-commits"))
+    {
+        return "Code Traceability";
+    }
+    if (std.mem.eql(u8, path, "/api/design-bom-sync") or
+        std.mem.eql(u8, path, "/api/design-bom-sync/validate") or
+        std.mem.eql(u8, path, "/api/soup-sync") or
+        std.mem.eql(u8, path, "/api/soup-sync/validate"))
+    {
+        return "Background Sync";
+    }
+    return "Licensed Feature";
+}
+
 pub fn requiresActiveWorkbook(method: std.http.Method, path: []const u8) bool {
     _ = method;
     return !(std.mem.eql(u8, path, "/") or
@@ -104,4 +126,13 @@ test "license exemptions include app js bootstrap asset" {
 test "shouldLogHttpRequest suppresses only mcp polling" {
     try testing.expect(!shouldLogHttpRequest(.GET, "/mcp"));
     try testing.expect(shouldLogHttpRequest(.GET, "/api/status"));
+}
+
+test "required feature labels map restricted route groups" {
+    try testing.expectEqualStrings("Reports", requiredFeatureForRoute("/report/rtm"));
+    try testing.expectEqualStrings("MCP", requiredFeatureForRoute("/mcp"));
+    try testing.expectEqualStrings("Repository Scanning", requiredFeatureForRoute("/api/repos/scan"));
+    try testing.expectEqualStrings("Code Traceability", requiredFeatureForRoute("/query/code-traceability"));
+    try testing.expectEqualStrings("Background Sync", requiredFeatureForRoute("/api/design-bom-sync"));
+    try testing.expectEqualStrings("Licensed Feature", requiredFeatureForRoute("/api/unknown-restricted"));
 }

@@ -101,8 +101,9 @@ pub fn handleRequest(req: *std.http.Server.Request, ctx: types.ServerCtx) !void 
         const active_runtime = active_runtime_opt.?;
         active_runtime.sync_state.product_enabled.store(license_status.permits_use, .seq_cst);
         if (!license_status.permits_use) {
-            const body = try std.fmt.allocPrint(alloc, "{{\"error\":\"license_required\",\"license_state\":\"{s}\"}}", .{
+            const body = try std.fmt.allocPrint(alloc, "{{\"error\":\"license_required\",\"license_state\":\"{s}\",\"required_feature\":\"{s}\"}}", .{
                 @tagName(license_status.state),
+                policy.requiredFeatureForRoute(path),
             });
             response_status = .forbidden;
             response_bytes = body.len;

@@ -1,5 +1,6 @@
 import { createSyncSettingsController } from '/modules/sync-settings.js';
 import { esc, formatUnixTimestamp, propsObj } from '/modules/helpers.js';
+import { openProtectedUrl } from '/modules/license.js';
 import { soupState } from '/modules/state.js';
 import { authenticatedApiFetch } from '/modules/uploads.js';
 
@@ -360,7 +361,7 @@ export async function loadSoupSafetyClasses() {
   }
 }
 
-export function downloadSoupReport(format = 'md') {
+export async function downloadSoupReport(format = 'md') {
   const productEl = document.getElementById('report-soup-product');
   const nameEl = document.getElementById('report-soup-name');
   const includeObsolete = !!document.getElementById('software-boms-include-obsolete')?.checked;
@@ -375,7 +376,7 @@ export function downloadSoupReport(format = 'md') {
   const query = new URLSearchParams({ full_product_identifier: fullProductIdentifier, bom_name: bomName });
   if (includeObsolete) query.set('include_obsolete', 'true');
   const path = format === 'pdf' ? '/report/soup' : (format === 'docx' ? '/report/soup.docx' : '/report/soup.md');
-  window.location.href = `${path}?${query.toString()}`;
+  await openProtectedUrl(`${path}?${query.toString()}`, { requiredFeature: 'Reports' });
 }
 
 function toggleSyncKind(prefix) {

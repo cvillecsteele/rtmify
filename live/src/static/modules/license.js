@@ -1,4 +1,4 @@
-import { licenseStatusCache, setLicenseStatusCache } from '/modules/state.js';
+import { currentStatus, licenseStatusCache, setLicenseStatusCache } from '/modules/state.js';
 
 const hooks = {
   loadStatus: null,
@@ -70,6 +70,7 @@ export function syncLicenseInfo(status) {
 
 export function showLicenseGate(status, errorMessage = '') {
   setLicenseStatusCache(status || licenseStatusCache);
+  hideLicenseRequiredPrompt();
   const gate = document.getElementById('license-gate');
   const stateEl = document.getElementById('license-gate-state');
   const errEl = document.getElementById('license-gate-error');
@@ -86,6 +87,84 @@ export function showLicenseGate(status, errorMessage = '') {
 
 export function hideLicenseGate() {
   document.getElementById('license-gate')?.classList.remove('visible');
+}
+
+export class LicenseRequiredError extends Error {
+  constructor(requiredFeature, licenseState = null) {
+    super(`${requiredFeature} requires a license.`);
+    this.name = 'LicenseRequiredError';
+    this.requiredFeature = requiredFeature;
+    this.licenseState = licenseState;
+  }
+}
+
+export function isLicenseRequiredError(error) {
+  return error instanceof LicenseRequiredError;
+}
+
+function lockedFeatureSummary() {
+  return (currentStatus?.license_required_features || []).join(', ') ||
+    'MCP, Reports, Repository Scanning, Code Traceability, Background Sync';
+}
+
+export function showLicenseRequiredPrompt(requiredFeature = 'Licensed Feature') {
+  const prompt = document.getElementById('license-required-prompt');
+  const titleEl = document.getElementById('license-required-title');
+  const messageEl = document.getElementById('license-required-message');
+  const summaryEl = document.getElementById('license-required-summary');
+  if (titleEl) titleEl.textContent = `${requiredFeature} requires a license`;
+  if (messageEl) {
+    messageEl.textContent = `Live can keep running in preview mode, but ${requiredFeature} is disabled until a signed RTMify Live license is installed.`;
+  }
+  if (summaryEl) summaryEl.textContent = lockedFeatureSummary();
+  prompt?.classList.add('visible');
+  document.getElementById('license-required-install-btn')?.focus();
+}
+
+export function hideLicenseRequiredPrompt() {
+  document.getElementById('license-required-prompt')?.classList.remove('visible');
+}
+
+export function activateLockedFeature(element, event = null) {
+  const requiredFeature = element?.dataset?.requiredFeature;
+  if (!requiredFeature || element?.getAttribute('aria-disabled') !== 'true') return false;
+  event?.preventDefault?.();
+  event?.stopPropagation?.();
+  showLicenseRequiredPrompt(requiredFeature);
+  return true;
+}
+
+export async function promptInstallLicense() {
+  hideLicenseRequiredPrompt();
+  showLicenseGate(await loadLicenseStatus(true));
+}
+
+export async function licenseAwareFetch(input, init = {}, requiredFeature = 'Licensed Feature') {
+  const res = await fetch(input, init);
+  if (res.status !== 403) return res;
+  const data = await res.clone().json().catch(() => null);
+  if (data?.error !== 'license_required') return res;
+  const feature = data.required_feature || requiredFeature;
+  showLicenseRequiredPrompt(feature);
+  throw new LicenseRequiredError(feature, data.license_state || null);
+}
+
+export async function openProtectedUrl(url, options = {}) {
+  const openInNewTab = options.openInNewTab === true;
+  const requiredFeature = options.requiredFeature || 'Licensed Feature';
+  const popup = openInNewTab ? window.open('about:blank', '_blank', 'noopener') : null;
+  try {
+    const res = await licenseAwareFetch(url, { cache: 'no-store' }, requiredFeature);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (popup) {
+      popup.location = url;
+    } else {
+      window.location.href = url;
+    }
+  } catch (error) {
+    popup?.close();
+    throw error;
+  }
 }
 
 export async function loadLicenseStatus(force = false) {
@@ -159,6 +238,7 @@ export async function refreshLicenseStatus() {
   try {
     const status = await hooks.loadStatus?.(true);
     if (!status) return;
+    if (status.license?.permits_use || !status.hobbled_mode) hideLicenseRequiredPrompt();
     if (status.workspace_ready && document.getElementById('lobby')?.classList.contains('visible')) {
       hooks.showSuccess?.(status);
     } else if (status.workspace_ready) {

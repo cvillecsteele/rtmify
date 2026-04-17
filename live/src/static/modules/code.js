@@ -1,4 +1,9 @@
 import { CHEVRON_SVG, esc, formatDiagnosticsError, formatUnixTimestamp, propsObj, renderSimpleNodeList } from '/modules/helpers.js';
+import { isLicenseRequiredError, licenseAwareFetch } from '/modules/license.js';
+
+function lockedHint(feature) {
+  return `${feature} requires a license.`;
+}
 
 export async function addRepo() {
   const input = document.getElementById('repo-path-input');
@@ -8,24 +13,27 @@ export async function addRepo() {
   errEl.style.display = 'none';
 
   try {
-    const res = await fetch('/api/repos', {
+    const res = await licenseAwareFetch('/api/repos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
-    });
+    }, 'Repository Scanning');
     const data = await res.json();
     if (!res.ok || data.ok === false) throw new Error(formatDiagnosticsError(data));
     if (input) input.value = '';
     await scanAndLoadCodeTraceability();
   } catch (error) {
+    if (isLicenseRequiredError(error)) return;
     errEl.textContent = error.message;
     errEl.style.display = 'block';
   }
 }
 
 export async function deleteRepo(slot) {
-  await fetch('/api/repos/' + slot, { method: 'DELETE' });
-  await loadCodeTraceability();
+  try {
+    await licenseAwareFetch('/api/repos/' + slot, { method: 'DELETE' }, 'Repository Scanning');
+    await loadCodeTraceability();
+  } catch {}
 }
 
 export async function loadCodeScanStatus() {
@@ -63,11 +71,17 @@ export async function scanAndLoadCodeTraceability() {
   if (codeBody) codeBody.innerHTML = '<div class="empty-state">Scanning configured repositories…</div>';
   if (commitsEl) commitsEl.innerHTML = '<em class="text-hint">Scanning configured repositories…</em>';
   try {
-    const res = await fetch('/api/repos/scan', { method: 'POST' });
+    const res = await licenseAwareFetch('/api/repos/scan', { method: 'POST' }, 'Repository Scanning');
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
     await loadCodeTraceability();
   } catch (error) {
+    if (isLicenseRequiredError(error)) {
+      if (statusEl) statusEl.textContent = lockedHint('Repository scanning');
+      if (codeBody) codeBody.innerHTML = `<div class="empty-state">${esc(lockedHint('Repository scanning'))}</div>`;
+      if (commitsEl) commitsEl.innerHTML = `<em class="text-hint">${esc(lockedHint('Repository scanning'))}</em>`;
+      return;
+    }
     if (statusEl) statusEl.textContent = `Scan failed: ${error.message}`;
     if (codeBody) codeBody.innerHTML = `<div class="empty-state">Scan failed: ${esc(error.message)}</div>`;
   } finally {
@@ -82,7 +96,7 @@ export async function loadRepos() {
   const el = document.getElementById('repos-list');
   if (!el) return;
   try {
-    const res = await fetch('/api/repos');
+    const res = await licenseAwareFetch('/api/repos', { cache: 'no-store' }, 'Repository Scanning');
     if (!res.ok) return;
     const data = await res.json();
     const repos = data.repos || [];
@@ -99,7 +113,10 @@ export async function loadRepos() {
       <td>${esc(String(repo.commit_count || 0))}</td>
       <td><button class="btn-danger" data-action="delete-repo" data-slot="${Number.isInteger(repo.slot) ? repo.slot : 0}" title="Remove repo">×</button></td>
     </tr>`).join('');
-  } catch {}
+  } catch (error) {
+    if (!isLicenseRequiredError(error)) return;
+    el.innerHTML = `<tr><td colspan="7" class="empty-state">${esc(lockedHint('Repository scanning'))}</td></tr>`;
+  }
 }
 
 export async function loadDiagnostics() {
@@ -128,14 +145,27 @@ export async function loadCodeTraceability() {
   const container = document.getElementById('code-body');
   if (!container) return;
   container.innerHTML = '<div class="empty-state loading-pulse">Loading…</div>';
-  await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits(), loadCodeScanStatus()]);
+  try {
+    await Promise.all([loadRepos(), loadDiagnostics(), loadCoverageGaps(), loadRecentCommits(), loadCodeScanStatus()]);
+  } catch (error) {
+    if (isLicenseRequiredError(error)) {
+      container.innerHTML = `<div class="empty-state">${esc(lockedHint('Code traceability'))}</div>`;
+      return;
+    }
+    container.innerHTML = `<div class="empty-state">Error: ${esc(error.message)}</div>`;
+    return;
+  }
 
   let files;
   try {
-    const res = await fetch('/query/code-traceability');
+    const res = await licenseAwareFetch('/query/code-traceability', { cache: 'no-store' }, 'Code Traceability');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     files = await res.json();
   } catch (error) {
+    if (isLicenseRequiredError(error)) {
+      container.innerHTML = `<div class="empty-state">${esc(lockedHint('Code traceability'))}</div>`;
+      return;
+    }
     container.innerHTML = `<div class="empty-state">Error: ${esc(error.message)}</div>`;
     return;
   }
@@ -188,9 +218,11 @@ export async function expandFile(row, filePath) {
 
   let annotations = [];
   try {
-    const res = await fetch('/query/file-annotations?file_path=' + encodeURIComponent(filePath));
+    const res = await licenseAwareFetch('/query/file-annotations?file_path=' + encodeURIComponent(filePath), { cache: 'no-store' }, 'Code Traceability');
     if (res.ok) annotations = await res.json();
-  } catch {}
+  } catch (error) {
+    if (isLicenseRequiredError(error)) return;
+  }
 
   const detail = document.createElement('tr');
   detail.className = 'file-annotation-row';
@@ -217,21 +249,31 @@ export async function loadCoverageGaps() {
   const unimplementedEl = document.getElementById('unimplemented-list');
   const untestedEl = document.getElementById('untested-files-list');
   if (!unimplementedEl || !untestedEl) return;
-  const [unimplementedRes, untestedRes] = await Promise.all([
-    fetch('/query/unimplemented-requirements'),
-    fetch('/query/untested-source-files'),
-  ]);
-  const unimplemented = unimplementedRes.ok ? await unimplementedRes.json() : [];
-  const untested = untestedRes.ok ? await untestedRes.json() : [];
-  unimplementedEl.innerHTML = renderSimpleNodeList(unimplemented, 'No unimplemented requirements.');
-  untestedEl.innerHTML = renderSimpleNodeList(untested, 'No untested source files.');
+  try {
+    const [unimplementedRes, untestedRes] = await Promise.all([
+      licenseAwareFetch('/query/unimplemented-requirements', { cache: 'no-store' }, 'Code Traceability'),
+      licenseAwareFetch('/query/untested-source-files', { cache: 'no-store' }, 'Code Traceability'),
+    ]);
+    const unimplemented = unimplementedRes.ok ? await unimplementedRes.json() : [];
+    const untested = untestedRes.ok ? await untestedRes.json() : [];
+    unimplementedEl.innerHTML = renderSimpleNodeList(unimplemented, 'No unimplemented requirements.');
+    untestedEl.innerHTML = renderSimpleNodeList(untested, 'No untested source files.');
+  } catch (error) {
+    if (!isLicenseRequiredError(error)) {
+      unimplementedEl.innerHTML = `<em class="text-hint">Failed to load code coverage gaps: ${esc(error.message)}</em>`;
+      untestedEl.innerHTML = `<em class="text-hint">Failed to load code coverage gaps: ${esc(error.message)}</em>`;
+      return;
+    }
+    unimplementedEl.innerHTML = `<em class="text-hint">${esc(lockedHint('Code traceability'))}</em>`;
+    untestedEl.innerHTML = `<em class="text-hint">${esc(lockedHint('Code traceability'))}</em>`;
+  }
 }
 
 export async function loadRecentCommits() {
   const el = document.getElementById('recent-commits');
   if (!el) return;
   try {
-    const res = await fetch('/query/recent-commits');
+    const res = await licenseAwareFetch('/query/recent-commits', { cache: 'no-store' }, 'Code Traceability');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const commits = await res.json();
     if (!commits.length) {
@@ -247,6 +289,10 @@ export async function loadRecentCommits() {
       </div>`;
     }).join('');
   } catch (error) {
+    if (isLicenseRequiredError(error)) {
+      el.innerHTML = `<em class="text-hint">${esc(lockedHint('Code traceability'))}</em>`;
+      return;
+    }
     el.innerHTML = `<div class="empty-state">Failed to load commits: ${esc(error.message)}</div>`;
   }
 }

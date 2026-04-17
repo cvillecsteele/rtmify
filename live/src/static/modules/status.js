@@ -100,9 +100,13 @@ export function syncPreviewUi(status) {
   }
 
   const restricted = Boolean(status.hobbled_mode);
-  document.querySelectorAll('button[data-group="code"], button[data-group="reports"], .nav-sub [data-tab="mcp-ai"]').forEach((btn) => {
-    btn.disabled = restricted;
-    btn.title = restricted ? 'Requires a license' : '';
+  document.querySelectorAll('[data-preview-lockable]').forEach((btn) => {
+    btn.classList.toggle('preview-locked', restricted);
+    btn.setAttribute('aria-disabled', restricted ? 'true' : 'false');
+    if ('disabled' in btn) btn.disabled = false;
+    btn.title = restricted
+      ? `${btn.dataset.requiredFeature || 'This feature'} requires a license`
+      : '';
   });
   if (restricted && (
     document.getElementById('tab-code')?.classList.contains('active') ||

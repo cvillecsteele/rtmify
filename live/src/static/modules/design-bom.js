@@ -2,6 +2,7 @@ import { createSyncSettingsController } from '/modules/sync-settings.js';
 import { esc, formatUnixTimestamp, propsObj } from '/modules/helpers.js';
 import { bomState } from '/modules/state.js';
 import { runBomPartUsage } from '/modules/bom-queries.js';
+import { openProtectedUrl } from '/modules/license.js';
 import { authenticatedApiFetch } from '/modules/uploads.js';
 
 let showTabHook = null;
@@ -341,7 +342,7 @@ export async function loadBomCoverage() {
   }
 }
 
-export function downloadDesignBomReport(format = 'md') {
+export async function downloadDesignBomReport(format = 'md') {
   const productEl = document.getElementById('report-design-bom-product');
   const nameEl = document.getElementById('report-design-bom-name');
   const includeObsolete = !!document.getElementById('design-boms-include-obsolete')?.checked;
@@ -356,7 +357,7 @@ export function downloadDesignBomReport(format = 'md') {
   const query = new URLSearchParams({ full_product_identifier: fullProductIdentifier, bom_name: bomName });
   if (includeObsolete) query.set('include_obsolete', 'true');
   const path = format === 'pdf' ? '/report/design-bom' : (format === 'docx' ? '/report/design-bom.docx' : '/report/design-bom.md');
-  window.location.href = `${path}?${query.toString()}`;
+  await openProtectedUrl(`${path}?${query.toString()}`, { requiredFeature: 'Reports' });
 }
 
 function toggleSyncKind(prefix) {

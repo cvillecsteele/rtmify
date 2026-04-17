@@ -13,7 +13,7 @@ import { deleteSoupSync, downloadSoupReport, loadSelectedSoupDetail, loadSoupCom
 import { addRepo, deleteRepo, expandFile, loadCodeTraceability, scanAndLoadCodeTraceability } from '/modules/code.js';
 import { changeProfile, loadChainGaps, loadProfileState, provisionMissingTabs } from '/modules/chain-gaps.js';
 import { bindStatusUiHooks, loadInfo, loadMcpHelp, loadStatus, showPreviewFeatureHelp, updateLobbyConnectionMessage } from '/modules/status.js';
-import { bindLicenseHooks, chooseLicenseFile, clearInstalledLicense, hideLicenseGate, importLicenseFile, loadLicenseStatus, refreshLicenseStatus, showLicenseGate, syncLicenseInfo } from '/modules/license.js';
+import { activateLockedFeature, bindLicenseHooks, chooseLicenseFile, clearInstalledLicense, hideLicenseGate, hideLicenseRequiredPrompt, importLicenseFile, isLicenseRequiredError, loadLicenseStatus, openProtectedUrl, promptInstallLicense, refreshLicenseStatus, showLicenseGate, syncLicenseInfo } from '/modules/license.js';
 import { bindLobbyHooks, clearCredential, clearProfileSelection, clearSourceArtifact, connectWorkbookSource, continueInPreviewMode, copyEmail, dismissAttachWorkbookPrompt, enterWorkspace, lobbyBack, lobbyNext, onSaDragLeave, onSaDragOver, onSaDrop, onSourceArtifactDragLeave, onSourceArtifactDragOver, onSourceArtifactDrop, openAddWorkbook, openWorkspace, renderProfileList, selectProfile, selectProvider, selectSourceOfTruth, showLobby, showSuccess, toggleSecretVisibility, uploadOnboardingSourceArtifact, uploadSaFile } from '/modules/lobby.js';
 import { createNavigationController } from '/modules/nav.js';
 
@@ -21,8 +21,11 @@ function bindClick(id, handler) {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('click', (event) => {
+    if (activateLockedFeature(el, event)) return;
     event.preventDefault();
-    void handler(event);
+    void Promise.resolve(handler(event)).catch((error) => {
+      if (!isLicenseRequiredError(error)) console.error(error);
+    });
   });
 }
 
@@ -96,13 +99,22 @@ async function loadData() {
 
 function bindStaticActions(nav) {
   document.querySelectorAll('.nav-primary button[data-group]').forEach((btn) => {
-    btn.addEventListener('click', () => nav.showGroup(btn.dataset.group));
+    btn.addEventListener('click', (event) => {
+      if (activateLockedFeature(btn, event)) return;
+      nav.showGroup(btn.dataset.group);
+    });
   });
   document.querySelectorAll('.nav-sub button[data-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => nav.showTab(btn.dataset.tab));
+    btn.addEventListener('click', (event) => {
+      if (activateLockedFeature(btn, event)) return;
+      nav.showTab(btn.dataset.tab);
+    });
   });
   document.querySelectorAll('[data-settings-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => nav.showSettingsTab(btn.dataset.settingsTab));
+    btn.addEventListener('click', (event) => {
+      if (activateLockedFeature(btn, event)) return;
+      nav.showSettingsTab(btn.dataset.settingsTab);
+    });
   });
   document.querySelectorAll('[data-provider]').forEach((el) => {
     el.addEventListener('click', () => selectProvider(el.dataset.provider));
@@ -126,6 +138,8 @@ function bindAppEvents(nav) {
   bindClick('refresh-license-status-btn', refreshLicenseStatus);
   bindClick('license-import-btn', chooseLicenseFile);
   bindClick('license-clear-btn', clearInstalledLicense);
+  bindClick('license-required-dismiss-btn', hideLicenseRequiredPrompt);
+  bindClick('license-required-install-btn', promptInstallLicense);
   bindClick('header-home-btn', showLobby);
   bindChange('workbook-switcher', switchWorkbookFromHeader);
   bindClick('suspect-header-badge', () => nav.showTab('review'));
@@ -185,6 +199,12 @@ function bindAppEvents(nav) {
   bindClick('info-license-import', chooseLicenseFile);
   bindClick('info-license-clear', clearInstalledLicense);
   bindClick('license-gate-refresh-btn', refreshLicenseStatus);
+  bindClick('report-rtm-pdf-btn', () => openProtectedUrl('/report/rtm', { requiredFeature: 'Reports', openInNewTab: true }));
+  bindClick('report-rtm-md-btn', () => openProtectedUrl('/report/rtm.md', { requiredFeature: 'Reports' }));
+  bindClick('report-rtm-docx-btn', () => openProtectedUrl('/report/rtm.docx', { requiredFeature: 'Reports' }));
+  bindClick('report-dhr-pdf-btn', () => openProtectedUrl('/report/dhr/pdf', { requiredFeature: 'Reports', openInNewTab: true }));
+  bindClick('report-dhr-md-btn', () => openProtectedUrl('/report/dhr/md', { requiredFeature: 'Reports' }));
+  bindClick('report-coverage-md-btn', () => openProtectedUrl('/report/coverage.md', { requiredFeature: 'Reports' }));
   bindClick('report-design-bom-pdf-btn', () => downloadDesignBomReport('pdf'));
   bindClick('report-design-bom-md-btn', () => downloadDesignBomReport());
   bindClick('report-design-bom-docx-btn', () => downloadDesignBomReport('docx'));

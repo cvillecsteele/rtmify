@@ -139,6 +139,30 @@
       border-color: transparent;
       color: var(--text-3);
     }
+    .preview-locked {
+      opacity: 0.72;
+      filter: saturate(0.75);
+    }
+    .preview-locked:hover {
+      opacity: 0.88;
+    }
+    nav.nav-primary button.preview-locked,
+    .nav-sub button.preview-locked,
+    .settings-dropdown button.preview-locked {
+      cursor: pointer;
+      color: var(--text-4);
+    }
+    .btn.preview-locked,
+    a.btn.preview-locked {
+      cursor: pointer;
+      box-shadow: inset 0 0 0 1px var(--border-2);
+    }
+    .preview-locked[data-required-feature]::after {
+      content: " Locked";
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
 
     /* Primary nav */
     nav.nav-primary {
@@ -399,12 +423,43 @@
     }
     #license-gate.visible { display: flex; }
     .license-gate-card { width: 520px; }
+    #license-required-prompt {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: oklch(97% 0.008 258 / 0.97);
+      z-index: 111;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    #license-required-prompt.visible { display: flex; }
+    .license-required-card { width: 520px; }
     .license-gate-actions {
       display: flex;
       gap: 12px;
       justify-content: flex-end;
       align-items: center;
       margin-top: 18px;
+    }
+    .license-required-summary {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border: 1px solid var(--border-1);
+      border-radius: 6px;
+      background: var(--surface-2);
+    }
+    .license-required-summary-label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-4);
+      margin-bottom: 6px;
+    }
+    .license-required-summary-text {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-2);
     }
     .license-gate-meta {
       font-size: 12px;
@@ -1399,6 +1454,21 @@
   </div>
 </div>
 
+<div id="license-required-prompt" role="dialog" aria-modal="true" aria-labelledby="license-required-title">
+  <div class="lobby-card license-required-card">
+    <h2 id="license-required-title">Licensed Feature</h2>
+    <div id="license-required-message" class="lobby-subtitle">Live can keep running in preview mode, but this feature is disabled until a signed RTMify Live license is installed.</div>
+    <div class="license-required-summary">
+      <div class="license-required-summary-label">Locked in Preview</div>
+      <div id="license-required-summary" class="license-required-summary-text">MCP, Reports, Repository Scanning, Code Traceability, Background Sync</div>
+    </div>
+    <div class="license-gate-actions">
+      <button class="btn" id="license-required-dismiss-btn" type="button">Not now</button>
+      <button class="btn" id="license-required-install-btn" type="button">Install License File</button>
+    </div>
+  </div>
+</div>
+
 <header>
   <button class="header-home-btn" id="header-home-btn" aria-label="Back to setup">
     <span class="header-title">RTMify</span>
@@ -1440,10 +1510,10 @@
   <button data-group="analysis">
     Analysis <span id="suspect-group-badge" class="badge" style="display:none"></span>
   </button>
-  <button data-group="code">Code</button>
+  <button data-group="code" data-preview-lockable="true" data-required-feature="Code Traceability">Code</button>
   <button data-group="bom">BOM</button>
   <button data-group="soup">Software / SOUP</button>
-  <button data-group="reports">Reports</button>
+  <button data-group="reports" data-preview-lockable="true" data-required-feature="Reports">Reports</button>
   <button data-group="guide">Guide / Help</button>
   <div class="nav-settings-wrap">
     <button class="nav-settings-btn" id="settings-toggle-btn" title="Settings">
@@ -1454,8 +1524,8 @@
     </button>
     <div class="settings-dropdown" id="settings-panel" style="display:none">
       <button data-settings-tab="workbooks">Workbooks</button>
-      <button data-settings-tab="design-bom-sync">Design BOM Sync</button>
-      <button data-settings-tab="soup-sync">SOUP Sync</button>
+      <button data-settings-tab="design-bom-sync" data-preview-lockable="true" data-required-feature="Background Sync">Design BOM Sync</button>
+      <button data-settings-tab="soup-sync" data-preview-lockable="true" data-required-feature="Background Sync">SOUP Sync</button>
       <button data-settings-tab="info">System Info</button>
     </div>
   </div>
@@ -1502,7 +1572,7 @@
 <!-- Guide sub-nav -->
 <div class="nav-sub" data-group="guide">
   <button class="active" data-tab="guide-errors">Error Codes Explained</button>
-  <button data-tab="mcp-ai">MCP &amp; AI</button>
+  <button data-tab="mcp-ai" data-preview-lockable="true" data-required-feature="MCP">MCP &amp; AI</button>
 </div>
 
 <main>
@@ -2045,7 +2115,7 @@
       <p class="lobby-label">Add repository path:</p>
       <div class="code-add-row">
         <input id="repo-path-input" class="lobby-input lobby-input--no-mb" type="text" placeholder="/path/to/repository" aria-label="Repository path" />
-        <button class="btn" id="repo-add-btn">Add Repo</button>
+        <button class="btn" id="repo-add-btn" data-preview-lockable="true" data-required-feature="Repository Scanning">Add Repo</button>
       </div>
       <div id="repo-error" class="text-error-inline" style="display:none"></div>
     </div>
@@ -2079,7 +2149,7 @@
     <div class="card card--mb">
       <div class="toolbar card-toolbar">
         <span class="card-title">Files by Repo</span>
-        <button class="btn" id="code-scan-btn">Scan Now</button>
+        <button class="btn" id="code-scan-btn" data-preview-lockable="true" data-required-feature="Repository Scanning">Scan Now</button>
       </div>
       <div id="code-scan-status" class="text-hint mb-12">Last completed scan: never</div>
       <div id="code-body"><em class="text-hint">Click Scan Now to run a repository scan and load current results.</em></div>
@@ -2413,9 +2483,9 @@ audit_readiness_summary(profile="aerospace")</div>
           status. Includes User Needs, Tests, and Risk Register.
         </p>
         <div class="btn-group">
-          <a class="btn" href="/report/rtm" target="_blank">PDF</a>
-          <a class="btn" href="/report/rtm.md" download="rtm.md">Markdown</a>
-          <a class="btn" href="/report/rtm.docx" download="rtm.docx">Word (.docx)</a>
+          <button class="btn" id="report-rtm-pdf-btn" data-preview-lockable="true" data-required-feature="Reports">PDF</button>
+          <button class="btn" id="report-rtm-md-btn" data-preview-lockable="true" data-required-feature="Reports">Markdown</button>
+          <button class="btn" id="report-rtm-docx-btn" data-preview-lockable="true" data-required-feature="Reports">Word (.docx)</button>
         </div>
       </div>
       <div class="report-card">
@@ -2425,8 +2495,8 @@ audit_readiness_summary(profile="aerospace")</div>
           design inputs/outputs, and configuration items.
         </p>
         <div class="btn-group">
-          <a class="btn" href="/report/dhr/pdf" target="_blank">PDF</a>
-          <a class="btn" href="/report/dhr/md" download="dhr.md">Markdown</a>
+          <button class="btn" id="report-dhr-pdf-btn" data-preview-lockable="true" data-required-feature="Reports">PDF</button>
+          <button class="btn" id="report-dhr-md-btn" data-preview-lockable="true" data-required-feature="Reports">Markdown</button>
         </div>
       </div>
       <div class="report-card">
@@ -2436,7 +2506,7 @@ audit_readiness_summary(profile="aerospace")</div>
           and verification status derived from live repository scans.
         </p>
         <div class="btn-group">
-          <a class="btn" href="/report/coverage.md" download="coverage.md">Markdown</a>
+          <button class="btn" id="report-coverage-md-btn" data-preview-lockable="true" data-required-feature="Reports">Markdown</button>
         </div>
       </div>
       <div class="report-card">
@@ -2450,9 +2520,9 @@ audit_readiness_summary(profile="aerospace")</div>
           <input id="report-design-bom-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="BOM name">
         </div>
         <div class="btn-group">
-          <button class="btn" id="report-design-bom-pdf-btn">PDF</button>
-          <button class="btn" id="report-design-bom-md-btn">Markdown</button>
-          <button class="btn" id="report-design-bom-docx-btn">Word (.docx)</button>
+          <button class="btn" id="report-design-bom-pdf-btn" data-preview-lockable="true" data-required-feature="Reports">PDF</button>
+          <button class="btn" id="report-design-bom-md-btn" data-preview-lockable="true" data-required-feature="Reports">Markdown</button>
+          <button class="btn" id="report-design-bom-docx-btn" data-preview-lockable="true" data-required-feature="Reports">Word (.docx)</button>
         </div>
       </div>
       <div class="report-card">
@@ -2466,9 +2536,9 @@ audit_readiness_summary(profile="aerospace")</div>
           <input id="report-soup-name" class="lobby-input lobby-input--no-mb" type="text" placeholder="SOUP BOM name (defaults to SOUP Components)">
         </div>
         <div class="btn-group">
-          <button class="btn" id="report-soup-pdf-btn">PDF</button>
-          <button class="btn" id="report-soup-md-btn">Markdown</button>
-          <button class="btn" id="report-soup-docx-btn">Word (.docx)</button>
+          <button class="btn" id="report-soup-pdf-btn" data-preview-lockable="true" data-required-feature="Reports">PDF</button>
+          <button class="btn" id="report-soup-md-btn" data-preview-lockable="true" data-required-feature="Reports">Markdown</button>
+          <button class="btn" id="report-soup-docx-btn" data-preview-lockable="true" data-required-feature="Reports">Word (.docx)</button>
         </div>
       </div>
     </div>
