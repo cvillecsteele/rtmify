@@ -7,7 +7,7 @@ This is the operator runbook for producing RTMify release artifacts, staging Win
 This workflow spans two repositories:
 
 - `cvillecsteele/rtmify`
-  Contains the product code, `release.sh`, `package.sh`, validation assets, and the GitHub Actions workflows.
+  Contains the product code, `release.sh`, `tools/publish.py`, validation assets, and the GitHub Actions workflows.
 - `cvillecsteele/rtmifysite`
   Hosts `rtmify.io` on GitHub Pages and publishes the checked-in download manifest at `public/downloads/latest.json`.
 
@@ -39,7 +39,7 @@ Local signing remains the trust boundary:
   - validation package outputs
 - `manifest.json`
 
-`package.sh` produces:
+`tools/publish.py package` produces:
 
 - macOS:
   - `packages/macos/RTMify_Trace_<version>.dmg`
@@ -70,9 +70,9 @@ Windows package state is explicit in `package-manifest.json`:
 
 ### Common
 
+- `python3` (3.10+)
 - `gh`
 - `git`
-- `python3`
 
 ### macOS signing and notarization
 
@@ -104,7 +104,7 @@ Environment variables:
 - `AZURE_ACCESS_TOKEN` optional
 - `JSIGN_BIN` or `JSIGN_JAR` optional
 
-`package.sh` defaults to acquiring an Azure Trusted Signing token with:
+`tools/publish.py` defaults to acquiring an Azure Trusted Signing token with:
 
 ```bash
 az account get-access-token --resource https://codesigning.azure.net
@@ -142,18 +142,12 @@ No Azure signing secrets should be added to GitHub Actions.
 
 ## Operator Flow
 
-Use the exact sequence below.
-
-### 1. Build the raw release directory locally
+All steps are automated by `tools/publish.py`. One command does the full release:
 
 ```bash
 cd /Users/colinsteele/Projects/rtmify/sys
-./release.sh --version 20260329-a --out-dir ./dist/20260329-a
-```
 
-### 2. Package locally: macOS, Linux, and Windows payload stage
-
-```bash
+# Set signing credentials (env vars or CLI flags)
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Iron Brothers Ventures LLC (...)"
 export RTMIFY_NOTARY_KEY_FILE="$HOME/.rtmify/secrets/notary-key.p8"
 export RTMIFY_NOTARY_KEY_ID="ABCDEFGHIJ"
@@ -165,138 +159,57 @@ export AZURE_TRUSTED_SIGNING_PROFILE="RTMify"
 
 az login
 
-./package.sh --release-dir ./dist/20260329-a
+# Full release (all platforms, auto-version):
+./tools/publish.py release
+
+# Explicit version:
+./tools/publish.py release --version 20260329-a
+
+# Single platform:
+./tools/publish.py release --windows
+
+# Preview without executing:
+./tools/publish.py release --dry-run
+
+# Check pipeline status:
+./tools/publish.py status
 ```
 
-This does all of the following:
+The `release` subcommand automates these steps in order:
 
-1. validates the release directory
-2. signs macOS CLI binaries and app bundles locally
-3. creates signed, notarized macOS `.dmg` files
-4. signs the Windows payload EXEs locally
-5. creates `packages/windows/RTMify_Windows_Payloads_<version>.zip`
-6. creates Linux tarballs
-7. rewrites `checksums.txt`
-8. writes `package-manifest.json` in `payloads_signed` state for Windows
+1. Builds the raw release directory via `release.sh`
+2. Signs and packages all selected platforms (macOS DMGs, Windows payloads, Linux tarballs)
+3. Creates a draft GitHub Release and uploads the Windows payload zip
+4. Dispatches the Windows installer packaging workflow and waits for completion
+5. Downloads unsigned installers and signs them locally
+6. Generates the site download manifest (`latest.json`)
+7. Uploads all final assets to the GitHub Release
+8. Updates the site repo with the new download manifest
 
-At this point there are no final Windows installers yet.
-
-### 3. Create or confirm the draft GitHub Release
-
-If the draft release does not exist yet:
+The release stays in **draft** state. Publish it after inspection:
 
 ```bash
-gh release create v20260329-a \
-  --draft \
-  --title "RTMify 20260329-a"
+gh release edit v20260329-a --repo cvillecsteele/rtmify --draft=false
 ```
 
-If it already exists, leave it in draft state.
+### Resuming after failure
 
-### 4. Upload the signed Windows payload zip to the draft release
+If a step fails, fix the issue and re-run with `--skip-build`:
 
 ```bash
-gh release upload v20260329-a \
-  ./dist/20260329-a/packages/windows/RTMify_Windows_Payloads_20260329-a.zip \
-  --clobber
+./tools/publish.py release --version 20260329-a --skip-build
+./tools/publish.py release --version 20260329-a --skip-build --windows  # resume Windows only
 ```
 
-Only the payload zip should be uploaded at this point for the Windows handoff. Do not upload unsigned installers to the draft release.
+### Packaging without the full pipeline
 
-### 5. Trigger the Windows packaging workflow
+To run signing/packaging independently (without GitHub release management):
 
 ```bash
-gh workflow run windows-installer-packaging.yml -f version=20260329-a
+./tools/publish.py package --release-dir ./dist/20260329-a
+./tools/publish.py package --release-dir ./dist/20260329-a --linux
+./tools/publish.py package --release-dir ./dist/20260329-a --windows-unsigned-dir ./dist/20260329-a/windows-unsigned
 ```
-
-This workflow:
-
-1. downloads `RTMify_Windows_Payloads_<version>.zip` from the draft release
-2. installs Inno Setup on `windows-latest`
-3. compiles unsigned installers
-4. uploads them as a workflow artifact named `windows-installers-unsigned-<version>`
-
-### 6. Download the unsigned installers locally
-
-Get the run id:
-
-```bash
-gh run list --workflow windows-installer-packaging.yml --limit 5
-```
-
-Download the artifact:
-
-```bash
-mkdir -p ./dist/20260329-a/windows-unsigned
-gh run download <run-id> \
-  --name windows-installers-unsigned-20260329-a \
-  --dir ./dist/20260329-a/windows-unsigned
-```
-
-Expected files:
-
-- `RTMify_Trace_Installer_<version>_unsigned.exe`
-- `RTMify_Live_Installer_<version>_unsigned.exe`
-
-### 7. Finalize Windows locally: sign the installer EXEs
-
-```bash
-./package.sh \
-  --release-dir ./dist/20260329-a \
-  --windows-unsigned-dir ./dist/20260329-a/windows-unsigned
-```
-
-When `--windows-unsigned-dir` is set, `package.sh` automatically skips macOS and Linux packaging and only performs Windows finalization.
-
-This step:
-
-1. validates the unsigned installer filenames
-2. copies them into `packages/windows/`
-3. signs both final installer EXEs locally
-4. rewrites `checksums.txt`
-5. rewrites `package-manifest.json` in `finalized` state for Windows
-
-### 8. Generate the site download manifest locally
-
-```bash
-python3 ./tools/generate_download_manifest.py \
-  --release-dir ./dist/20260329-a \
-  --repo cvillecsteele/rtmify \
-  --tag v20260329-a \
-  --output ./dist/20260329-a/latest.json
-```
-
-Only finalized Windows installers are included in `latest.json`. The Windows payload zip is intentionally excluded.
-
-### 9. Upload final public assets to the GitHub Release
-
-After Windows finalization succeeds, upload the final public assets:
-
-```bash
-gh release upload v20260329-a \
-  ./dist/20260329-a/packages/macos/*.dmg \
-  ./dist/20260329-a/packages/windows/*.exe \
-  ./dist/20260329-a/packages/linux/*.tar.gz \
-  ./dist/20260329-a/checksums.txt \
-  ./dist/20260329-a/package-manifest.json \
-  ./dist/20260329-a/manifest.json \
-  ./dist/20260329-a/latest.json \
-  ./dist/20260329-a/validation/*.zip \
-  ./dist/20260329-a/validation/package/*.pdf \
-  --clobber
-```
-
-The draft release can remain draft until you finish inspection. Publish it once you are satisfied.
-
-### 10. Update the website download manifest
-
-Copy the generated `latest.json` into the site repo:
-
-```bash
-cp ./dist/20260329-a/latest.json /path/to/rtmifysite/public/downloads/latest.json
-```
-
-Then commit and push that change to `main` in `rtmifysite`.
 
 ## Expected Windows Workflow Assets
 
@@ -370,7 +283,7 @@ Typical causes:
 - validation dependency failure
 - product build failure
 
-### First `package.sh` run fails
+### Packaging fails
 
 This is a local signing or packaging failure before CI packaging.
 
@@ -392,7 +305,7 @@ Typical causes:
 - Inno Setup compilation failure
 - wrong or missing payload files
 
-### Finalize `package.sh --windows-unsigned-dir ...` fails
+### Windows finalize fails
 
 This is a local final-signing or handoff failure.
 
@@ -443,4 +356,4 @@ If the GitHub Release is fine but the site is stale:
 - Do not sign in GitHub Actions.
 - Do not upload unsigned installers to the GitHub Release.
 - The Windows Live installer depends on both `RTMify Live.exe` and `rtmify-live.exe`; packaging only one of them is a broken release.
-- `package.sh` is now two-phase for Windows by design: stage locally, package in CI, finalize locally.
+- Windows signing is two-phase by design: stage locally, package in CI, finalize locally. `tools/publish.py release` automates the full round-trip.

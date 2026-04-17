@@ -26,6 +26,7 @@ trace/zig-out/
 *.db-shm
 *.db-wal
 *.log
+customer-trace-license.json
 __pycache__/
 *.pyc
 
