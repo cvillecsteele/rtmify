@@ -133,7 +133,11 @@ fn readTokenFile(token_file_path: []const u8, alloc: Allocator) !?[]u8 {
 
 fn writeTokenFile(token_file_path: []const u8, token: []const u8) !void {
     const dir_name = std.fs.path.dirname(token_file_path) orelse ".";
-    try std.fs.cwd().makePath(dir_name);
+    // ensureDirPath instead of cwd().makePath: on Windows, makePath with an
+    // absolute path uses NtCreateFile(RootDirectory=cwd) and silently fails
+    // on the drive-letter component. ensureDirPath walks components with
+    // makeDirAbsolute so Win32 CreateDirectoryW resolves them correctly.
+    workbook.paths.ensureDirPath(dir_name);
 
     const base_name = std.fs.path.basename(token_file_path);
     const tmp_name = try std.fmt.allocPrint(std.heap.page_allocator, "{s}.tmp", .{base_name});

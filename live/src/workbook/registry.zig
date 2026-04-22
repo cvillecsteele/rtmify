@@ -7,6 +7,7 @@ const secure_store = @import("../secure_store.zig");
 const sync_live = @import("../sync_live.zig");
 const test_results_auth = @import("../test_results_auth.zig");
 const workbook_config = @import("config.zig");
+const workbook_paths = @import("paths.zig");
 const workbook_runtime = @import("runtime.zig");
 
 pub const WorkbookSummary = struct {
@@ -56,8 +57,8 @@ pub const WorkbookRegistry = struct {
     active_workers: ?ActiveWorkers = null,
 
     pub fn init(alloc: Allocator, store: *secure_store.Store, options: workbook_config.BootstrapOptions) !WorkbookRegistry {
-        var cfg = try workbook_config.loadOrInit(alloc, options);
-        errdefer cfg.deinit(alloc);
+        const cfg = try workbook_config.loadOrInit(alloc, options);
+        // Ownership of cfg transfers to initForConfig; its errdefer covers cleanup on failure.
         return initForConfig(alloc, cfg, store);
     }
 
@@ -121,12 +122,27 @@ pub const WorkbookRegistry = struct {
 
         const db_path_z = try alloc.dupeZ(u8, cfg.db_path);
         defer alloc.free(db_path_z);
+
+        // Ensure the parent directory exists before opening the database.
+        // Uses ensureDirPath rather than cwd().makePath so that absolute paths
+        // work correctly on Windows (NtCreateFile with RootDirectory set mishandles
+        // drive-letter paths; makeDirAbsolute uses CreateDirectoryW directly).
+        if (std.fs.path.dirname(db_path_z)) |dir| {
+            workbook_paths.ensureDirPath(dir);
+        }
+
+        var cloned_config = try cfg.clone(alloc);
+        errdefer cloned_config.deinit(alloc);
+        var db = try graph_live.GraphDb.init(db_path_z);
+        errdefer db.deinit();
+        var ingest_auth = try test_results_auth.AuthState.initForWorkbookSlug(cfg.slug, alloc);
+        errdefer ingest_auth.deinit(alloc);
+
         const runtime = try alloc.create(workbook_runtime.WorkbookRuntime);
-        errdefer alloc.destroy(runtime);
         runtime.* = .{
-            .config = try cfg.clone(alloc),
-            .db = try graph_live.GraphDb.init(db_path_z),
-            .ingest_auth = try test_results_auth.AuthState.initForWorkbookSlug(cfg.slug, alloc),
+            .config = cloned_config,
+            .db = db,
+            .ingest_auth = ingest_auth,
         };
         _ = store;
         self.active_runtime = runtime;
@@ -365,4 +381,28 @@ fn findWorkbookIndex(cfg: *const workbook_config.LiveConfig, id: []const u8) ?us
         if (std.mem.eql(u8, workbook.id, id)) return idx;
     }
     return null;
+}
+
+test "init does not double-free when reloadActiveRuntime fails" {
+    // Regression: init registered errdefer cfg.deinit(alloc) then passed cfg by value
+    // into initForConfig, which also registered errdefer registry.deinit(alloc).
+    // When reloadActiveRuntime failed both errdefers fired on the same string pointers.
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Create a file where the DB directory would need to go, so GraphDb.init fails.
+    try tmp.dir.writeFile(.{ .sub_path = "blocker", .data = "" });
+    const tmp_root = try tmp.dir.realpathAlloc(alloc, ".");
+    defer alloc.free(tmp_root);
+    const db_path = try std.fs.path.join(alloc, &.{ tmp_root, "blocker", "graph.db" });
+    defer alloc.free(db_path);
+    const inbox_dir = try std.fs.path.join(alloc, &.{ tmp_root, "inbox" });
+    defer alloc.free(inbox_dir);
+    var store = try secure_store.initTestMemory(alloc);
+    defer store.deinit(alloc);
+    var result = WorkbookRegistry.init(alloc, &store, .{
+        .db_path_override = db_path,
+        .inbox_dir_override = inbox_dir,
+    });
+    if (result) |*r| r.deinit(alloc) else |_| {}
 }

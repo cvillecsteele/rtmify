@@ -7,6 +7,7 @@ const lifecycle_mod = @import("lifecycle.zig");
 const license_mod = @import("license_gate.zig");
 const tray_mod = @import("tray_menu.zig");
 const status_probe = @import("status_probe.zig");
+const tray_log = @import("tray_log.zig");
 
 const HWND = *anyopaque;
 const HINSTANCE = *anyopaque;
@@ -103,6 +104,10 @@ extern "advapi32" fn RegQueryValueExW(
 ) callconv(.winapi) c_long;
 extern "advapi32" fn RegCloseKey(hKey: usize) callconv(.winapi) c_long;
 extern "ole32" fn CoInitializeEx(pvReserved: ?*anyopaque, dwCoInit: DWORD) callconv(.winapi) i32;
+extern "kernel32" fn CreateMutexW(lpMutexAttributes: ?*anyopaque, bInitialOwner: BOOL, lpName: [*:0]const u16) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
+
+const ERROR_ALREADY_EXISTS: DWORD = 183;
 
 const NIM_ADD: DWORD = 0;
 const NIM_DELETE: DWORD = 2;
@@ -119,7 +124,7 @@ const WM_TIMER: UINT = 0x0113;
 const WM_COMMAND: UINT = 0x0111;
 const TIMER_STATUS: usize = 1;
 const TIMER_INTERVAL_MS: UINT = 5_000;
-const STARTUP_TIMEOUT_MS: u64 = 10_000;
+const STARTUP_TIMEOUT_MS: u64 = 60_000;
 const STARTUP_INTERVAL_MS: u64 = 250;
 
 const HKEY_CURRENT_USER: usize = 0x80000001;
@@ -297,8 +302,10 @@ fn startupWorker(ctx: *StartupContext) void {
         return;
     }
 
+    tray_log.logf("worker: starting (port={d})", .{ctx.port});
     switch (process_mod.spawnServer(std.heap.page_allocator, ctx.port)) {
         .ok => {
+            tray_log.log("worker: spawnServer ok, beginning probe loop");
             if (!startupStillRelevant(ctx.result.seq)) {
                 process_mod.stopServer();
                 std.heap.page_allocator.destroy(ctx);
@@ -306,6 +313,7 @@ fn startupWorker(ctx: *StartupContext) void {
             }
 
             if (!waitForStartupReady(ctx.result.seq, ctx.port, STARTUP_TIMEOUT_MS, STARTUP_INTERVAL_MS)) {
+                tray_log.log("worker: probe loop timed out");
                 if (!startupStillRelevant(ctx.result.seq)) {
                     process_mod.stopServer();
                     std.heap.page_allocator.destroy(ctx);
@@ -313,16 +321,20 @@ fn startupWorker(ctx: *StartupContext) void {
                 }
 
                 if (process_mod.serverRunning()) {
+                    tray_log.log("worker: server still running after timeout, killing");
                     process_mod.stopServer();
-                    copyCString(&ctx.result.error_message, "Server did not become ready within 10s");
+                    copyCString(&ctx.result.error_message, "Server did not become ready within 60s");
                 } else {
+                    tray_log.log("worker: server already gone after timeout");
                     copyCString(&ctx.result.error_message, "Server exited during startup");
                 }
             } else {
+                tray_log.log("worker: probe succeeded, server ready");
                 ctx.result.started = true;
             }
         },
         .err => |err| {
+            tray_log.logf("worker: spawnServer failed: {s}", .{@tagName(err)});
             if (!startupStillRelevant(ctx.result.seq)) {
                 std.heap.page_allocator.destroy(ctx);
                 return;
@@ -366,6 +378,7 @@ fn startServer(hwnd: HWND, user_initiated: bool) void {
 }
 
 fn handleLicenseChanged(hwnd: HWND) void {
+    tray_log.log("handleLicenseChanged: stopping server (will restart if was running)");
     const should_restart = g_srv_state == .running or g_srv_state == .starting;
     g_license_permits_use = license_mod.licensePermitsUse();
 
@@ -403,13 +416,16 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
             const startup_ctx: *StartupContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
             defer std.heap.page_allocator.destroy(startup_ctx);
             if (!startupStillRelevant(startup_ctx.result.seq) or g_srv_state != .starting) {
+                tray_log.logf("WM_STARTUP_COMPLETE: ignored (relevant={any} state={s})", .{ startupStillRelevant(startup_ctx.result.seq), @tagName(g_srv_state) });
                 return 0;
             }
             if (startup_ctx.result.started) {
+                tray_log.log("WM_STARTUP_COMPLETE: started=true, transitioning to running");
                 lifecycle_mod.handleStarted(&g_srv_state);
                 _ = SetTimer(h, TIMER_STATUS, TIMER_INTERVAL_MS, null);
                 if (startup_ctx.result.user_initiated) openDashboard(h);
             } else {
+                tray_log.logf("WM_STARTUP_COMPLETE: started=false, error={s}", .{std.mem.sliceTo(&startup_ctx.result.error_message, 0)});
                 setServerError(std.mem.sliceTo(&startup_ctx.result.error_message, 0));
                 lifecycle_mod.handleStartupFailed(&g_srv_state);
             }
@@ -417,11 +433,15 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
         WM_TIMER => {
             if (wparam == TIMER_STATUS) {
                 const was_running = g_srv_state == .running;
-                lifecycle_mod.handleTimer(&g_srv_state, process_mod.serverRunning());
+                const proc_running = process_mod.serverRunning();
+                lifecycle_mod.handleTimer(&g_srv_state, proc_running);
                 if (was_running and g_srv_state == .@"error") {
+                    tray_log.log("WM_TIMER: server died unexpectedly, killing remnants");
                     setServerError("Server process terminated unexpectedly");
                     _ = KillTimer(h, TIMER_STATUS);
                     process_mod.stopServer();
+                } else if (was_running and !proc_running) {
+                    tray_log.logf("WM_TIMER: was_running={any} proc_running={any} state={s}", .{ was_running, proc_running, @tagName(g_srv_state) });
                 }
             }
         },
@@ -432,6 +452,7 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
             }
         },
         WM_DESTROY => {
+            tray_log.log("WM_DESTROY: tearing down, will stopServer");
             cancelPendingStartup();
             _ = trayIcon(h, NIM_DELETE);
             _ = KillTimer(h, TIMER_STATUS);
@@ -448,6 +469,7 @@ fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
         tray_mod.CMD_OPEN_DASHBOARD => openDashboard(hwnd),
         tray_mod.CMD_START => startServer(hwnd, true),
         tray_mod.CMD_STOP => {
+            tray_log.log("CMD_STOP: user clicked Stop, calling stopServer");
             cancelPendingStartup();
             _ = KillTimer(hwnd, TIMER_STATUS);
             clearServerError();
@@ -465,6 +487,7 @@ fn handleMenuCmd(hwnd: HWND, cmd: usize) void {
             }
         },
         tray_mod.CMD_QUIT => {
+            tray_log.log("CMD_QUIT: user clicked Quit, calling stopServer");
             cancelPendingStartup();
             _ = KillTimer(hwnd, TIMER_STATUS);
             lifecycle_mod.handleQuit(process_mod.stopServer);
@@ -481,6 +504,13 @@ pub export fn wWinMain(
     _: [*:0]u16,
     _: c_int,
 ) callconv(.winapi) c_int {
+    // Single-instance guard: silently exit if already running.
+    const mutex_name = W("Local\\RTMifyLive-SingleInstance-{8F637197-D3C8-4C0E-A62A-EB682EC82F6E}");
+    const _mutex = CreateMutexW(null, 0, mutex_name);
+    if (_mutex == null or GetLastError() == ERROR_ALREADY_EXISTS) return 0;
+
+    tray_log.log("=== wWinMain start ===");
+
     g_hinstance = hinstance;
     _ = CoInitializeEx(null, COINIT_APARTMENTTHREADED);
     g_launch_at_login = checkLaunchAtLogin();
@@ -522,6 +552,8 @@ pub export fn wWinMain(
         showFatalError("Could not create the RTMify Live tray icon.");
         return 1;
     }
+
+    startServer(hwnd, true);
 
     var msg_struct: MSG = undefined;
     while (GetMessageW(&msg_struct, null, 0, 0) > 0) {

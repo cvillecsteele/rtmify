@@ -36,7 +36,7 @@ pub fn save(cfg: *const types.LiveConfig, alloc: Allocator) !void {
     const path = try workbook_paths.configPath(alloc);
     defer alloc.free(path);
     const dir_name = std.fs.path.dirname(path) orelse ".";
-    try std.fs.cwd().makePath(dir_name);
+    workbook_paths.ensureDirPath(dir_name);
     const json = try toJson(cfg, alloc);
     defer alloc.free(json);
     try std.fs.cwd().writeFile(.{ .sub_path = path, .data = json });

@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
-const default_version = "20260416-b";
+const default_version = "20260422-a";
 
 pub fn createBuildOptionsModule(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     const version = b.option([]const u8, "release-version", "Release version string") orelse default_version;

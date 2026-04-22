@@ -1,5 +1,6 @@
 /// main_live.zig — entry point for rtmify-live HTTP server.
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const graph_live = @import("graph_live.zig");
 const sync_live = @import("sync_live.zig");
@@ -52,6 +53,10 @@ const help_text =
 ;
 
 pub fn main() !void {
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
+    }
+
     var gpa_state: std.heap.GeneralPurposeAllocator(.{}) = .init;
     defer _ = gpa_state.deinit();
     const gpa = gpa_state.allocator();
@@ -245,7 +250,7 @@ pub fn main() !void {
         }
     }
 
-    std.log.info("rtmify-live {s} — db={s} port={d}", .{ build_options.version, db_path, port });
+    std.log.info("rtmify-live {s} db={s} port={d}", .{ build_options.version, db_path, port });
     const has_runtime_path_override = !std.mem.eql(u8, db_path, "graph.db") or inbox_dir_override != null;
 
     var tray_app_version: []u8 = undefined;

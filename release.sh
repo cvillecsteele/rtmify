@@ -353,11 +353,13 @@ run_build zig build win-gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe -Dlic
 copy_artifact "${ROOT_DIR}/zig-out/bin/rtmify-trace.exe" "${OUT_DIR}/windows/rtmify-trace.exe"
 record_artifact "trace" "windows" "binary" "windows/rtmify-trace.exe"
 
+run_build zig build live -Dtarget=x86_64-windows -Doptimize=ReleaseSafe -Dlicense-hmac-key-file="${KEY_FILE}" "${BUILD_VERSION_FLAG[@]}"
+copy_artifact "${ROOT_DIR}/zig-out/bin/rtmify-live.exe" "${OUT_DIR}/windows/rtmify-live.exe"
+record_artifact "live" "windows" "binary" "windows/rtmify-live.exe"
+
 run_build zig build win-gui-live -Dtarget=x86_64-windows -Doptimize=ReleaseSafe -Dlicense-hmac-key-file="${KEY_FILE}" "${BUILD_VERSION_FLAG[@]}"
 copy_artifact "${ROOT_DIR}/zig-out/bin/RTMify Live.exe" "${OUT_DIR}/windows/RTMify Live.exe"
 record_artifact "live" "windows" "binary" "windows/RTMify Live.exe"
-copy_artifact "${ROOT_DIR}/zig-out/bin/rtmify-live.exe" "${OUT_DIR}/windows/rtmify-live.exe"
-record_artifact "live" "windows" "binary" "windows/rtmify-live.exe"
 
 run_build make -C "${ROOT_DIR}/trace/macos" build ZIG_OPTIMIZE=ReleaseSafe XCODE_CONFIGURATION=Release LICENSE_HMAC_KEY_FILE="${KEY_FILE}" RELEASE_VERSION="${VERSION}"
 copy_artifact "${ROOT_DIR}/trace/macos/.build/Build/Products/Release/RTMify Trace.app" "${OUT_DIR}/macos/RTMify Trace.app"
