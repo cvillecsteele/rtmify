@@ -1,30 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const socket_read = @import("socket_read");
 const tray_log = @import("tray_log.zig");
 
-// We call ws2_32.recv directly instead of std.net.Stream.read.
-//
-// Background: Zig's std.net.Stream.read on Windows goes through ReadFile on
-// the socket handle, not recv/WSARecv. ReadFile-on-socket can return Win32
-// error codes that aren't in Zig's WSA error mapping table, surfacing as
-// error.Unexpected. We observed every probe attempt failing with
-// error.Unexpected even though the server was responding 200 to each request
-// (verified by server-side logging); switching this single read to ws2_32.recv
-// fixes it.
-//
-// State-of-the-art Zig socket-read patterns on Windows in 2026:
-//   1. Call ws2_32.recv directly (this file)
-//   2. Platform abstraction: recv on Windows, posix.read elsewhere
-//   3. WSARecv with overlapped I/O (for async / IOCP systems)
-//
-// This file is Windows-only, so option 1 is the right choice here. If you
-// add socket-read code to cross-platform modules (e.g. lib/, live/src/), use
-// option 2.
-const SOCKET = if (builtin.os.tag == .windows) std.os.windows.ws2_32.SOCKET else void;
-const SOCKET_ERROR: c_int = -1;
-
-extern "ws2_32" fn recv(s: SOCKET, buf: [*]u8, len: c_int, flags: c_int) callconv(.winapi) c_int;
-extern "ws2_32" fn WSAGetLastError() callconv(.winapi) c_int;
+// Do not call std.net.Stream.read directly here. See live/src/socket_read.zig
+// for the Windows-safe raw socket read policy and rationale.
 
 pub fn probeStatus(allocator: std.mem.Allocator, port: u16) bool {
     _ = allocator;
@@ -45,18 +25,20 @@ pub fn probeStatus(allocator: std.mem.Allocator, port: u16) bool {
     };
 
     var buf: [512]u8 = undefined;
-    const sock: SOCKET = @ptrCast(stream.handle);
-    const n = recv(sock, &buf, buf.len, 0);
-    if (n == SOCKET_ERROR) {
-        const code = WSAGetLastError();
-        tray_log.logf("probe: raw recv failed, WSAGetLastError={d}", .{code});
+    var windows_error: std.os.windows.ws2_32.WinsockError = .WSAEINVAL;
+    const n = socket_read.read(stream, &buf, &windows_error) catch |err| {
+        if (builtin.os.tag == .windows) {
+            tray_log.logf("probe: socket_read failed: {s} (WSA={d})", .{ @errorName(err), @intFromEnum(windows_error) });
+        } else {
+            tray_log.logf("probe: socket_read failed: {s}", .{@errorName(err)});
+        }
         return false;
-    }
+    };
     if (n == 0) {
-        tray_log.log("probe: raw recv returned 0 bytes (clean EOF)");
+        tray_log.log("probe: socket_read returned 0 bytes (clean EOF)");
         return false;
     }
-    const body = buf[0..@intCast(n)];
+    const body = buf[0..n];
     const matched = std.mem.indexOf(u8, body, "HTTP/1.1 200") != null or std.mem.indexOf(u8, body, "HTTP/1.0 200") != null;
     if (!matched) {
         const preview_len = @min(body.len, 80);

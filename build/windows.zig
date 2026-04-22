@@ -5,6 +5,11 @@ const types = @import("types.zig");
 
 pub fn register(ctx: types.BuildCtx, native: *const types.NativeArtifacts) void {
     const b = ctx.b;
+    const windows_socket_read_mod = b.createModule(.{
+        .root_source_file = b.path("live/src/socket_read.zig"),
+        .target = ctx.target,
+        .optimize = ctx.optimize,
+    });
 
     const win_gui_exe = b.addExecutable(.{
         .name = "rtmify-trace",
@@ -31,6 +36,9 @@ pub fn register(ctx: types.BuildCtx, native: *const types.NativeArtifacts) void 
             .root_source_file = b.path("live/windows/src/main.zig"),
             .target = ctx.target,
             .optimize = ctx.optimize,
+            .imports = &.{
+                .{ .name = "socket_read", .module = windows_socket_read_mod },
+            },
         }),
     });
     win_gui_live_exe.linkLibrary(native.static_lib);
@@ -74,6 +82,13 @@ pub fn register(ctx: types.BuildCtx, native: *const types.NativeArtifacts) void 
             .root_source_file = b.path("live/windows/src/main.zig"),
             .target = windows_check_target,
             .optimize = .ReleaseSafe,
+            .imports = &.{
+                .{ .name = "socket_read", .module = b.createModule(.{
+                    .root_source_file = b.path("live/src/socket_read.zig"),
+                    .target = windows_check_target,
+                    .optimize = .ReleaseSafe,
+                }) },
+            },
         }),
     });
     check_live_windows_shell.linkLibrary(native.static_lib);
