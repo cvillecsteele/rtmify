@@ -67,6 +67,7 @@ pub fn main() !void {
     var db_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
     var db_path: [:0]const u8 = "graph.db";
     var port: u16 = 8000;
+    var port_explicit = false;
     var show_version = false;
     var show_license_status_json = false;
     var show_help = false;
@@ -78,6 +79,7 @@ pub fn main() !void {
     var repo_paths: std.ArrayList([]const u8) = .empty;
     var profile_name: ?[]const u8 = null;
     var inbox_dir_override: ?[]const u8 = null;
+    var port_file_path: ?[]const u8 = null;
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
@@ -124,6 +126,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--port") and i + 1 < args.len) {
             i += 1;
             port = try std.fmt.parseInt(u16, args[i], 10);
+            port_explicit = true;
         } else if (std.mem.eql(u8, arg, "--repo") and i + 1 < args.len) {
             i += 1;
             try repo_paths.append(gpa, args[i]);
@@ -133,6 +136,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--inbox-dir") and i + 1 < args.len) {
             i += 1;
             inbox_dir_override = args[i];
+        } else if (std.mem.eql(u8, arg, "--port-file") and i + 1 < args.len) {
+            i += 1;
+            port_file_path = args[i];
         }
     }
 
@@ -299,19 +305,32 @@ pub fn main() !void {
 
     refreshActiveRuntimeCallback(&registry, &secure_store, &license_service, gpa);
 
-    // Find first available port (8000-8010) via quick probe
-    var actual_port = port;
-    while (actual_port <= port + 10) : (actual_port += 1) {
-        const probe_addr = try std.net.Address.parseIp("127.0.0.1", actual_port);
-        var probe = probe_addr.listen(.{ .reuse_address = true }) catch |e| {
-            if (e == error.AddressInUse) {
-                std.log.warn("port {d} in use, trying {d}...", .{ actual_port, actual_port + 1 });
-                continue;
-            }
+    // Bind the listener BEFORE doing anything that depends on knowing the
+    // port. Holding the BoundServer through the rest of setup eliminates
+    // the TOCTOU window between "probe says port N is free" and "actual
+    // listener tries to bind N", and gives us the true bound port to
+    // report to instance_info, the browser, and (via --port-file) any
+    // parent tray shell.
+    //
+    // When --port was explicit (e.g. spawned by a tray shell that wants a
+    // specific port) honor it strictly: bind that exact port or fail.
+    // When the user did NOT pass --port, walk 8000-8010.
+    const max_attempts: u16 = if (port_explicit) 1 else 11;
+    var bound = try server.bindLoopbackPort(port, max_attempts);
+    defer bound.deinit();
+    const actual_port = bound.port;
+
+    if (port_file_path) |path| {
+        // --port-file is the IPC contract with a parent shell waiting to
+        // discover our bound port. If we can't write it, the shell will
+        // hang on startup until its 60s timeout and then report a generic
+        // "Server did not become ready" error instead of the real cause.
+        // Fail fast so the parent sees the actual exit and the user gets
+        // a meaningful diagnosis.
+        server.announcePort(path, actual_port) catch |e| {
+            std.log.err("failed to write --port-file {s}: {s}", .{ path, @errorName(e) });
             return e;
         };
-        probe.deinit();
-        break;
     }
 
     // Open browser with the correct port
@@ -337,7 +356,7 @@ pub fn main() !void {
         .restart_active_workers_fn = restartActiveWorkersCallback,
         .run_preview_sync_fn = runPreviewSyncCallback,
     };
-    server.listen(actual_port, ctx) catch |e| return e;
+    server.serve(&bound, ctx) catch |e| return e;
 }
 
 fn resolveDbPath(alloc: std.mem.Allocator, db_path: []const u8) ![]u8 {

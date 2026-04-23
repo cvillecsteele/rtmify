@@ -183,17 +183,50 @@ fn quoteIfNeeded(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "\"{s}\"", .{text});
 }
 
-pub fn buildServerCommandLine(allocator: std.mem.Allocator, port: u16, db_path: []const u8) ![]u8 {
-    const quoted_db = try quoteIfNeeded(allocator, db_path);
-    defer allocator.free(quoted_db);
-    return std.fmt.allocPrint(allocator, "rtmify-live.exe --port {d} --no-browser --db {s}", .{ port, quoted_db });
+/// Returns the absolute path to the port-IPC file used by the runtime to
+/// report its actually-bound port back to the tray. Lives under the same
+/// per-user data directory as the DB and logs.
+pub fn buildPortFilePath(allocator: std.mem.Allocator) ![]u8 {
+    const local_app_data = localAppDataDir(allocator) catch return error.MissingLocalAppData;
+    defer allocator.free(local_app_data);
+    const data_dir = try std.fs.path.join(allocator, &.{ local_app_data, "RTMify Live" });
+    defer allocator.free(data_dir);
+    return std.fs.path.join(allocator, &.{ data_dir, "runtime.port" });
 }
 
-fn appendLogHeader(log_handle: ?HANDLE, port: u16, server_path: []const u8) void {
+/// Reads the port number written by the runtime to the port-IPC file.
+/// Returns null if the file doesn't exist or the contents don't parse as
+/// a valid port. Caller polls until non-null or until timeout.
+pub fn readPortFile(port_file_path: []const u8) ?u16 {
+    const file = std.fs.openFileAbsolute(port_file_path, .{}) catch return null;
+    defer file.close();
+    var buf: [16]u8 = undefined;
+    const n = file.readAll(&buf) catch return null;
+    if (n == 0) return null;
+    const trimmed = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return std.fmt.parseInt(u16, trimmed, 10) catch null;
+}
+
+/// Deletes any stale port-IPC file from a previous session so the tray
+/// doesn't read leftover data while waiting for the new child to bind.
+pub fn deletePortFile(port_file_path: []const u8) void {
+    std.fs.deleteFileAbsolute(port_file_path) catch {};
+}
+
+pub fn buildServerCommandLine(allocator: std.mem.Allocator, db_path: []const u8, port_file_path: []const u8) ![]u8 {
+    const quoted_db = try quoteIfNeeded(allocator, db_path);
+    defer allocator.free(quoted_db);
+    const quoted_port_file = try quoteIfNeeded(allocator, port_file_path);
+    defer allocator.free(quoted_port_file);
+    return std.fmt.allocPrint(allocator, "rtmify-live.exe --no-browser --db {s} --port-file {s}", .{ quoted_db, quoted_port_file });
+}
+
+fn appendLogHeader(log_handle: ?HANDLE, server_path: []const u8) void {
     if (log_handle == null) return;
     var buf: [512]u8 = undefined;
     const now = std.time.timestamp();
-    const line = std.fmt.bufPrint(&buf, "\n=== RTMify Live session {d} port={d} binary={s} ===\r\n", .{ now, port, server_path }) catch return;
+    const line = std.fmt.bufPrint(&buf, "\n=== RTMify Live session {d} binary={s} ===\r\n", .{ now, server_path }) catch return;
     var written: DWORD = 0;
     _ = WriteFile(log_handle, line.ptr, @intCast(line.len), &written, null);
 }
@@ -238,7 +271,7 @@ fn refreshServerProcessHandle(get_exit_code_fn: anytype, close_handle_fn: anytyp
     return true;
 }
 
-pub fn spawnServer(allocator: std.mem.Allocator, port: u16) SpawnServerResult {
+pub fn spawnServer(allocator: std.mem.Allocator, port_file_path: []const u8) SpawnServerResult {
     if (refreshServerProcessHandle(GetExitCodeProcess, CloseHandle)) return .{ .err = .already_running };
 
     const server_path = findServerExecutable(allocator) catch return .{ .err = .server_binary_missing };
@@ -252,14 +285,14 @@ pub fn spawnServer(allocator: std.mem.Allocator, port: u16) SpawnServerResult {
     setChildEnvironment(allocator, paths.log_path) catch return .{ .err = .env_setup_failed };
 
     const log_handle = openLogHandle(allocator, paths.log_path) catch return .{ .err = .log_open_failed };
-    appendLogHeader(log_handle, port, server_path);
+    appendLogHeader(log_handle, server_path);
 
     const server_path_w = utf8ToWideZ(allocator, server_path) catch {
         if (log_handle) |h| _ = CloseHandle(h);
         return .{ .err = .spawn_failed };
     };
     defer allocator.free(server_path_w);
-    const cmd_utf8 = buildServerCommandLine(allocator, port, paths.db_path) catch {
+    const cmd_utf8 = buildServerCommandLine(allocator, paths.db_path, port_file_path) catch {
         if (log_handle) |h| _ = CloseHandle(h);
         return .{ .err = .command_line_too_long };
     };
@@ -311,16 +344,17 @@ pub fn serverRunning() bool {
 
 test "buildServerCommandLine quotes db path with spaces" {
     const alloc = std.testing.allocator;
-    const cmd = try buildServerCommandLine(alloc, 8000, "C:\\Users\\Alice\\Local App Data\\RTMify Live\\graph.db");
+    const cmd = try buildServerCommandLine(alloc, "C:\\Users\\Alice\\Local App Data\\RTMify Live\\graph.db", "C:\\Users\\Alice\\port");
     defer alloc.free(cmd);
     try std.testing.expect(std.mem.indexOf(u8, cmd, "\"C:\\Users\\Alice\\Local App Data\\RTMify Live\\graph.db\"") != null);
 }
 
 test "buildServerCommandLine leaves simple db path unquoted" {
     const alloc = std.testing.allocator;
-    const cmd = try buildServerCommandLine(alloc, 8001, "C:\\RTMify\\graph.db");
+    const cmd = try buildServerCommandLine(alloc, "C:\\RTMify\\graph.db", "C:\\RTMify\\port");
     defer alloc.free(cmd);
     try std.testing.expect(std.mem.indexOf(u8, cmd, "--db C:\\RTMify\\graph.db") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cmd, "--port-file C:\\RTMify\\port") != null);
 }
 
 test "quoteIfNeeded handles parentheses" {

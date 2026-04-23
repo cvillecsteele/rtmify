@@ -145,12 +145,13 @@ const StartupResult = struct {
     seq: usize = 0,
     user_initiated: bool = false,
     started: bool = false,
+    bound_port: u16 = 0,
     error_message: [256:0]u8 = std.mem.zeroes([256:0]u8),
 };
 
 const StartupContext = struct {
     hwnd: HWND,
-    port: u16,
+    port_file_path: []u8,
     result: StartupResult = .{},
 };
 
@@ -287,35 +288,75 @@ fn startupThreadFailureMessage(err: StartupSpawnError) []const u8 {
     };
 }
 
-fn waitForStartupReady(seq: usize, port: u16, timeout_ms: u64, interval_ms: u64) bool {
+/// Waits for the runtime to write its bound port to the IPC file, then
+/// probes /api/status on that port until ready or the deadline expires.
+/// Returns the bound port on success, null on timeout or early child exit.
+///
+/// If the child process exits before the port file appears (e.g. bind
+/// failure, --port-file write failure, early crash), this returns null
+/// immediately rather than waiting the full deadline. The caller then
+/// distinguishes "server exited" from "server did not become ready" by
+/// checking process_mod.serverRunning() and reports the right error.
+fn waitForStartupReady(seq: usize, port_file_path: []const u8, timeout_ms: u64, interval_ms: u64) ?u16 {
     const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+
+    // Phase 1: wait for the runtime to write the port file (proves it bound).
+    var bound_port: u16 = 0;
     while (startupStillRelevant(seq) and std.time.milliTimestamp() < deadline) {
-        if (status_probe.probeStatus(std.heap.page_allocator, port)) return true;
+        if (process_mod.readPortFile(port_file_path)) |p| {
+            bound_port = p;
+            tray_log.logf("worker: runtime reported bound port {d}", .{p});
+            break;
+        }
+        if (!process_mod.serverRunning()) {
+            tray_log.log("worker: child exited before writing port file");
+            return null;
+        }
         std.Thread.sleep(interval_ms * std.time.ns_per_ms);
     }
-    return false;
+    if (bound_port == 0) return null;
+
+    // Phase 2: confirm the runtime is answering on that port.
+    while (startupStillRelevant(seq) and std.time.milliTimestamp() < deadline) {
+        if (status_probe.probeStatus(std.heap.page_allocator, bound_port)) return bound_port;
+        if (!process_mod.serverRunning()) {
+            tray_log.log("worker: child exited before /api/status responded");
+            return null;
+        }
+        std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+    }
+    return null;
 }
 
 fn startupWorker(ctx: *StartupContext) void {
     if (!startupStillRelevant(ctx.result.seq)) {
+        std.heap.page_allocator.free(ctx.port_file_path);
         std.heap.page_allocator.destroy(ctx);
         return;
     }
 
-    tray_log.logf("worker: starting (port={d})", .{ctx.port});
-    switch (process_mod.spawnServer(std.heap.page_allocator, ctx.port)) {
+    tray_log.logf("worker: starting (port_file={s})", .{ctx.port_file_path});
+    process_mod.deletePortFile(ctx.port_file_path);
+
+    switch (process_mod.spawnServer(std.heap.page_allocator, ctx.port_file_path)) {
         .ok => {
-            tray_log.log("worker: spawnServer ok, beginning probe loop");
+            tray_log.log("worker: spawnServer ok, waiting for port file + probe");
             if (!startupStillRelevant(ctx.result.seq)) {
                 process_mod.stopServer();
+                std.heap.page_allocator.free(ctx.port_file_path);
                 std.heap.page_allocator.destroy(ctx);
                 return;
             }
 
-            if (!waitForStartupReady(ctx.result.seq, ctx.port, STARTUP_TIMEOUT_MS, STARTUP_INTERVAL_MS)) {
-                tray_log.log("worker: probe loop timed out");
+            if (waitForStartupReady(ctx.result.seq, ctx.port_file_path, STARTUP_TIMEOUT_MS, STARTUP_INTERVAL_MS)) |bound| {
+                tray_log.logf("worker: probe succeeded on port {d}", .{bound});
+                ctx.result.bound_port = bound;
+                ctx.result.started = true;
+            } else {
+                tray_log.log("worker: startup wait timed out");
                 if (!startupStillRelevant(ctx.result.seq)) {
                     process_mod.stopServer();
+                    std.heap.page_allocator.free(ctx.port_file_path);
                     std.heap.page_allocator.destroy(ctx);
                     return;
                 }
@@ -325,17 +366,21 @@ fn startupWorker(ctx: *StartupContext) void {
                     process_mod.stopServer();
                     copyCString(&ctx.result.error_message, "Server did not become ready within 60s");
                 } else {
-                    tray_log.log("worker: server already gone after timeout");
+                    tray_log.log("worker: server already gone, releasing leftover handles");
+                    // serverRunning() observed the child gone and cleared
+                    // server_process, but did not close server_log_handle.
+                    // stopServer is safe-idempotent on a null process handle
+                    // and still closes the log handle, preventing a leak
+                    // across to the next startup attempt.
+                    process_mod.stopServer();
                     copyCString(&ctx.result.error_message, "Server exited during startup");
                 }
-            } else {
-                tray_log.log("worker: probe succeeded, server ready");
-                ctx.result.started = true;
             }
         },
         .err => |err| {
             tray_log.logf("worker: spawnServer failed: {s}", .{@tagName(err)});
             if (!startupStillRelevant(ctx.result.seq)) {
+                std.heap.page_allocator.free(ctx.port_file_path);
                 std.heap.page_allocator.destroy(ctx);
                 return;
             }
@@ -345,30 +390,39 @@ fn startupWorker(ctx: *StartupContext) void {
 
     if (PostMessageW(ctx.hwnd, WM_STARTUP_COMPLETE, 0, @bitCast(@intFromPtr(ctx))) == 0) {
         if (ctx.result.started) process_mod.stopServer();
+        std.heap.page_allocator.free(ctx.port_file_path);
         std.heap.page_allocator.destroy(ctx);
     }
 }
 
 fn spawnStartupWorker(hwnd: HWND, user_initiated: bool) StartupSpawnError!void {
+    const port_file_path = process_mod.buildPortFilePath(std.heap.page_allocator) catch return error.OutOfMemory;
+    errdefer std.heap.page_allocator.free(port_file_path);
+
     const ctx = std.heap.page_allocator.create(StartupContext) catch return error.OutOfMemory;
+    errdefer std.heap.page_allocator.destroy(ctx);
+
     ctx.* = .{
         .hwnd = hwnd,
-        .port = g_port,
+        .port_file_path = port_file_path,
         .result = .{
             .seq = nextStartupSeq(),
             .user_initiated = user_initiated,
         },
     };
-    const thread = std.Thread.spawn(.{}, startupWorker, .{ctx}) catch {
-        std.heap.page_allocator.destroy(ctx);
-        return error.ThreadSpawnFailed;
-    };
+    const thread = std.Thread.spawn(.{}, startupWorker, .{ctx}) catch return error.ThreadSpawnFailed;
     thread.detach();
+    // Ownership of port_file_path and ctx now belongs to the worker; the
+    // errdefers above only fire if we returned an error before this point.
 }
 
 fn startServer(hwnd: HWND, user_initiated: bool) void {
     if (g_srv_state == .running or g_srv_state == .starting) return;
 
+    // Don't pre-pick a port. The runtime walks 8000-8010 and writes its
+    // actual bound port to a file the worker reads back. This eliminates
+    // the SO_REUSEADDR-on-Windows hazard where a probe-bind could
+    // greenlight a port already serving something else.
     clearServerError();
     lifecycle_mod.handleStart(&g_srv_state);
     spawnStartupWorker(hwnd, user_initiated) catch |err| {
@@ -414,13 +468,18 @@ fn wndProc(hwnd: ?HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) callconv(.win
         },
         WM_STARTUP_COMPLETE => {
             const startup_ctx: *StartupContext = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            defer std.heap.page_allocator.destroy(startup_ctx);
+            defer {
+                std.heap.page_allocator.free(startup_ctx.port_file_path);
+                std.heap.page_allocator.destroy(startup_ctx);
+            }
             if (!startupStillRelevant(startup_ctx.result.seq) or g_srv_state != .starting) {
                 tray_log.logf("WM_STARTUP_COMPLETE: ignored (relevant={any} state={s})", .{ startupStillRelevant(startup_ctx.result.seq), @tagName(g_srv_state) });
                 return 0;
             }
             if (startup_ctx.result.started) {
-                tray_log.log("WM_STARTUP_COMPLETE: started=true, transitioning to running");
+                g_port = startup_ctx.result.bound_port;
+                g_cfg.port = startup_ctx.result.bound_port;
+                tray_log.logf("WM_STARTUP_COMPLETE: started=true on port {d}", .{startup_ctx.result.bound_port});
                 lifecycle_mod.handleStarted(&g_srv_state);
                 _ = SetTimer(h, TIMER_STATUS, TIMER_INTERVAL_MS, null);
                 if (startup_ctx.result.user_initiated) openDashboard(h);

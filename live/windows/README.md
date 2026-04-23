@@ -16,7 +16,7 @@ This README is the developer entrypoint for the Windows shell. For the cross-pla
 
 - on launch: spawns `rtmify-live.exe` with explicit per-user DB and log paths, then opens the dashboard
 - exposes a tray menu with start/stop, dashboard open, license import, launch-at-login, and quit
-- polls `/api/status` until the server is ready (10s timeout, 250ms interval) before opening the dashboard
+- polls `/api/status` until the server is ready (60s timeout, 250ms interval) before opening the dashboard
 - waits for `/api/status` on a 5s timer to detect server crashes
 - displays the license dialog on demand (file picker → status box → install/clear buttons)
 - sets the console code page to UTF-8 at startup so log lines render correctly
@@ -174,7 +174,7 @@ When the user launches the app:
 2. UTF-8 console code page set via `SetConsoleOutputCP(65001)`
 3. Tray icon registered with `Shell_NotifyIcon(NIM_ADD)`
 4. `startServer()` auto-spawns `rtmify-live.exe`
-5. A worker thread polls `/api/status` until ready (250ms intervals, 10s timeout)
+5. A worker thread polls `/api/status` until ready (250ms intervals, 60s timeout)
 6. On ready: tray state → "Running", dashboard opens via `ShellExecuteW`
 7. A 5s timer polls process liveness; if the server dies, tray shows "Error"
 
@@ -296,7 +296,7 @@ The single-instance guard uses a named mutex (`Local\RTMifyLive-SingleInstance-{
 
 Check the default browser association in Windows Settings → Apps → Default apps → Web browser. The shell uses `ShellExecuteW(hwnd, "open", "http://127.0.0.1:<port>", ...)`.
 
-### "Server did not become ready within 10s"
+### "Server did not become ready within 60s"
 
 The runtime is taking longer than expected to bind the port. Check `%LOCALAPPDATA%\RTMify Live\logs\server.log` for the actual startup error — usually port conflict, missing DB directory permissions, or schema migration issue.
 

@@ -53,22 +53,34 @@ pub fn hasBootstrapOverrides(options: types.BootstrapOptions) bool {
 pub fn applyBootstrapOverrides(cfg: *types.LiveConfig, options: types.BootstrapOptions, alloc: Allocator) !void {
     const workbook = select.activeWorkbook(cfg) orelse return;
     if (options.db_path_override) |path| {
-        alloc.free(workbook.db_path);
-        workbook.db_path = try alloc.dupe(u8, path);
-        alloc.free(workbook.display_name);
-        workbook.display_name = try alloc.dupe(u8, std.fs.path.basename(path));
-        workbook.platform = null;
-        clearOptionalString(&workbook.workbook_url, alloc);
-        clearOptionalString(&workbook.workbook_label, alloc);
-        clearOptionalString(&workbook.credential_ref, alloc);
-        clearOptionalString(&workbook.credential_display, alloc);
-        clearOptionalString(&workbook.google_sheet_id, alloc);
-        clearOptionalString(&workbook.excel_drive_id, alloc);
-        clearOptionalString(&workbook.excel_item_id, alloc);
+        // Only treat the supplied --db as a workbook reset when it points at
+        // a different file than the active workbook is already configured
+        // for. Native shells (macOS app, Windows tray) always pass --db with
+        // the per-user DB path on every launch; if that matches what the
+        // user already configured (Sheets/Excel + this DB), it must NOT
+        // clear platform / credentials / workbook_url. Treating every
+        // shell-spawned launch as a reset wiped the user's connection on
+        // every restart and the next save persisted the cleared state.
+        if (!std.mem.eql(u8, workbook.db_path, path)) {
+            alloc.free(workbook.db_path);
+            workbook.db_path = try alloc.dupe(u8, path);
+            alloc.free(workbook.display_name);
+            workbook.display_name = try alloc.dupe(u8, std.fs.path.basename(path));
+            workbook.platform = null;
+            clearOptionalString(&workbook.workbook_url, alloc);
+            clearOptionalString(&workbook.workbook_label, alloc);
+            clearOptionalString(&workbook.credential_ref, alloc);
+            clearOptionalString(&workbook.credential_display, alloc);
+            clearOptionalString(&workbook.google_sheet_id, alloc);
+            clearOptionalString(&workbook.excel_drive_id, alloc);
+            clearOptionalString(&workbook.excel_item_id, alloc);
+        }
     }
     if (options.inbox_dir_override) |path| {
-        alloc.free(workbook.inbox_dir);
-        workbook.inbox_dir = try alloc.dupe(u8, path);
+        if (!std.mem.eql(u8, workbook.inbox_dir, path)) {
+            alloc.free(workbook.inbox_dir);
+            workbook.inbox_dir = try alloc.dupe(u8, path);
+        }
     }
 }
 
@@ -136,6 +148,28 @@ test "applyBootstrapOverrides leaves identity untouched when only inbox override
     try testing.expectEqualStrings(original_slug, cfg.workbooks[0].slug);
     try testing.expectEqualStrings(original_name, cfg.workbooks[0].display_name);
     try testing.expectEqualStrings("/tmp/alt-inbox", cfg.workbooks[0].inbox_dir);
+}
+
+test "applyBootstrapOverrides does not clear connection when db_path matches" {
+    var cfg = try bootstrapConfig(testing.allocator, .{ .db_path_override = "/tmp/demo.sqlite" });
+    defer cfg.deinit(testing.allocator);
+    cfg.workbooks[0].platform = .google;
+    cfg.workbooks[0].workbook_url = try testing.allocator.dupe(u8, "https://docs.google.com/spreadsheets/d/abc/edit");
+    cfg.workbooks[0].credential_ref = try testing.allocator.dupe(u8, "cred_demo");
+    cfg.workbooks[0].google_sheet_id = try testing.allocator.dupe(u8, "abc");
+
+    // Same db_path passed again (e.g. tray re-launch): must NOT clear
+    // platform/credentials/workbook_url. This is the regression that wiped
+    // user-configured Sheets/Excel connections on every Windows tray launch.
+    try applyBootstrapOverrides(&cfg, .{
+        .db_path_override = "/tmp/demo.sqlite",
+    }, testing.allocator);
+
+    try testing.expectEqualStrings("/tmp/demo.sqlite", cfg.workbooks[0].db_path);
+    try testing.expect(cfg.workbooks[0].platform == .google);
+    try testing.expectEqualStrings("https://docs.google.com/spreadsheets/d/abc/edit", cfg.workbooks[0].workbook_url.?);
+    try testing.expectEqualStrings("cred_demo", cfg.workbooks[0].credential_ref.?);
+    try testing.expectEqualStrings("abc", cfg.workbooks[0].google_sheet_id.?);
 }
 
 test "hasBootstrapOverrides matches current semantics exactly" {

@@ -9,7 +9,10 @@ test "server facade still exposes public API" {
     const facade = @import("../server.zig");
     _ = facade.ServerCtx;
     _ = facade.InstanceInfo;
-    _ = facade.listen;
+    _ = facade.BoundServer;
+    _ = facade.bindLoopbackPort;
+    _ = facade.announcePort;
+    _ = facade.serve;
 }
 
 test {
