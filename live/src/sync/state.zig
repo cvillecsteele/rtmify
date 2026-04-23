@@ -74,6 +74,7 @@ pub const WorkerControl = struct {
 pub const SyncConfig = struct {
     workbook_id: []const u8,
     workbook_slug: []const u8,
+    workbook_display_name: []const u8,
     profile: internal.profile_mod.ProfileId,
     active: internal.ActiveConnection,
     design_bom_sync: ?DesignBomSyncSource = null,

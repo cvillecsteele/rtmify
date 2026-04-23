@@ -572,11 +572,14 @@ fn runPreviewSyncCallback(
         const prov_done = (runtime.db.getConfig("rtmify_provisioned", pa) catch null) orelse "";
         if (prov_done.len == 0) {
             const prof = profile_mod.get(profile_mod.fromString(runtime.config.profile) orelse .generic);
-            _ = provision_mod.provisionWorkbook(&provider_runtime, prof, pa) catch |err| blk: {
-                std.log.warn("preview sync provision failed: {s}", .{@errorName(err)});
-                break :blk @as([][]const u8, &.{});
+            const provisioned = blk: {
+                _ = provision_mod.provisionWorkbook(&provider_runtime, prof, pa) catch |err| {
+                    std.log.warn("preview sync provision failed: {s}", .{@errorName(err)});
+                    break :blk false;
+                };
+                break :blk true;
             };
-            runtime.db.storeConfig("rtmify_provisioned", "1") catch {};
+            if (provisioned) runtime.db.storeConfig("rtmify_provisioned", "1") catch {};
         }
     }
 
@@ -585,7 +588,7 @@ fn runPreviewSyncCallback(
         &runtime.db,
         profile_mod.fromString(runtime.config.profile) orelse .generic,
         runtime.config.slug,
-        runtime.config.slug,
+        runtime.config.display_name,
         runtime.config.id,
         &provider_runtime,
         &runtime.sync_state,
@@ -635,6 +638,7 @@ fn maybeStartSync(
     const cfg = sync_live.SyncConfig{
         .workbook_id = try alloc.dupe(u8, workbook_runtime.config.id),
         .workbook_slug = try alloc.dupe(u8, workbook_runtime.config.slug),
+        .workbook_display_name = try alloc.dupe(u8, workbook_runtime.config.display_name),
         .profile = profile_mod.fromString(workbook_runtime.config.profile) orelse .generic,
         .active = try active.clone(alloc),
         .design_bom_sync = if (design_bom_sync) |source| try source.clone(alloc) else null,

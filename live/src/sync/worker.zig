@@ -9,6 +9,7 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
     const alloc = gpa_state.allocator();
     defer cfg.alloc.free(cfg.workbook_id);
     defer cfg.alloc.free(cfg.workbook_slug);
+    defer cfg.alloc.free(cfg.workbook_display_name);
     defer cfg.state.sync_started.store(false, .seq_cst);
     defer cfg.state.sync_in_progress.store(false, .seq_cst);
     var owned_active = cfg.active;
@@ -97,15 +98,12 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
             cfg.db.storeConfig("last_sync_error", msg) catch {};
             cfg.db.storeConfig("last_sync_ok", "0") catch {};
             std.log.err("sync: change token refresh failed: {s}", .{msg});
-            cfg.control.waitTimeout(backoff * std.time.ns_per_s);
+            cfg.control.waitTimeout(retryDelaySeconds(&runtime, e, backoff) * std.time.ns_per_s);
             backoff = @min(backoff * 2, 300);
             continue;
         };
 
         if (!tokenRequiresSync(last_change_token, change_token, force_sync)) {
-            if (last_change_token) |prev| {
-                _ = prev;
-            }
             alloc.free(change_token);
             cfg.control.waitTimeout(30 * std.time.ns_per_s);
             continue;
@@ -124,23 +122,26 @@ pub fn syncThread(cfg: state_mod.SyncConfig) void {
             const prov_done = (cfg.db.getConfig("rtmify_provisioned", pa) catch null) orelse "";
             if (prov_done.len == 0) {
                 const prof = internal.profile_mod.get(cfg.profile);
-                _ = internal.provision_mod.provisionWorkbook(&runtime, prof, pa) catch |e| blk: {
-                    std.log.warn("provision failed: {s}", .{@errorName(e)});
-                    break :blk @as([][]const u8, &.{});
+                const provisioned = blk: {
+                    _ = internal.provision_mod.provisionWorkbook(&runtime, prof, pa) catch |e| {
+                        std.log.warn("provision failed: {s}", .{@errorName(e)});
+                        break :blk false;
+                    };
+                    break :blk true;
                 };
-                cfg.db.storeConfig("rtmify_provisioned", "1") catch {};
+                if (provisioned) cfg.db.storeConfig("rtmify_provisioned", "1") catch {};
             }
         }
 
         cfg.state.sync_in_progress.store(true, .seq_cst);
-        cycle.runSyncCycle(cfg.db, cfg.profile, cfg.workbook_slug, cfg.workbook_slug, cfg.workbook_id, &runtime, cfg.state, alloc) catch |e| {
+        cycle.runSyncCycle(cfg.db, cfg.profile, cfg.workbook_slug, cfg.workbook_display_name, cfg.workbook_id, &runtime, cfg.state, alloc) catch |e| {
             cfg.state.sync_in_progress.store(false, .seq_cst);
             const msg = @errorName(e);
             cfg.state.setError(msg);
             cfg.db.storeConfig("last_sync_error", msg) catch {};
             cfg.db.storeConfig("last_sync_ok", "0") catch {};
             std.log.err("sync: cycle failed: {s}", .{msg});
-            cfg.control.waitTimeout(backoff * std.time.ns_per_s);
+            cfg.control.waitTimeout(retryDelaySeconds(&runtime, e, backoff) * std.time.ns_per_s);
             backoff = @min(backoff * 2, 300);
             continue;
         };
@@ -269,6 +270,13 @@ fn tokenRequiresSync(previous: ?[]const u8, current: []const u8, force_sync: boo
     if (force_sync) return true;
     const prior = previous orelse return true;
     return !std.mem.eql(u8, prior, current);
+}
+
+fn retryDelaySeconds(runtime: *internal.ProviderRuntime, err: anyerror, fallback_seconds: u64) u64 {
+    if (err == error.Throttled) {
+        if (runtime.takeRetryAfterSeconds()) |seconds| return seconds;
+    }
+    return fallback_seconds;
 }
 
 fn mtimeRequiresSync(previous: ?i128, current: i128, force_sync: bool) bool {
@@ -465,6 +473,27 @@ test "tokenRequiresSync truth table matches current semantics" {
     try testing.expect(!tokenRequiresSync("a", "a", false));
     try testing.expect(tokenRequiresSync("a", "b", false));
     try testing.expect(tokenRequiresSync("a", "a", true));
+}
+
+test "retryDelaySeconds uses Retry-After for throttled Excel runtime" {
+    const alloc = testing.allocator;
+
+    var runtime = internal.ProviderRuntime{ .excel = .{
+        .http_client = .{ .allocator = alloc },
+        .tenant_id = try alloc.dupe(u8, "tenant"),
+        .client_id = try alloc.dupe(u8, "client"),
+        .client_secret = try alloc.dupe(u8, "secret"),
+        .drive_id = try alloc.dupe(u8, "drive"),
+        .item_id = try alloc.dupe(u8, "item"),
+        .workbook_url = try alloc.dupe(u8, "https://example.com/workbook.xlsx"),
+        .workbook_label = try alloc.dupe(u8, "Workbook.xlsx"),
+        .last_retry_after_seconds = 5,
+    } };
+    defer runtime.deinit(alloc);
+
+    try testing.expectEqual(@as(u64, 5), retryDelaySeconds(&runtime, error.Throttled, 30));
+    try testing.expectEqual(@as(u64, 30), retryDelaySeconds(&runtime, error.Throttled, 30));
+    try testing.expectEqual(@as(u64, 30), retryDelaySeconds(&runtime, error.ApiError, 30));
 }
 
 test "mtimeRequiresSync truth table matches current semantics" {

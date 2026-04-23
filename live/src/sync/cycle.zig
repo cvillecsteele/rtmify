@@ -53,16 +53,12 @@ pub fn runSyncCycle(
     var diag = internal.diagnostic_mod.Diagnostics.init(a);
     defer diag.deinit();
 
-    _ = internal.schema.ingestValidatedWithOptions(&g, &sheet_data, &diag, .{
-        .enable_product_tab = true,
-        .enable_decomposition_tab = enable_decomposition_tab,
-        .enable_design_inputs_tab = profile_id == .medical,
-        .enable_design_outputs_tab = profile_id == .medical,
-        .enable_config_items_tab = profile_id != .generic,
-        .rtm_artifact_id = try std.fmt.allocPrint(a, "artifact://rtm/{s}", .{workbook_slug}),
-        .rtm_artifact_display_name = workbook_display_name,
-        .rtm_artifact_path = workbook_path,
-    }) catch |e| {
+    _ = internal.schema.ingestValidatedWithOptions(
+        &g,
+        &sheet_data,
+        &diag,
+        try buildIngestOptions(profile_id, workbook_slug, workbook_display_name, workbook_path, a),
+    ) catch |e| {
         std.log.warn("sync: ingest errors (continuing): {s}", .{@errorName(e)});
     };
 
@@ -70,6 +66,25 @@ pub fn runSyncCycle(
     try writeback.writeBackStatus(db, runtime, req_rows, risk_rows, un_rows, product_rows, a);
 
     std.log.info("sync: cycle complete — {d} nodes", .{g.nodes.count()});
+}
+
+pub fn buildIngestOptions(
+    profile_id: internal.profile_mod.ProfileId,
+    workbook_slug: []const u8,
+    workbook_display_name: []const u8,
+    workbook_path: []const u8,
+    alloc: internal.Allocator,
+) !internal.schema.IngestOptions {
+    return .{
+        .enable_product_tab = true,
+        .enable_decomposition_tab = profile_id == .aerospace,
+        .enable_design_inputs_tab = profile_id == .medical,
+        .enable_design_outputs_tab = profile_id == .medical,
+        .enable_config_items_tab = profile_id != .generic,
+        .rtm_artifact_id = try std.fmt.allocPrint(alloc, "artifact://rtm/{s}", .{workbook_slug}),
+        .rtm_artifact_display_name = workbook_display_name,
+        .rtm_artifact_path = workbook_path,
+    };
 }
 
 pub fn readOptionalTab(runtime: *internal.ProviderRuntime, existing_tabs: []const internal.online_provider.TabRef, tab_name: []const u8, alloc: internal.Allocator) ![][][]const u8 {

@@ -342,31 +342,24 @@ fn validateProviderBackedSync(
 }
 
 fn buildLocalSyncValidationResponse(policy: SyncDomainPolicy, request: SyncValidationRequest, alloc: Allocator) !shared.JsonRouteResponse {
-    return switch (policy.domain) {
-        .design_bom => shared.jsonRouteResponse(
-            .ok,
-            try std.fmt.allocPrint(
-                alloc,
-                "{{\"ok\":true,\"kind\":\"local_xlsx\",\"display_name\":\"{s}\",\"local_xlsx_path\":\"{s}\"}}",
-                .{ request.display_name orelse policy.default_display_name, request.local_xlsx_path.? },
-            ),
-            true,
-        ),
-        .soup => shared.jsonRouteResponse(
-            .ok,
-            try std.fmt.allocPrint(
-                alloc,
-                "{{\"ok\":true,\"kind\":\"local_xlsx\",\"display_name\":\"{s}\",\"local_xlsx_path\":\"{s}\",\"full_product_identifier\":\"{s}\",\"bom_name\":\"{s}\"}}",
-                .{
-                    request.display_name orelse policy.default_display_name,
-                    request.local_xlsx_path.?,
-                    request.full_product_identifier.?,
-                    request.bom_name orelse policy.default_bom_name.?,
-                },
-            ),
-            true,
-        ),
-    };
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+
+    try buf.appendSlice(alloc, "{\"ok\":true,\"kind\":\"local_xlsx\",\"display_name\":");
+    try shared.appendJsonStr(&buf, request.display_name orelse policy.default_display_name, alloc);
+    try buf.appendSlice(alloc, ",\"local_xlsx_path\":");
+    try shared.appendJsonStr(&buf, request.local_xlsx_path.?, alloc);
+    switch (policy.domain) {
+        .design_bom => {},
+        .soup => {
+            try buf.appendSlice(alloc, ",\"full_product_identifier\":");
+            try shared.appendJsonStr(&buf, request.full_product_identifier.?, alloc);
+            try buf.appendSlice(alloc, ",\"bom_name\":");
+            try shared.appendJsonStr(&buf, request.bom_name orelse policy.default_bom_name.?, alloc);
+        },
+    }
+    try buf.append(alloc, '}');
+    return shared.jsonRouteResponse(.ok, try buf.toOwnedSlice(alloc), true);
 }
 
 fn buildProviderSyncValidationResponse(policy: SyncDomainPolicy, provider_backed: ProviderBackedValidation, alloc: Allocator) !shared.JsonRouteResponse {
@@ -660,6 +653,48 @@ test "design bom validate local_xlsx success" {
     const resp = try handleDesignBomSyncValidateResponse(&store, body, alloc);
     try testing.expectEqual(std.http.Status.ok, resp.status);
     try testing.expect(std.mem.indexOf(u8, resp.body, "\"kind\":\"local_xlsx\"") != null);
+}
+
+test "local_xlsx validation response escapes design bom display name and path" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const resp = try buildLocalSyncValidationResponse(design_bom_policy, .{
+        .kind = "local_xlsx",
+        .display_name = "Design \"BOM\" \\ Intake",
+        .local_xlsx_path = "C:\\RTMify\\quoted \"path\"\\bom.xlsx",
+    }, alloc);
+    try testing.expectEqual(std.http.Status.ok, resp.status);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp.body, .{});
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqualStrings("Design \"BOM\" \\ Intake", root.object.get("display_name").?.string);
+    try testing.expectEqualStrings("C:\\RTMify\\quoted \"path\"\\bom.xlsx", root.object.get("local_xlsx_path").?.string);
+}
+
+test "local_xlsx validation response escapes soup identifiers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const resp = try buildLocalSyncValidationResponse(soup_policy, .{
+        .kind = "local_xlsx",
+        .display_name = "SOUP \"Catalog\"",
+        .local_xlsx_path = "C:\\RTMify\\soup.xlsx",
+        .full_product_identifier = "Product \\ \"A\"",
+        .bom_name = "BOM \\ \"Released\"",
+    }, alloc);
+    try testing.expectEqual(std.http.Status.ok, resp.status);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp.body, .{});
+    defer parsed.deinit();
+    const root = parsed.value;
+    try testing.expectEqualStrings("SOUP \"Catalog\"", root.object.get("display_name").?.string);
+    try testing.expectEqualStrings("C:\\RTMify\\soup.xlsx", root.object.get("local_xlsx_path").?.string);
+    try testing.expectEqualStrings("Product \\ \"A\"", root.object.get("full_product_identifier").?.string);
+    try testing.expectEqualStrings("BOM \\ \"Released\"", root.object.get("bom_name").?.string);
 }
 
 test "design bom validate local_xlsx missing tab" {

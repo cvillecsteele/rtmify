@@ -73,6 +73,13 @@ pub const ProviderRuntime = union(common.ProviderId) {
         };
     }
 
+    pub fn takeRetryAfterSeconds(self: *ProviderRuntime) ?u64 {
+        return switch (self.*) {
+            .google => null,
+            .excel => |*runtime| runtime.takeRetryAfterSeconds(),
+        };
+    }
+
     pub fn deinit(self: *ProviderRuntime, alloc: Allocator) void {
         switch (self.*) {
             .google => |*runtime| runtime.deinit(alloc),

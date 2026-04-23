@@ -25,6 +25,19 @@ const TokenCache = struct {
     }
 };
 
+const WorksheetCache = struct {
+    tabs: ?[]common.TabRef = null,
+
+    fn deinit(self: *WorksheetCache, alloc: Allocator) void {
+        self.invalidate(alloc);
+    }
+
+    fn invalidate(self: *WorksheetCache, alloc: Allocator) void {
+        if (self.tabs) |tabs| common.freeTabRefs(tabs, alloc);
+        self.tabs = null;
+    }
+};
+
 pub const Runtime = struct {
     http_client: std.http.Client,
     tenant_id: []const u8,
@@ -35,6 +48,9 @@ pub const Runtime = struct {
     workbook_url: []const u8,
     workbook_label: []const u8,
     token_cache: TokenCache = .{},
+    token_mu: std.Thread.Mutex = .{},
+    worksheet_cache: WorksheetCache = .{},
+    last_retry_after_seconds: ?u64 = null,
 
     pub fn init(active: common.ActiveConnection, alloc: Allocator) !Runtime {
         const tenant_id = json_util.extractJsonFieldStatic(active.credential_json, "tenant_id") orelse return error.InvalidCredential;
@@ -65,13 +81,16 @@ pub const Runtime = struct {
         alloc.free(self.item_id);
         alloc.free(self.workbook_url);
         alloc.free(self.workbook_label);
+        self.worksheet_cache.deinit(alloc);
         self.token_cache.deinit(alloc);
     }
 
-    fn getToken(self: *Runtime, alloc: Allocator) ![]const u8 {
+    fn getToken(self: *Runtime, alloc: Allocator) ![]u8 {
+        self.token_mu.lock();
+        defer self.token_mu.unlock();
         const now = std.time.timestamp();
         if (self.token_cache.access_token) |tok| {
-            if (now < self.token_cache.expires_at - 60) return tok;
+            if (now < self.token_cache.expires_at - 60) return alloc.dupe(u8, tok);
         }
         if (self.token_cache.access_token) |tok| {
             alloc.free(tok);
@@ -80,52 +99,67 @@ pub const Runtime = struct {
         const token_result = try acquireToken(&self.http_client, self.tenant_id, self.client_id, self.client_secret, alloc);
         self.token_cache.access_token = token_result.access_token;
         self.token_cache.expires_at = token_result.expires_at;
-        return self.token_cache.access_token.?;
+        return alloc.dupe(u8, self.token_cache.access_token.?);
+    }
+
+    fn worksheets(self: *Runtime, alloc: Allocator) ![]const common.TabRef {
+        if (self.worksheet_cache.tabs == null) {
+            const token = try self.getToken(alloc);
+            defer alloc.free(token);
+            self.worksheet_cache.tabs = try fetchWorksheets(&self.http_client, token, self.drive_id, self.item_id, alloc, &self.last_retry_after_seconds);
+        }
+        return self.worksheet_cache.tabs.?;
+    }
+
+    pub fn takeRetryAfterSeconds(self: *Runtime) ?u64 {
+        const value = self.last_retry_after_seconds;
+        self.last_retry_after_seconds = null;
+        return value;
     }
 
     pub fn changeToken(self: *Runtime, alloc: Allocator) ![]const u8 {
         const token = try self.getToken(alloc);
-        var meta = try getDriveItemMetadata(&self.http_client, token, self.drive_id, self.item_id, alloc);
+        defer alloc.free(token);
+        var meta = try getDriveItemMetadata(&self.http_client, token, self.drive_id, self.item_id, alloc, &self.last_retry_after_seconds);
         defer meta.deinit(alloc);
         return alloc.dupe(u8, meta.last_modified);
     }
 
     pub fn listTabs(self: *Runtime, alloc: Allocator) ![]common.TabRef {
-        const token = try self.getToken(alloc);
-        return fetchWorksheets(&self.http_client, token, self.drive_id, self.item_id, alloc);
+        return cloneTabRefs(try self.worksheets(alloc), alloc);
     }
 
     pub fn readRows(self: *Runtime, tab_title: []const u8, alloc: Allocator) ![][][]const u8 {
         const token = try self.getToken(alloc);
-        const tabs = try fetchWorksheets(&self.http_client, token, self.drive_id, self.item_id, alloc);
-        defer common.freeTabRefs(tabs, alloc);
+        defer alloc.free(token);
+        const tabs = try self.worksheets(alloc);
         const tab_id = findTabId(tabs, tab_title) orelse return error.NotFound;
-        const last_row = try fetchUsedRangeLastRow(&self.http_client, token, self.drive_id, self.item_id, tab_id, alloc);
+        const last_row = try fetchUsedRangeLastRow(&self.http_client, token, self.drive_id, self.item_id, tab_id, alloc, &self.last_retry_after_seconds);
         if (last_row == 0) return try alloc.alloc([][]const u8, 0);
         const a1 = try std.fmt.allocPrint(alloc, "A1:Z{d}", .{last_row});
         defer alloc.free(a1);
-        return fetchRangeValues(&self.http_client, token, self.drive_id, self.item_id, tab_id, a1, alloc);
+        return fetchRangeValues(&self.http_client, token, self.drive_id, self.item_id, tab_id, a1, alloc, &self.last_retry_after_seconds);
     }
 
     pub fn batchWriteValues(self: *Runtime, updates: []const common.ValueUpdate, alloc: Allocator) !void {
         if (updates.len == 0) return;
         const token = try self.getToken(alloc);
-        const tabs = try fetchWorksheets(&self.http_client, token, self.drive_id, self.item_id, alloc);
-        defer common.freeTabRefs(tabs, alloc);
+        defer alloc.free(token);
+        const tabs = try self.worksheets(alloc);
 
         for (updates) |update| {
             const parsed = try parseA1Range(update.a1_range, alloc);
             defer parsed.deinit(alloc);
             const tab_id = findTabId(tabs, parsed.tab_title) orelse return error.NotFound;
-            try patchRangeValues(&self.http_client, token, self.drive_id, self.item_id, tab_id, parsed.range, update.values, alloc);
+            try patchRangeValues(&self.http_client, token, self.drive_id, self.item_id, tab_id, parsed.range, update.values, alloc, &self.last_retry_after_seconds);
         }
     }
 
     pub fn applyRowFormats(self: *Runtime, reqs: []const common.RowFormat, alloc: Allocator) !void {
         if (reqs.len == 0) return;
         const token = try self.getToken(alloc);
-        const tabs = try fetchWorksheets(&self.http_client, token, self.drive_id, self.item_id, alloc);
-        defer common.freeTabRefs(tabs, alloc);
+        defer alloc.free(token);
+        const tabs = try self.worksheets(alloc);
 
         for (reqs) |req| {
             const tab_id = findTabId(tabs, req.tab_title) orelse continue;
@@ -136,13 +170,15 @@ pub const Runtime = struct {
                 req.row_1based,
             });
             defer alloc.free(range);
-            try patchRangeFill(&self.http_client, token, self.drive_id, self.item_id, tab_id, range, req.fill_hex, alloc);
+            try patchRangeFill(&self.http_client, token, self.drive_id, self.item_id, tab_id, range, req.fill_hex, alloc, &self.last_retry_after_seconds);
         }
     }
 
     pub fn createTab(self: *Runtime, title: []const u8, alloc: Allocator) !void {
         const token = try self.getToken(alloc);
-        try addWorksheet(&self.http_client, token, self.drive_id, self.item_id, title, alloc);
+        defer alloc.free(token);
+        try addWorksheet(&self.http_client, token, self.drive_id, self.item_id, title, alloc, &self.last_retry_after_seconds);
+        self.worksheet_cache.invalidate(alloc);
     }
 };
 
@@ -183,7 +219,7 @@ pub fn resolveWorkbookUrl(client: *std.http.Client, tenant_id: []const u8, clien
     defer alloc.free(share_token);
     const url = try std.fmt.allocPrint(alloc, "https://graph.microsoft.com/v1.0/shares/{s}/driveItem", .{share_token});
     defer alloc.free(url);
-    const body = try httpDoJson(client, .GET, url, token_result.access_token, null, alloc);
+    const body = try httpDoJson(client, .GET, url, token_result.access_token, null, alloc, null);
     defer alloc.free(body);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
@@ -204,7 +240,8 @@ pub fn resolveWorkbookUrl(client: *std.http.Client, tenant_id: []const u8, clien
 pub fn acquireToken(client: *std.http.Client, tenant_id: []const u8, client_id: []const u8, client_secret: []const u8, alloc: Allocator) !TokenResult {
     const url = try std.fmt.allocPrint(alloc, "https://login.microsoftonline.com/{s}/oauth2/v2.0/token", .{tenant_id});
     defer alloc.free(url);
-    const body = try std.fmt.allocPrint(alloc,
+    const body = try std.fmt.allocPrint(
+        alloc,
         "client_id={s}&client_secret={s}&scope={s}&grant_type=client_credentials",
         .{
             client_id,
@@ -214,7 +251,7 @@ pub fn acquireToken(client: *std.http.Client, tenant_id: []const u8, client_id: 
     );
     defer alloc.free(body);
 
-    const resp = try httpDoJsonWithContentType(client, .POST, url, null, body, alloc, "application/x-www-form-urlencoded");
+    const resp = try httpDoJsonWithContentType(client, .POST, url, null, body, alloc, "application/x-www-form-urlencoded", null);
     defer alloc.free(resp);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, resp, .{});
     defer parsed.deinit();
@@ -227,13 +264,14 @@ pub fn acquireToken(client: *std.http.Client, tenant_id: []const u8, client_id: 
     };
 }
 
-fn getDriveItemMetadata(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, alloc: Allocator) !DriveItemMetadata {
-    const url = try std.fmt.allocPrint(alloc,
+fn getDriveItemMetadata(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) !DriveItemMetadata {
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}?$select=lastModifiedDateTime,name,webUrl",
         .{ drive_id, item_id },
     );
     defer alloc.free(url);
-    const body = try httpDoJson(client, .GET, url, token, null, alloc);
+    const body = try httpDoJson(client, .GET, url, token, null, alloc, retry_after_seconds);
     defer alloc.free(body);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
     defer parsed.deinit();
@@ -245,13 +283,14 @@ fn getDriveItemMetadata(client: *std.http.Client, token: []const u8, drive_id: [
     };
 }
 
-fn fetchWorksheets(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, alloc: Allocator) ![]common.TabRef {
-    const url = try std.fmt.allocPrint(alloc,
+fn fetchWorksheets(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) ![]common.TabRef {
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}/workbook/worksheets",
         .{ drive_id, item_id },
     );
     defer alloc.free(url);
-    const body = try httpDoJson(client, .GET, url, token, null, alloc);
+    const body = try httpDoJson(client, .GET, url, token, null, alloc, retry_after_seconds);
     defer alloc.free(body);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
     defer parsed.deinit();
@@ -261,21 +300,49 @@ fn fetchWorksheets(client: *std.http.Client, token: []const u8, drive_id: []cons
     var result: std.ArrayList(common.TabRef) = .empty;
     defer result.deinit(alloc);
     for (value.array.items) |item| {
+        const title = try dupObjectString(item, "name", alloc);
+        errdefer alloc.free(title);
+        const native_id = try dupObjectString(item, "id", alloc);
+        errdefer alloc.free(native_id);
         try result.append(alloc, .{
-            .title = try dupObjectString(item, "name", alloc),
-            .native_id = try dupObjectString(item, "id", alloc),
+            .title = title,
+            .native_id = native_id,
         });
     }
     return result.toOwnedSlice(alloc);
 }
 
-fn fetchUsedRangeLastRow(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, alloc: Allocator) !usize {
-    const url = try std.fmt.allocPrint(alloc,
+fn cloneTabRefs(tabs: []const common.TabRef, alloc: Allocator) ![]common.TabRef {
+    var result = try alloc.alloc(common.TabRef, tabs.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (result[0..initialized]) |tab| {
+            alloc.free(tab.title);
+            alloc.free(tab.native_id);
+        }
+        alloc.free(result);
+    }
+    for (tabs, 0..) |tab, idx| {
+        const title = try alloc.dupe(u8, tab.title);
+        errdefer alloc.free(title);
+        const native_id = try alloc.dupe(u8, tab.native_id);
+        result[idx] = .{
+            .title = title,
+            .native_id = native_id,
+        };
+        initialized += 1;
+    }
+    return result;
+}
+
+fn fetchUsedRangeLastRow(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) !usize {
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}/workbook/worksheets/{s}/usedRange(valuesOnly=true)",
         .{ drive_id, item_id, worksheet_id },
     );
     defer alloc.free(url);
-    const body = try httpDoJson(client, .GET, url, token, null, alloc);
+    const body = try httpDoJson(client, .GET, url, token, null, alloc, retry_after_seconds);
     defer alloc.free(body);
     var parsed = try std.json.parseFromSlice(std.json.Value, alloc, body, .{});
     defer parsed.deinit();
@@ -285,23 +352,25 @@ fn fetchUsedRangeLastRow(client: *std.http.Client, token: []const u8, drive_id: 
     return parseLastRowFromAddress(address);
 }
 
-fn fetchRangeValues(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, a1_range: []const u8, alloc: Allocator) ![][][]const u8 {
+fn fetchRangeValues(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, a1_range: []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) ![][][]const u8 {
     const encoded_range = try encodeAddress(a1_range, alloc);
     defer alloc.free(encoded_range);
-    const url = try std.fmt.allocPrint(alloc,
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}/workbook/worksheets/{s}/range(address='{s}')",
         .{ drive_id, item_id, worksheet_id, encoded_range },
     );
     defer alloc.free(url);
-    const body = try httpDoJson(client, .GET, url, token, null, alloc);
+    const body = try httpDoJson(client, .GET, url, token, null, alloc, retry_after_seconds);
     defer alloc.free(body);
     return parseValuesArrayJson(body, alloc);
 }
 
-fn patchRangeValues(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, a1_range: []const u8, values: []const []const u8, alloc: Allocator) !void {
+fn patchRangeValues(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, a1_range: []const u8, values: []const []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) !void {
     const encoded_range = try encodeAddress(a1_range, alloc);
     defer alloc.free(encoded_range);
-    const url = try std.fmt.allocPrint(alloc,
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}/workbook/worksheets/{s}/range(address='{s}')",
         .{ drive_id, item_id, worksheet_id, encoded_range },
     );
@@ -318,14 +387,15 @@ fn patchRangeValues(client: *std.http.Client, token: []const u8, drive_id: []con
     }
     try body.appendSlice(alloc, "]}");
 
-    const resp = try httpDoJson(client, .PATCH, url, token, body.items, alloc);
+    const resp = try httpDoJson(client, .PATCH, url, token, body.items, alloc, retry_after_seconds);
     alloc.free(resp);
 }
 
-fn patchRangeFill(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, a1_range: []const u8, fill_hex: []const u8, alloc: Allocator) !void {
+fn patchRangeFill(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, worksheet_id: []const u8, a1_range: []const u8, fill_hex: []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) !void {
     const encoded_range = try encodeAddress(a1_range, alloc);
     defer alloc.free(encoded_range);
-    const url = try std.fmt.allocPrint(alloc,
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}/workbook/worksheets/{s}/range(address='{s}')/format/fill",
         .{ drive_id, item_id, worksheet_id, encoded_range },
     );
@@ -335,12 +405,13 @@ fn patchRangeFill(client: *std.http.Client, token: []const u8, drive_id: []const
     try body.appendSlice(alloc, "{\"color\":");
     try json_util.appendJsonQuoted(&body, fill_hex, alloc);
     try body.append(alloc, '}');
-    const resp = try httpDoJson(client, .PATCH, url, token, body.items, alloc);
+    const resp = try httpDoJson(client, .PATCH, url, token, body.items, alloc, retry_after_seconds);
     alloc.free(resp);
 }
 
-fn addWorksheet(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, title: []const u8, alloc: Allocator) !void {
-    const url = try std.fmt.allocPrint(alloc,
+fn addWorksheet(client: *std.http.Client, token: []const u8, drive_id: []const u8, item_id: []const u8, title: []const u8, alloc: Allocator, retry_after_seconds: ?*?u64) !void {
+    const url = try std.fmt.allocPrint(
+        alloc,
         "https://graph.microsoft.com/v1.0/drives/{s}/items/{s}/workbook/worksheets/add",
         .{ drive_id, item_id },
     );
@@ -350,18 +421,19 @@ fn addWorksheet(client: *std.http.Client, token: []const u8, drive_id: []const u
     try body.appendSlice(alloc, "{\"name\":");
     try json_util.appendJsonQuoted(&body, title, alloc);
     try body.append(alloc, '}');
-    const resp = try httpDoJson(client, .POST, url, token, body.items, alloc);
+    const resp = try httpDoJson(client, .POST, url, token, body.items, alloc, retry_after_seconds);
     alloc.free(resp);
 }
 
-fn httpDoJson(client: *std.http.Client, method: std.http.Method, url: []const u8, bearer_token: ?[]const u8, payload: ?[]const u8, alloc: Allocator) ![]u8 {
-    return httpDoJsonWithContentType(client, method, url, bearer_token, payload, alloc, null);
+fn httpDoJson(client: *std.http.Client, method: std.http.Method, url: []const u8, bearer_token: ?[]const u8, payload: ?[]const u8, alloc: Allocator, retry_after_seconds: ?*?u64) ![]u8 {
+    return httpDoJsonWithContentType(client, method, url, bearer_token, payload, alloc, null, retry_after_seconds);
 }
 
-fn httpDoJsonWithContentType(client: *std.http.Client, method: std.http.Method, url: []const u8, bearer_token: ?[]const u8, payload: ?[]const u8, alloc: Allocator, content_type_override: ?[]const u8) ![]u8 {
+fn httpDoJsonWithContentType(client: *std.http.Client, method: std.http.Method, url: []const u8, bearer_token: ?[]const u8, payload: ?[]const u8, alloc: Allocator, content_type_override: ?[]const u8, retry_after_seconds: ?*?u64) ![]u8 {
+    if (retry_after_seconds) |out| out.* = null;
     if (builtin.is_test) {
         if (test_http_mock) |mock| {
-            return mock.handle(method, url, bearer_token, payload, content_type_override, alloc);
+            return mock.handle(method, url, bearer_token, payload, content_type_override, retry_after_seconds, alloc);
         }
     }
 
@@ -381,21 +453,31 @@ fn httpDoJsonWithContentType(client: *std.http.Client, method: std.http.Method, 
         header_count += 1;
     }
 
-    var resp_body: std.Io.Writer.Allocating = .init(alloc);
-    defer resp_body.deinit();
-
-    const result = client.fetch(.{
-        .location = .{ .url = url },
-        .method = method,
-        .payload = if (payload) |p| p else null,
+    const uri = std.Uri.parse(url) catch return error.ApiError;
+    var req = client.request(method, uri, .{
         .extra_headers = headers_buf[0..header_count],
         .headers = .{
             .content_type = if (payload != null) .{ .override = content_type } else .omit,
         },
-        .response_writer = &resp_body.writer,
+        .redirect_behavior = if (payload == null) @enumFromInt(3) else .unhandled,
     }) catch return error.ApiError;
+    defer req.deinit();
 
-    switch (result.status) {
+    if (payload) |p| {
+        req.transfer_encoding = .{ .content_length = p.len };
+        var body_writer = req.sendBodyUnflushed(&.{}) catch return error.ApiError;
+        body_writer.writer.writeAll(p) catch return error.ApiError;
+        body_writer.end() catch return error.ApiError;
+        req.connection.?.flush() catch return error.ApiError;
+    } else {
+        req.sendBodiless() catch return error.ApiError;
+    }
+
+    var redirect_buffer: [8 * 1024]u8 = undefined;
+    var response = req.receiveHead(&redirect_buffer) catch return error.ApiError;
+    captureRetryAfter(response.head, retry_after_seconds);
+
+    switch (response.head.status) {
         .ok, .created, .accepted, .no_content => {},
         .unauthorized => return error.AuthError,
         .forbidden => return error.AccessDenied,
@@ -404,7 +486,42 @@ fn httpDoJsonWithContentType(client: *std.http.Client, method: std.http.Method, 
         else => return error.ApiError,
     }
 
+    var resp_body: std.Io.Writer.Allocating = .init(alloc);
+    defer resp_body.deinit();
+    try readResponseBody(&response, &resp_body.writer, alloc);
     return alloc.dupe(u8, resp_body.written());
+}
+
+fn readResponseBody(response: *std.http.Client.Response, response_writer: *std.Io.Writer, alloc: Allocator) !void {
+    const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => alloc.alloc(u8, std.compress.zstd.default_window_len) catch return error.ApiError,
+        .deflate, .gzip => alloc.alloc(u8, std.compress.flate.max_window_len) catch return error.ApiError,
+        .compress => return error.ApiError,
+    };
+    defer if (decompress_buffer.len != 0) alloc.free(decompress_buffer);
+
+    var transfer_buffer: [64]u8 = undefined;
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+    _ = reader.streamRemaining(response_writer) catch return error.ApiError;
+}
+
+fn captureRetryAfter(head: std.http.Client.Response.Head, retry_after_seconds: ?*?u64) void {
+    const out = retry_after_seconds orelse return;
+    var header_iter = head.iterateHeaders();
+    while (header_iter.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
+            out.* = parseRetryAfterSeconds(header.value);
+            return;
+        }
+    }
+}
+
+fn parseRetryAfterSeconds(value: []const u8) ?u64 {
+    const trimmed = std.mem.trim(u8, value, " \t");
+    if (trimmed.len == 0) return null;
+    return std.fmt.parseUnsigned(u64, trimmed, 10) catch null;
 }
 
 const MockHttpExchange = struct {
@@ -415,13 +532,14 @@ const MockHttpExchange = struct {
     content_type: ?[]const u8 = null,
     status: std.http.Status = .ok,
     body: []const u8 = "{}",
+    retry_after_seconds: ?u64 = null,
 };
 
 const MockHttp = struct {
     exchanges: []const MockHttpExchange,
     index: usize = 0,
 
-    fn handle(self: *MockHttp, method: std.http.Method, url: []const u8, bearer_token: ?[]const u8, payload: ?[]const u8, content_type: ?[]const u8, alloc: Allocator) ![]u8 {
+    fn handle(self: *MockHttp, method: std.http.Method, url: []const u8, bearer_token: ?[]const u8, payload: ?[]const u8, content_type: ?[]const u8, retry_after_seconds: ?*?u64, alloc: Allocator) ![]u8 {
         if (self.index >= self.exchanges.len) return error.InvalidResponse;
         const exchange = self.exchanges[self.index];
         self.index += 1;
@@ -443,7 +561,10 @@ const MockHttp = struct {
             .unauthorized => return error.AuthError,
             .forbidden => return error.AccessDenied,
             .not_found => return error.NotFound,
-            .too_many_requests => return error.Throttled,
+            .too_many_requests => {
+                if (retry_after_seconds) |out| out.* = exchange.retry_after_seconds;
+                return error.Throttled;
+            },
             else => return error.ApiError,
         }
         return alloc.dupe(u8, exchange.body);
@@ -592,9 +713,32 @@ fn appendJsonString(buf: *std.ArrayList(u8), s: []const u8, alloc: Allocator) !v
 
 fn columnLetters(index_1based: usize) []const u8 {
     return switch (index_1based) {
-        1 => "A", 2 => "B", 3 => "C", 4 => "D", 5 => "E", 6 => "F", 7 => "G", 8 => "H", 9 => "I", 10 => "J",
-        11 => "K", 12 => "L", 13 => "M", 14 => "N", 15 => "O", 16 => "P", 17 => "Q", 18 => "R", 19 => "S", 20 => "T",
-        21 => "U", 22 => "V", 23 => "W", 24 => "X", 25 => "Y", 26 => "Z",
+        1 => "A",
+        2 => "B",
+        3 => "C",
+        4 => "D",
+        5 => "E",
+        6 => "F",
+        7 => "G",
+        8 => "H",
+        9 => "I",
+        10 => "J",
+        11 => "K",
+        12 => "L",
+        13 => "M",
+        14 => "N",
+        15 => "O",
+        16 => "P",
+        17 => "Q",
+        18 => "R",
+        19 => "S",
+        20 => "T",
+        21 => "U",
+        22 => "V",
+        23 => "W",
+        24 => "X",
+        25 => "Y",
+        26 => "Z",
         else => "Z",
     };
 }
@@ -760,6 +904,67 @@ test "runtime readRows uses worksheets, usedRange, and range endpoints" {
     try mock.expectDone();
 }
 
+test "runtime readRows caches worksheets across reads" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var active = try testActiveConnectionExcel(alloc);
+    defer active.deinit(alloc);
+
+    var mock = MockHttp{
+        .exchanges = &.{
+            .{
+                .method = .POST,
+                .url = "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+                .content_type = "application/x-www-form-urlencoded",
+                .body = "{\"access_token\":\"graph-token\",\"expires_in\":3600}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets",
+                .bearer_token = "graph-token",
+                .body = "{\"value\":[{\"id\":\"sheet-req\",\"name\":\"Requirements\"}]}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets/sheet-req/usedRange(valuesOnly=true)",
+                .bearer_token = "graph-token",
+                .body = "{\"address\":\"Requirements!A1:A1\"}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets/sheet-req/range(address='A1:Z1')",
+                .bearer_token = "graph-token",
+                .body = "{\"values\":[[\"ID\"]]}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets/sheet-req/usedRange(valuesOnly=true)",
+                .bearer_token = "graph-token",
+                .body = "{\"address\":\"Requirements!A1:A1\"}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets/sheet-req/range(address='A1:Z1')",
+                .bearer_token = "graph-token",
+                .body = "{\"values\":[[\"ID\"]]}",
+            },
+        },
+    };
+    useMockHttp(&mock);
+    defer clearMockHttp();
+
+    var runtime = try Runtime.init(active, alloc);
+    defer runtime.deinit(alloc);
+
+    const first = try runtime.readRows("Requirements", alloc);
+    defer common.freeRows(first, alloc);
+    const second = try runtime.readRows("Requirements", alloc);
+    defer common.freeRows(second, alloc);
+    try mock.expectDone();
+}
+
 test "runtime batchWriteValues patches excel range values" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -798,7 +1003,7 @@ test "runtime batchWriteValues patches excel range values" {
     defer runtime.deinit(alloc);
 
     const updates = [_]common.ValueUpdate{
-        .{ .a1_range = "Requirements!H2:H3", .values = &.{"OK", "MISSING"} },
+        .{ .a1_range = "Requirements!H2:H3", .values = &.{ "OK", "MISSING" } },
     };
     try runtime.batchWriteValues(&updates, alloc);
     try mock.expectDone();
@@ -880,6 +1085,59 @@ test "runtime createTab calls worksheet add endpoint" {
     defer runtime.deinit(alloc);
 
     try runtime.createTab("Design Inputs", alloc);
+    try mock.expectDone();
+}
+
+test "runtime createTab invalidates worksheet cache" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var active = try testActiveConnectionExcel(alloc);
+    defer active.deinit(alloc);
+
+    var mock = MockHttp{
+        .exchanges = &.{
+            .{
+                .method = .POST,
+                .url = "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+                .content_type = "application/x-www-form-urlencoded",
+                .body = "{\"access_token\":\"graph-token\",\"expires_in\":3600}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets",
+                .bearer_token = "graph-token",
+                .body = "{\"value\":[{\"id\":\"sheet-req\",\"name\":\"Requirements\"}]}",
+            },
+            .{
+                .method = .POST,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets/add",
+                .bearer_token = "graph-token",
+                .payload = "{\"name\":\"Design Inputs\"}",
+                .body = "{}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123/workbook/worksheets",
+                .bearer_token = "graph-token",
+                .body = "{\"value\":[{\"id\":\"sheet-req\",\"name\":\"Requirements\"},{\"id\":\"sheet-di\",\"name\":\"Design Inputs\"}]}",
+            },
+        },
+    };
+    useMockHttp(&mock);
+    defer clearMockHttp();
+
+    var runtime = try Runtime.init(active, alloc);
+    defer runtime.deinit(alloc);
+
+    const before = try runtime.listTabs(alloc);
+    defer common.freeTabRefs(before, alloc);
+    try testing.expectEqual(@as(usize, 1), before.len);
+    try runtime.createTab("Design Inputs", alloc);
+    const after = try runtime.listTabs(alloc);
+    defer common.freeTabRefs(after, alloc);
+    try testing.expectEqual(@as(usize, 2), after.len);
     try mock.expectDone();
 }
 
@@ -977,5 +1235,83 @@ test "throttled graph response maps to error.Throttled" {
     defer client.deinit();
 
     try testing.expectError(error.Throttled, acquireToken(&client, "tenant", "client", "secret", alloc));
+    try mock.expectDone();
+}
+
+test "Retry-After parser accepts numeric seconds only" {
+    try testing.expectEqual(@as(?u64, 5), parseRetryAfterSeconds("5"));
+    try testing.expectEqual(@as(?u64, 5), parseRetryAfterSeconds(" 5\t"));
+    try testing.expectEqual(@as(?u64, null), parseRetryAfterSeconds("Wed, 21 Oct 2015 07:28:00 GMT"));
+    try testing.expectEqual(@as(?u64, null), parseRetryAfterSeconds("soon"));
+}
+
+test "runtime captures numeric Retry-After on throttled graph response" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var active = try testActiveConnectionExcel(alloc);
+    defer active.deinit(alloc);
+
+    var mock = MockHttp{
+        .exchanges = &.{
+            .{
+                .method = .POST,
+                .url = "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+                .content_type = "application/x-www-form-urlencoded",
+                .body = "{\"access_token\":\"graph-token\",\"expires_in\":3600}",
+            },
+            .{
+                .method = .GET,
+                .url = "https://graph.microsoft.com/v1.0/drives/drive-456/items/item-123?$select=lastModifiedDateTime,name,webUrl",
+                .bearer_token = "graph-token",
+                .status = .too_many_requests,
+                .retry_after_seconds = 5,
+            },
+        },
+    };
+    useMockHttp(&mock);
+    defer clearMockHttp();
+
+    var runtime = try Runtime.init(active, alloc);
+    defer runtime.deinit(alloc);
+
+    try testing.expectError(error.Throttled, runtime.changeToken(alloc));
+    try testing.expectEqual(@as(?u64, 5), runtime.takeRetryAfterSeconds());
+    try testing.expectEqual(@as(?u64, null), runtime.takeRetryAfterSeconds());
+    try mock.expectDone();
+}
+
+test "getToken returns owned copies from the cache" {
+    const alloc = testing.allocator;
+
+    var active = try testActiveConnectionExcel(alloc);
+    defer active.deinit(alloc);
+
+    var mock = MockHttp{
+        .exchanges = &.{
+            .{
+                .method = .POST,
+                .url = "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+                .content_type = "application/x-www-form-urlencoded",
+                .body = "{\"access_token\":\"graph-token\",\"expires_in\":3600}",
+            },
+        },
+    };
+    useMockHttp(&mock);
+    defer clearMockHttp();
+
+    var runtime = try Runtime.init(active, alloc);
+    defer runtime.deinit(alloc);
+
+    const first = try runtime.getToken(alloc);
+    defer alloc.free(first);
+    const second = try runtime.getToken(alloc);
+    defer alloc.free(second);
+    try testing.expectEqualStrings("graph-token", first);
+    try testing.expectEqualStrings("graph-token", second);
+    try testing.expect(first.ptr != runtime.token_cache.access_token.?.ptr);
+    try testing.expect(second.ptr != runtime.token_cache.access_token.?.ptr);
+    try testing.expect(first.ptr != second.ptr);
     try mock.expectDone();
 }
