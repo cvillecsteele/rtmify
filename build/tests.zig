@@ -138,6 +138,13 @@ pub fn registerUnitTestSteps(ctx: types.BuildCtx, native: *const types.NativeArt
             .root_source_file = b.path("live/windows/src/status_probe.zig"),
             .target = ctx.target,
             .optimize = ctx.optimize,
+            .imports = &.{
+                .{ .name = "socket_read", .module = b.createModule(.{
+                    .root_source_file = b.path("live/src/socket_read.zig"),
+                    .target = ctx.target,
+                    .optimize = ctx.optimize,
+                }) },
+            },
         }),
     });
     const run_windows_status_probe_tests = b.addRunArtifact(windows_status_probe_tests);
