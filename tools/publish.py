@@ -28,6 +28,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 # ---------------------------------------------------------------------------
 # Section 1: Constants
@@ -73,6 +74,7 @@ WINDOWS_SIGNED_BINARY_PATHS = [
     "windows/RTMify Live.exe",
     "windows/rtmify-live.exe",
 ]
+BINARY_DOWNLOAD_KINDS = {"dmg", "pkg", "exe", "tar.gz"}
 
 # ---------------------------------------------------------------------------
 # Section 2: Version Helpers
@@ -1202,15 +1204,29 @@ def build_asset_entry(
 ) -> dict[str, Any]:
     filename = Path(rel_path).name
     abs_path = release_dir / rel_path
+    resolved_kind = kind or infer_kind(rel_path)
+    plausible_event = (
+        "Download Binary"
+        if resolved_kind in BINARY_DOWNLOAD_KINDS and product in {"trace", "live"}
+        else "Download Release Artifact"
+    )
     return {
         "product": product,
         "platform": platform,
         "version": version,
         "path": rel_path,
         "filename": filename,
-        "kind": kind or infer_kind(rel_path),
+        "kind": resolved_kind,
         "sha256": sha256 or sha256_path(abs_path),
         "url": release_url(repo, tag, filename),
+        "plausible": {
+            "eventName": quote_plus(plausible_event),
+            "file": quote_plus(filename),
+            "product": quote_plus(product),
+            "platform": quote_plus(platform),
+            "kind": quote_plus(resolved_kind),
+            "version": quote_plus(version),
+        },
     }
 
 

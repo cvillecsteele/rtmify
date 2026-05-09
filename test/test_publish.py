@@ -712,6 +712,18 @@ def test_download_manifest_full(tmp_path):
     assert "checksums.txt" in filenames
     assert "RTMify_Trace_Validation_Package_v20260329-a.zip" in filenames
 
+    trace_dmg = next(
+        a for a in manifest["assets"] if a["filename"] == "RTMify_Trace_20260329-a.dmg"
+    )
+    assert trace_dmg["plausible"] == {
+        "eventName": "Download+Binary",
+        "file": "RTMify_Trace_20260329-a.dmg",
+        "product": "trace",
+        "platform": "macos",
+        "kind": "dmg",
+        "version": "20260329-a",
+    }
+
 
 def test_download_manifest_omits_payload_zip_before_finalize(tmp_path):
     """Port of test_build_manifest_omits_windows_payload_zip_before_finalize."""
