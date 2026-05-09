@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.publish import (
     LINUX_REQUIRED_ARTIFACTS,
     MACOS_REQUIRED_ARTIFACTS,
+    LIVE_ENTITLEMENTS_REL,
+    TRACE_ENTITLEMENTS_REL,
     WINDOWS_LIVE_FINAL_TEMPLATE,
     WINDOWS_LIVE_UNSIGNED_TEMPLATE,
     WINDOWS_PAYLOAD_ZIP_TEMPLATE,
@@ -34,6 +36,7 @@ from tools.publish import (
     StepCounter,
     WindowsCredentials,
     _resolve_jsign_cmd,
+    build_notarytool_auth_args,
     build_asset_entry,
     build_download_manifest,
     collect_and_write_package_manifest,
@@ -48,6 +51,7 @@ from tools.publish import (
     next_release_version,
     package_linux,
     product_title,
+    preflight_macos,
     read_release_version,
     release_url,
     run_cmd,
@@ -242,6 +246,96 @@ def test_resolve_jsign_cmd_jar(tmp_path, monkeypatch):
         result = _resolve_jsign_cmd("", str(jar))
         assert isinstance(result, list)
         assert "java" in result[0]
+
+
+# ---------------------------------------------------------------------------
+# macOS Notary Auth
+# ---------------------------------------------------------------------------
+
+
+def _make_macos_root(tmp_path: Path) -> Path:
+    root = tmp_path / "root"
+    trace_ent = root / TRACE_ENTITLEMENTS_REL
+    live_ent = root / LIVE_ENTITLEMENTS_REL
+    trace_ent.parent.mkdir(parents=True, exist_ok=True)
+    live_ent.parent.mkdir(parents=True, exist_ok=True)
+    trace_ent.write_text("<plist/>")
+    live_ent.write_text("<plist/>")
+    return root
+
+
+def test_build_notarytool_auth_args_keychain_profile():
+    creds = MacOSCredentials(
+        signing_identity="Developer ID Application: Example Org",
+        notary_key_file="",
+        notary_key_id="",
+        notary_issuer="",
+        notary_keychain_profile="RTMify-Notary",
+        notary_keychain="/tmp/test.keychain-db",
+    )
+    assert build_notarytool_auth_args("history", creds) == [
+        "xcrun",
+        "notarytool",
+        "history",
+        "--keychain-profile",
+        "RTMify-Notary",
+        "--keychain",
+        "/tmp/test.keychain-db",
+    ]
+
+
+def test_preflight_macos_accepts_keychain_profile(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    root = _make_macos_root(tmp_path)
+    keychain = tmp_path / "login.keychain-db"
+    keychain.write_text("placeholder")
+    creds = MacOSCredentials(
+        signing_identity="Developer ID Application: Iron Brothers Ventures LLC",
+        notary_key_file="",
+        notary_key_id="",
+        notary_issuer="",
+        notary_keychain_profile="RTMify-Notary",
+        notary_keychain=str(keychain),
+    )
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        argv = [str(a) for a in args]
+        calls.append(argv)
+        if argv[:4] == ["security", "find-identity", "-v", "-p"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=f'  1) ABC "{creds.signing_identity}"\n', stderr="")
+        if argv[:4] == ["xcrun", "notarytool", "history", "--keychain-profile"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        raise AssertionError(f"unexpected subprocess.run call: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert preflight_macos(creds, root) == []
+    assert any("--keychain-profile" in call for call in calls)
+
+
+def test_preflight_macos_requires_notary_creds_without_profile(tmp_path, monkeypatch):
+    import shutil
+
+    root = _make_macos_root(tmp_path)
+    creds = MacOSCredentials(
+        signing_identity="Developer ID Application: Iron Brothers Ventures LLC",
+        notary_key_file="",
+        notary_key_id="",
+        notary_issuer="",
+        notary_keychain_profile="",
+        notary_keychain="",
+    )
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    errors = preflight_macos(creds, root)
+    assert "RTMIFY_NOTARY_KEY_FILE (or --notary-key-file) not set" in errors
+    assert "RTMIFY_NOTARY_KEY_ID (or --notary-key-id) not set" in errors
+    assert "RTMIFY_NOTARY_ISSUER_UUID (or --notary-issuer) not set" in errors
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +923,63 @@ def test_cli_help_exits_zero():
 def test_cli_no_command_exits():
     result = main([])
     assert result == 2
+
+
+def test_release_forwards_package_overrides(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parent.parent
+    dist_dir = repo_root / "dist" / "20260329-a"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "manifest.json").write_text(json.dumps({"version": "20260329-a", "artifacts": []}))
+
+    recorded: list[list[str]] = []
+
+    def fake_run_cmd(args, **kwargs):
+        argv = [str(a) for a in args]
+        recorded.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def fake_subprocess_run(args, **kwargs):
+        argv = [str(a) for a in args]
+        if argv[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("tools.publish.run_cmd", fake_run_cmd)
+    monkeypatch.setattr("tools.publish.prepare_release_notes", lambda *a, **k: tmp_path / "notes.md")
+    monkeypatch.setattr(subprocess, "run", fake_subprocess_run)
+
+    rc = main(
+        [
+            "release",
+            "--version",
+            "20260329-a",
+            "--skip-build",
+            "--skip-site",
+            "--macos",
+            "--dry-run",
+            "--signing-identity",
+            "Developer ID Application: Iron Brothers Ventures LLC",
+            "--notary-keychain-profile",
+            "RTMify-Notary",
+            "--notary-keychain",
+            "/tmp/login.keychain-db",
+        ]
+    )
+
+    assert rc == 0
+    package_calls = [call for call in recorded if len(call) >= 3 and call[1:3] == [str(repo_root / "tools" / "publish.py"), "package"]]
+    assert package_calls, "expected release to invoke publish.py package"
+    first_package_call = package_calls[0]
+    assert "--signing-identity" in first_package_call
+    assert "Developer ID Application: Iron Brothers Ventures LLC" in first_package_call
+    assert "--notary-keychain-profile" in first_package_call
+    assert "RTMify-Notary" in first_package_call
+    assert "--notary-keychain" in first_package_call
+    assert "/tmp/login.keychain-db" in first_package_call
 
 
 def test_product_title():

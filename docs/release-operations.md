@@ -80,11 +80,33 @@ Windows package state is explicit in `package-manifest.json`:
 - `xcrun notarytool`
 - `xcrun stapler`
 - a valid `Developer ID Application` certificate in the login keychain
-- notary API key `.p8`, key ID, and issuer UUID
+- App Store Connect Team API key for notarization
+
+Recommended Apple setup now that RTMify is on the organization account:
+
+1. Create a `Developer ID Application` certificate for `Iron Brothers Ventures LLC`.
+2. Import it into the macOS login keychain.
+3. Create an App Store Connect team API key for notarization.
+4. Store the notary credentials in the keychain once:
+
+```bash
+xcrun notarytool store-credentials RTMify-Notary \
+  --key "$HOME/.rtmify/secrets/AuthKey_ABCDEFGHIJ.p8" \
+  --key-id "ABCDEFGHIJ" \
+  --issuer "00000000-0000-0000-0000-000000000000" \
+  --validate
+```
+
+That gives `tools/publish.py` a stable local credential handle instead of requiring the raw key path on every release.
 
 Environment variables:
 
 - `APPLE_SIGNING_IDENTITY`
+- `RTMIFY_NOTARY_KEYCHAIN_PROFILE` recommended
+- `RTMIFY_NOTARY_KEYCHAIN` optional if you store the profile in a non-default keychain
+
+Fallback environment variables if you do not use a keychain profile:
+
 - `RTMIFY_NOTARY_KEY_FILE`
 - `RTMIFY_NOTARY_KEY_ID`
 - `RTMIFY_NOTARY_ISSUER_UUID`
@@ -147,11 +169,12 @@ All steps are automated by `tools/publish.py`. One command does the full release
 ```bash
 cd /Users/colinsteele/Projects/rtmify/sys
 
-# Set signing credentials (env vars or CLI flags)
+# Preferred Apple notarization setup: keychain profile + env vars
 export APPLE_SIGNING_IDENTITY="Developer ID Application: Iron Brothers Ventures LLC (...)"
-export RTMIFY_NOTARY_KEY_FILE="$HOME/.rtmify/secrets/notary-key.p8"
-export RTMIFY_NOTARY_KEY_ID="ABCDEFGHIJ"
-export RTMIFY_NOTARY_ISSUER_UUID="00000000-0000-0000-0000-000000000000"
+export RTMIFY_NOTARY_KEYCHAIN_PROFILE="RTMify-Notary"
+
+# Optional when the profile lives in a non-default keychain
+# export RTMIFY_NOTARY_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 
 export AZURE_TRUSTED_SIGNING_ENDPOINT="https://eus.codesigning.azure.net/"
 export AZURE_TRUSTED_SIGNING_ACCOUNT="RTMify"
@@ -173,6 +196,18 @@ az login
 
 # Check pipeline status:
 ./tools/publish.py status
+```
+
+Equivalent one-shot invocation without relying on environment variables:
+
+```bash
+./tools/publish.py release \
+  --version 20260329-a \
+  --signing-identity "Developer ID Application: Iron Brothers Ventures LLC (...)" \
+  --notary-keychain-profile RTMify-Notary \
+  --azure-endpoint "https://eus.codesigning.azure.net/" \
+  --azure-account RTMify \
+  --azure-profile RTMify
 ```
 
 The `release` subcommand automates these steps in order:
@@ -251,7 +286,7 @@ Before running a release:
 1. Confirm the target version is correct.
 2. Confirm the HMAC signing key is present and current.
 3. Confirm the `Developer ID Application` identity is available locally.
-4. Confirm the notary API key, key ID, and issuer are current.
+4. Confirm the `RTMIFY_NOTARY_KEYCHAIN_PROFILE` exists locally, or confirm the raw notary key file, key ID, and issuer are current.
 5. Confirm `az login` is against the correct tenant for Azure Trusted Signing.
 6. Confirm the Azure endpoint, account, and profile match the approved IBV identity.
 7. Confirm `gh auth status` succeeds locally.

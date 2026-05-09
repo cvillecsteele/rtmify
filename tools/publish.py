@@ -178,6 +178,8 @@ class MacOSCredentials:
     notary_key_file: str
     notary_key_id: str
     notary_issuer: str
+    notary_keychain_profile: str
+    notary_keychain: str
 
     @classmethod
     def from_env(cls, **overrides: str | None) -> MacOSCredentials:
@@ -186,6 +188,8 @@ class MacOSCredentials:
             notary_key_file=(overrides.get("notary_key_file") or "") or os.environ.get("RTMIFY_NOTARY_KEY_FILE", ""),
             notary_key_id=(overrides.get("notary_key_id") or "") or os.environ.get("RTMIFY_NOTARY_KEY_ID", ""),
             notary_issuer=(overrides.get("notary_issuer") or "") or os.environ.get("RTMIFY_NOTARY_ISSUER_UUID", ""),
+            notary_keychain_profile=(overrides.get("notary_keychain_profile") or "") or os.environ.get("RTMIFY_NOTARY_KEYCHAIN_PROFILE", ""),
+            notary_keychain=(overrides.get("notary_keychain") or "") or os.environ.get("RTMIFY_NOTARY_KEYCHAIN", ""),
         )
 
 
@@ -312,16 +316,21 @@ def preflight_macos(creds: MacOSCredentials, root_dir: Path) -> list[str]:
     # Check credentials
     if not creds.signing_identity:
         errors.append("APPLE_SIGNING_IDENTITY (or --signing-identity) not set")
-    if not creds.notary_key_file:
-        errors.append("RTMIFY_NOTARY_KEY_FILE (or --notary-key-file) not set")
-    if not creds.notary_key_id:
-        errors.append("RTMIFY_NOTARY_KEY_ID (or --notary-key-id) not set")
-    if not creds.notary_issuer:
-        errors.append("RTMIFY_NOTARY_ISSUER_UUID (or --notary-issuer) not set")
+    uses_keychain_profile = bool(creds.notary_keychain_profile)
+    if uses_keychain_profile:
+        if creds.notary_keychain and not Path(creds.notary_keychain).is_file():
+            errors.append(f"notary keychain not found: {creds.notary_keychain}")
+    else:
+        if not creds.notary_key_file:
+            errors.append("RTMIFY_NOTARY_KEY_FILE (or --notary-key-file) not set")
+        if not creds.notary_key_id:
+            errors.append("RTMIFY_NOTARY_KEY_ID (or --notary-key-id) not set")
+        if not creds.notary_issuer:
+            errors.append("RTMIFY_NOTARY_ISSUER_UUID (or --notary-issuer) not set")
     if errors:
         return errors
     # Check files exist
-    if not Path(creds.notary_key_file).is_file():
+    if not uses_keychain_profile and not Path(creds.notary_key_file).is_file():
         errors.append(f"notary key file not found: {creds.notary_key_file}")
     trace_ent = root_dir / TRACE_ENTITLEMENTS_REL
     live_ent = root_dir / LIVE_ENTITLEMENTS_REL
@@ -342,19 +351,27 @@ def preflight_macos(creds: MacOSCredentials, root_dir: Path) -> list[str]:
     if errors:
         return errors
     # Check notarytool auth
-    result = subprocess.run(
-        [
-            "xcrun", "notarytool", "history",
-            "--key", creds.notary_key_file,
-            "--key-id", creds.notary_key_id,
-            "--issuer", creds.notary_issuer,
-            "--page-size", "1",
-        ],
-        capture_output=True,
-    )
+    result = subprocess.run(build_notarytool_auth_args("history", creds), capture_output=True)
     if result.returncode != 0:
-        errors.append("notarytool authentication failed — check key file, key ID, and issuer")
+        if uses_keychain_profile:
+            errors.append("notarytool authentication failed — check keychain profile and keychain path")
+        else:
+            errors.append("notarytool authentication failed — check key file, key ID, and issuer")
     return errors
+
+
+def build_notarytool_auth_args(command: str, creds: MacOSCredentials) -> list[str]:
+    args = ["xcrun", "notarytool", command]
+    if creds.notary_keychain_profile:
+        args += ["--keychain-profile", creds.notary_keychain_profile]
+        if creds.notary_keychain:
+            args += ["--keychain", creds.notary_keychain]
+        return args
+    return args + [
+        "--key", creds.notary_key_file,
+        "--key-id", creds.notary_key_id,
+        "--issuer", creds.notary_issuer,
+    ]
 
 
 def _resolve_jsign_cmd(jsign_bin: str, jsign_jar: str) -> list[str] | str:
@@ -625,10 +642,8 @@ def notarize_and_staple(
 
     result = run_cmd(
         [
-            "xcrun", "notarytool", "submit", str(artifact_path),
-            "--key", creds.notary_key_file,
-            "--key-id", creds.notary_key_id,
-            "--issuer", creds.notary_issuer,
+            *build_notarytool_auth_args("submit", creds),
+            str(artifact_path),
             "--wait",
             "--output-format", "json",
         ],
@@ -1814,6 +1829,29 @@ def validate_release_prereqs(
         sys.exit(2)
 
 
+def package_override_args(args: argparse.Namespace) -> list[str]:
+    forwarded: list[str] = []
+    option_pairs = [
+        ("signing_identity", "--signing-identity"),
+        ("notary_key_file", "--notary-key-file"),
+        ("notary_key_id", "--notary-key-id"),
+        ("notary_issuer", "--notary-issuer"),
+        ("notary_keychain_profile", "--notary-keychain-profile"),
+        ("notary_keychain", "--notary-keychain"),
+        ("azure_endpoint", "--azure-endpoint"),
+        ("azure_account", "--azure-account"),
+        ("azure_profile", "--azure-profile"),
+        ("jsign_bin", "--jsign-bin"),
+        ("jsign_jar", "--jsign-jar"),
+        ("gpg_key", "--gpg-key"),
+    ]
+    for attr, flag in option_pairs:
+        value = getattr(args, attr, None)
+        if value:
+            forwarded.extend([flag, value])
+    return forwarded
+
+
 def cmd_package(args: argparse.Namespace) -> int:
     release_dir = Path(args.release_dir).resolve()
     if not release_dir.is_dir():
@@ -1872,6 +1910,8 @@ def cmd_package(args: argparse.Namespace) -> int:
             notary_key_file=args.notary_key_file,
             notary_key_id=args.notary_key_id,
             notary_issuer=args.notary_issuer,
+            notary_keychain_profile=args.notary_keychain_profile,
+            notary_keychain=args.notary_keychain,
         )
         errors = preflight_macos(macos_creds, root_dir)
         if errors:
@@ -2024,6 +2064,7 @@ def cmd_release(args: argparse.Namespace) -> int:
             pkg_args.append("--windows")
         if platforms.linux:
             pkg_args.append("--linux")
+    pkg_args.extend(package_override_args(args))
     run_cmd(pkg_args, dry_run=dry_run)
     if not dry_run:
         state.mark_step("package")
@@ -2072,6 +2113,7 @@ def cmd_release(args: argparse.Namespace) -> int:
             "--release-dir", str(release_dir),
             "--windows-unsigned-dir", win_unsigned_dir,
         ]
+        finalize_args.extend(package_override_args(args))
         run_cmd(finalize_args, dry_run=dry_run)
         if not dry_run:
             state.mark_step("windows_finalize")
@@ -2196,6 +2238,8 @@ def main(argv: list[str] | None = None) -> int:
     pkg.add_argument("--notary-key-file")
     pkg.add_argument("--notary-key-id")
     pkg.add_argument("--notary-issuer")
+    pkg.add_argument("--notary-keychain-profile")
+    pkg.add_argument("--notary-keychain")
     pkg.add_argument("--azure-endpoint")
     pkg.add_argument("--azure-account")
     pkg.add_argument("--azure-profile")
@@ -2215,6 +2259,18 @@ def main(argv: list[str] | None = None) -> int:
     rel.add_argument("--skip-site", action="store_true")
     rel.add_argument("--site-dir")
     rel.add_argument("--dry-run", action="store_true")
+    rel.add_argument("--signing-identity")
+    rel.add_argument("--notary-key-file")
+    rel.add_argument("--notary-key-id")
+    rel.add_argument("--notary-issuer")
+    rel.add_argument("--notary-keychain-profile")
+    rel.add_argument("--notary-keychain")
+    rel.add_argument("--azure-endpoint")
+    rel.add_argument("--azure-account")
+    rel.add_argument("--azure-profile")
+    rel.add_argument("--jsign-bin")
+    rel.add_argument("--jsign-jar")
+    rel.add_argument("--gpg-key")
 
     # status
     st = subparsers.add_parser("status", help="Show pipeline status")

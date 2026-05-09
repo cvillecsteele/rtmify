@@ -362,7 +362,7 @@ Check the GitHub Actions workflow status: `gh run list --repo cvillecsteele/rtmi
 
 ### macOS app won't notarize
 
-Verify `APPLE_SIGNING_IDENTITY`, `RTMIFY_NOTARY_KEY_FILE`, `RTMIFY_NOTARY_KEY_ID`, and `RTMIFY_NOTARY_ISSUER_UUID` are set. Check the keychain: `security find-identity -v -p codesigning`.
+Verify `APPLE_SIGNING_IDENTITY` and either `RTMIFY_NOTARY_KEYCHAIN_PROFILE` or the raw notary credentials (`RTMIFY_NOTARY_KEY_FILE`, `RTMIFY_NOTARY_KEY_ID`, `RTMIFY_NOTARY_ISSUER_UUID`) are set. Check the keychain: `security find-identity -v -p codesigning`.
 
 ## Current Status
 
